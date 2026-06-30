@@ -238,10 +238,10 @@ impl Tree {
     pub fn failed_test_names(&self) -> Vec<String> {
         let mut names = Vec::new();
         visit(&self.root, &mut |node| {
-            if node.status == TestStatus::Failed {
-                if let NodeKind::Test(test) = &node.kind {
-                    names.push(test.full_name.clone());
-                }
+            if node.status == TestStatus::Failed
+                && let NodeKind::Test(test) = &node.kind
+            {
+                names.push(test.full_name.clone());
             }
         });
         names
@@ -460,12 +460,12 @@ fn node_matches(node: &TestNode, key: &TestKey) -> bool {
 fn failed_descendants(node: &TestNode) -> Vec<String> {
     let mut failures = Vec::new();
     visit(node, &mut |child| {
-        if child.status == TestStatus::Failed {
-            if let NodeKind::Test(test) = &child.kind {
-                let mut text = format!("{}::{}\n", test.package, test.full_name);
-                text.push_str(&child.output.display_text());
-                failures.push(text);
-            }
+        if child.status == TestStatus::Failed
+            && let NodeKind::Test(test) = &child.kind
+        {
+            let mut text = format!("{}::{}\n", test.package, test.full_name);
+            text.push_str(&child.output.display_text());
+            failures.push(text);
         }
     });
     failures

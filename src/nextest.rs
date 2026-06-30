@@ -59,7 +59,7 @@ impl RunScope {
             Self::Package { name } => test.package == *name,
             Self::Module { path } => test.full_name.starts_with(path),
             Self::Test { name } => test.full_name == *name,
-            Self::Failed { names } => names.iter().any(|name| test.full_name == *name),
+            Self::Failed { names } => names.contains(&test.full_name),
         }
     }
 
