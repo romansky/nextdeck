@@ -42,17 +42,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     draw_output(frame, app, app_layout.output);
     draw_status(frame, app, app_layout.status);
 
+    if app.is_discovering() || app.discovery.error.is_some() {
+        draw_discovery_modal(frame, app);
+    }
+
     if app.show_help {
         draw_help(frame);
     }
 }
 
 fn draw_tree(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    if app.is_discovering() || app.discovery.error.is_some() {
-        draw_discovery(frame, app, area);
-        return;
-    }
-
     let selected = app.tree.selected_index();
     let rows = app.tree.visible_rows();
     let visible_height = area.height.saturating_sub(2).max(1) as usize;
@@ -80,12 +79,8 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(list, area);
 }
 
-fn draw_discovery(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let title = if app.is_discovering() {
-        "Tests *"
-    } else {
-        "Tests"
-    };
+fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App) {
+    let area = centered_rect(62, 58, frame.area());
     let lines = if let Some(error) = &app.discovery.error {
         vec![
             Line::from("Discovery failed"),
@@ -102,14 +97,16 @@ fn draw_discovery(frame: &mut Frame<'_>, app: &App, area: Rect) {
             )),
             Line::from(""),
             Line::from("Running cargo nextest list --message-format json"),
+            Line::from("Cold discovery may compile test binaries first."),
             Line::from(format!("Elapsed: {}s", app.discovery_elapsed_seconds())),
-            Line::from(""),
             Line::from("Press q to quit."),
         ]
     };
     let paragraph = Paragraph::new(lines)
-        .block(Block::default().title(title).borders(Borders::ALL))
+        .alignment(Alignment::Left)
+        .block(Block::default().title("Discovery").borders(Borders::ALL))
         .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, area);
     frame.render_widget(paragraph, area);
 }
 
@@ -149,19 +146,6 @@ fn node_label(node: &TestNode) -> String {
 }
 
 fn draw_output(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    if app.is_discovering() {
-        let text = vec![
-            Line::from("Preparing test inventory"),
-            Line::from(""),
-            Line::from("Cold discovery may compile test binaries before the list is available."),
-        ];
-        let output = Paragraph::new(text)
-            .block(Block::default().title("Output").borders(Borders::ALL))
-            .wrap(Wrap { trim: false });
-        frame.render_widget(output, area);
-        return;
-    }
-
     let text = app.tree.selected_output();
     let title = if app.focus == FocusPane::Output {
         "Output *"
