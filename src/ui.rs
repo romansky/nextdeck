@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -30,10 +32,10 @@ pub fn layout(area: Rect) -> AppLayout {
         .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
         .split(outer[0]);
 
-    let details_height = if panes[1].height < 10 {
+    let details_height = if panes[1].height < 14 {
         panes[1].height.saturating_sub(3).max(1)
     } else {
-        8
+        12
     };
 
     let right = Layout::default()
@@ -79,9 +81,10 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
 
     let focused = app.focus == FocusPane::Tree;
     let title = format!(
-        "Tests pass:{} fail:{}",
+        "Tests pass:{} fail:{} ign:{}",
         on_off(app.tree.view_filter.show_success),
-        on_off(app.tree.view_filter.show_failed)
+        on_off(app.tree.view_filter.show_failed),
+        on_off(app.tree.view_filter.show_ignored)
     );
     let list = List::new(items)
         .block(theme.panel_block(&title, focused))
@@ -136,10 +139,23 @@ fn tree_item<'a>(depth: usize, node: &TestNode, selected: bool, theme: &Theme) -
         Span::styled(indent, row_style),
         Span::styled(fold, row_style),
         Span::styled(" ", row_style),
-        Span::styled(node.status.symbol(), status_style),
+        Span::styled(status_code(node.status), status_style),
+        Span::styled(" ", row_style),
+        Span::styled(duration_field(node.duration()), row_style),
         Span::styled(" ", row_style),
         Span::styled(node_label(node), if selected { row_style } else { status_style }),
     ]))
+}
+
+fn status_code(status: TestStatus) -> &'static str {
+    match status {
+        TestStatus::Pending => "WAIT",
+        TestStatus::Running => "RUN ",
+        TestStatus::Passed => "PASS",
+        TestStatus::Failed => "FAIL",
+        TestStatus::Ignored => "IGNR",
+        TestStatus::Skipped => "SKIP",
+    }
 }
 
 fn node_label(node: &TestNode) -> String {
@@ -165,23 +181,36 @@ fn selected_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
         return vec![Line::styled("No selection", theme.muted())];
     };
 
+    let mut lines = run_details(app, theme);
+    lines.push(Line::from(""));
+    lines.push(Line::styled("Selection", theme.title(false)));
+
     match &node.kind {
-        NodeKind::Workspace => vec![
+        NodeKind::Workspace => {
+            lines.extend([
             detail_line("kind", "workspace", theme.text(), theme),
             detail_status_line(node.status, theme),
             detail_line("path", app.tree.selected_path(), theme.text(), theme),
-        ],
-        NodeKind::Package { name } => vec![
+            ]);
+        }
+        NodeKind::Package { name } => {
+            lines.extend([
             detail_line("kind", "package", theme.text(), theme),
             detail_line("pkg", name.clone(), theme.accent(), theme),
             detail_status_line(node.status, theme),
-        ],
-        NodeKind::Module { path } => vec![
+            detail_line("duration", duration_label(node), theme.text(), theme),
+            ]);
+        }
+        NodeKind::Module { path } => {
+            lines.extend([
             detail_line("kind", "module", theme.text(), theme),
             detail_line("module", path.clone(), theme.accent(), theme),
             detail_status_line(node.status, theme),
-        ],
-        NodeKind::Test(test) => vec![
+            detail_line("duration", duration_label(node), theme.text(), theme),
+            ]);
+        }
+        NodeKind::Test(test) => {
+            lines.extend([
             detail_line("kind", "test", theme.text(), theme),
             detail_status_line(node.status, theme),
             detail_line("pkg", test.package.clone(), theme.accent(), theme),
@@ -189,8 +218,28 @@ fn selected_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
             detail_line("module", test.module.clone().unwrap_or_else(|| "-".to_owned()), theme.text(), theme),
             detail_line("test", test.full_name.clone(), theme.accent(), theme),
             detail_line("duration", duration_label(node), theme.text(), theme),
-        ],
+            ]);
+        }
     }
+
+    lines
+}
+
+fn run_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
+    let (finished, total) = app.run_progress();
+    vec![
+        Line::styled("Run", theme.title(false)),
+        detail_line(
+            "run id",
+            app.run.run_id.clone().unwrap_or_else(|| "-".to_owned()),
+            theme.text(),
+            theme,
+        ),
+        detail_line("status", app.run_status_label(), theme.text(), theme),
+        detail_line("profile", app.run.profile.clone(), theme.accent(), theme),
+        detail_line("duration", run_duration_label(app), theme.text(), theme),
+        detail_line("progress", format!("{finished}/{total}"), theme.text(), theme),
+    ]
 }
 
 fn detail_line(
@@ -210,10 +259,25 @@ fn detail_status_line(status: TestStatus, theme: &Theme) -> Line<'static> {
 }
 
 fn duration_label(node: &TestNode) -> String {
-    node.output
-        .duration
-        .map(|duration| format!("{:.3}s", duration.as_secs_f64()))
+    node.duration()
+        .map(format_duration)
         .unwrap_or_else(|| "-".to_owned())
+}
+
+fn run_duration_label(app: &App) -> String {
+    app.run_duration()
+        .map(format_duration)
+        .unwrap_or_else(|| "-".to_owned())
+}
+
+fn duration_field(duration: Option<Duration>) -> String {
+    duration
+        .map(|duration| format!("[{:>8.3}s]", duration.as_secs_f64()))
+        .unwrap_or_else(|| "[        ]".to_owned())
+}
+
+fn format_duration(duration: Duration) -> String {
+    format!("{:.3}s", duration.as_secs_f64())
 }
 
 fn status_label(status: TestStatus) -> &'static str {
@@ -290,6 +354,7 @@ fn draw_help(frame: &mut Frame<'_>, theme: &Theme) {
         Line::styled("View", theme.title(true)),
         help_line("s", "toggle successful tests", theme),
         help_line("x", "toggle failed tests", theme),
+        help_line("i", "toggle ignored tests", theme),
         Line::from(""),
         Line::styled("Output", theme.title(true)),
         help_line("End", "follow output bottom", theme),

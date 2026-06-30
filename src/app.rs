@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use crate::{
     command::{AppCommand, CommandContext},
     git_status::GitStatus,
@@ -26,6 +28,7 @@ pub struct App {
     pub output_page_size: u16,
     pub discovery: DiscoveryState,
     pub git_status: GitStatus,
+    pub run: RunState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,6 +42,29 @@ pub struct DiscoveryState {
     pub running: bool,
     pub ticks: usize,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RunState {
+    pub active: bool,
+    pub run_id: Option<String>,
+    pub profile: String,
+    pub scope: RunScope,
+    started_at: Option<Instant>,
+    finished_duration: Option<Duration>,
+}
+
+impl Default for RunState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            run_id: None,
+            profile: "default".to_owned(),
+            scope: RunScope::Workspace,
+            started_at: None,
+            finished_duration: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -65,6 +91,7 @@ impl App {
             output_page_size: 1,
             discovery: DiscoveryState::default(),
             git_status: GitStatus::unknown(),
+            run: RunState::default(),
         }
     }
 
@@ -310,6 +337,10 @@ impl App {
                 self.toggle_show_failed();
                 AppEffect::None
             }
+            AppCommand::ToggleShowIgnored => {
+                self.toggle_show_ignored();
+                AppEffect::None
+            }
             AppCommand::SelectNextFailed => {
                 self.select_next_failed();
                 AppEffect::None
@@ -409,6 +440,19 @@ impl App {
         );
     }
 
+    pub fn toggle_show_ignored(&mut self) {
+        let mut filter = self.tree.view_filter;
+        filter.show_ignored = !filter.show_ignored;
+        self.tree.set_view_filter(filter);
+        self.ensure_tree_selection_visible();
+        self.output_scroll = 0;
+        self.output_follow = true;
+        self.status = format!(
+            "Show ignored tests: {}",
+            if filter.show_ignored { "on" } else { "off" }
+        );
+    }
+
     pub fn scroll_output_up(&mut self, amount: u16) {
         self.output_scroll = self.output_scroll.saturating_sub(amount.max(1));
         self.output_follow = false;
@@ -445,12 +489,26 @@ impl App {
         self.tree.mark_scope_pending(&request.scope);
         self.status = format!("Running {}", request.scope.label());
         self.running = true;
+        self.run.active = true;
+        self.run.run_id = None;
+        self.run.scope = request.scope.clone();
+        self.run.started_at = Some(Instant::now());
+        self.run.finished_duration = None;
         self.output_follow = true;
         true
     }
 
     pub fn apply_run_event(&mut self, event: RunEvent) {
         let finished = match event {
+            RunEvent::RunMetadata { run_id, profile } => {
+                if let Some(run_id) = run_id {
+                    self.run.run_id = Some(run_id);
+                }
+                if let Some(profile) = profile {
+                    self.run.profile = profile;
+                }
+                false
+            }
             RunEvent::TestStarted { key } => {
                 self.tree.update_status(&key, TestStatus::Running);
                 false
@@ -481,12 +539,39 @@ impl App {
 
         if finished {
             self.running = false;
+            self.run.active = false;
+            self.run.finished_duration = self
+                .run
+                .started_at
+                .map(|started_at| started_at.elapsed());
             let counts = self.tree.status_counts();
             self.status = format!(
                 "Done: {} passed, {} failed, {} skipped, {} ignored",
                 counts.passed, counts.failed, counts.skipped, counts.ignored
             );
         }
+    }
+
+    pub fn run_status_label(&self) -> &'static str {
+        if self.run.active {
+            "running"
+        } else if self.run.finished_duration.is_some() {
+            "complete"
+        } else {
+            "not running"
+        }
+    }
+
+    pub fn run_duration(&self) -> Option<Duration> {
+        if self.run.active {
+            self.run.started_at.map(|started_at| started_at.elapsed())
+        } else {
+            self.run.finished_duration
+        }
+    }
+
+    pub fn run_progress(&self) -> (usize, usize) {
+        self.tree.progress_for_scope(&self.run.scope)
     }
 
     pub fn failed_scope(&self) -> Option<RunScope> {

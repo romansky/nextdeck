@@ -34,23 +34,11 @@ pub enum TestStatus {
     Skipped,
 }
 
-impl TestStatus {
-    pub fn symbol(self) -> &'static str {
-        match self {
-            Self::Pending => "o",
-            Self::Running => ">",
-            Self::Passed => "+",
-            Self::Failed => "x",
-            Self::Ignored => "-",
-            Self::Skipped => "~",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TestViewFilter {
     pub show_success: bool,
     pub show_failed: bool,
+    pub show_ignored: bool,
 }
 
 impl Default for TestViewFilter {
@@ -58,6 +46,7 @@ impl Default for TestViewFilter {
         Self {
             show_success: true,
             show_failed: true,
+            show_ignored: true,
         }
     }
 }
@@ -67,7 +56,8 @@ impl TestViewFilter {
         match status {
             TestStatus::Passed => self.show_success,
             TestStatus::Failed => self.show_failed,
-            TestStatus::Pending | TestStatus::Running | TestStatus::Ignored | TestStatus::Skipped => true,
+            TestStatus::Ignored => self.show_ignored,
+            TestStatus::Pending | TestStatus::Running | TestStatus::Skipped => true,
         }
     }
 }
@@ -100,6 +90,22 @@ impl TestNode {
             expanded: true,
             children: Vec::new(),
         }
+    }
+
+    pub fn duration(&self) -> Option<Duration> {
+        if matches!(self.kind, NodeKind::Test(_)) {
+            return self.output.duration;
+        }
+
+        let mut total = Duration::ZERO;
+        let mut has_duration = false;
+        for child in &self.children {
+            if let Some(duration) = child.duration() {
+                total += duration;
+                has_duration = true;
+            }
+        }
+        has_duration.then_some(total)
     }
 }
 
@@ -347,6 +353,26 @@ impl Tree {
         counts
     }
 
+    pub fn progress_for_scope(&self, scope: &crate::nextest::RunScope) -> (usize, usize) {
+        let mut finished = 0;
+        let mut total = 0;
+        visit(&self.root, &mut |node| {
+            if let NodeKind::Test(test) = &node.kind
+                && scope.matches_test(test)
+                && !test.ignored
+            {
+                total += 1;
+                if matches!(
+                    node.status,
+                    TestStatus::Passed | TestStatus::Failed | TestStatus::Skipped
+                ) {
+                    finished += 1;
+                }
+            }
+        });
+        (finished, total)
+    }
+
     fn insert_test(&mut self, test: DiscoveredTest) {
         let package_index = child_position(&self.root, &test.package).unwrap_or_else(|| {
             self.root.children.push(TestNode::new(
@@ -477,11 +503,15 @@ fn recompute_node_status(node: &mut TestNode) -> TestStatus {
         return node.status;
     }
 
-    let mut aggregate = TestStatus::Pending;
+    let mut aggregate = None;
     for child in &mut node.children {
         let status = recompute_node_status(child);
-        aggregate = merge_status(aggregate, status);
+        aggregate = Some(match aggregate {
+            Some(current) => merge_status(current, status),
+            None => status,
+        });
     }
+    let aggregate = aggregate.unwrap_or(TestStatus::Pending);
     node.status = aggregate;
     aggregate
 }
@@ -672,6 +702,7 @@ mod tests {
         tree.set_view_filter(TestViewFilter {
             show_success: false,
             show_failed: true,
+            show_ignored: true,
         });
         let labels = visible_labels(&tree);
         assert!(!labels.contains(&"passed".to_owned()));
@@ -681,10 +712,49 @@ mod tests {
         tree.set_view_filter(TestViewFilter {
             show_success: true,
             show_failed: false,
+            show_ignored: true,
         });
         let labels = visible_labels(&tree);
         assert!(labels.contains(&"passed".to_owned()));
         assert!(!labels.contains(&"failed".to_owned()));
+        assert!(labels.contains(&"pending".to_owned()));
+    }
+
+    #[test]
+    fn parent_status_passes_when_all_children_pass() {
+        let mut tree = Tree::from_tests(vec![
+            discovered_test("demo::demo", "demo", "tests", "one"),
+            discovered_test("demo::demo", "demo", "tests", "two"),
+        ]);
+
+        set_test_status(&mut tree, "tests::one", TestStatus::Passed);
+        set_test_status(&mut tree, "tests::two", TestStatus::Passed);
+
+        assert_eq!(tree.root.status, TestStatus::Passed);
+        let labels = tree
+            .visible_rows()
+            .into_iter()
+            .map(|(_, node)| (node.label.clone(), node.status))
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&("tests".to_owned(), TestStatus::Passed)));
+    }
+
+    #[test]
+    fn view_filter_hides_ignored_test_rows() {
+        let mut tree = Tree::from_tests(vec![
+            discovered_test("demo::demo", "demo", "tests", "ignored"),
+            discovered_test("demo::demo", "demo", "tests", "pending"),
+        ]);
+        set_test_status(&mut tree, "tests::ignored", TestStatus::Ignored);
+
+        tree.set_view_filter(TestViewFilter {
+            show_success: true,
+            show_failed: true,
+            show_ignored: false,
+        });
+
+        let labels = visible_labels(&tree);
+        assert!(!labels.contains(&"ignored".to_owned()));
         assert!(labels.contains(&"pending".to_owned()));
     }
 
@@ -699,6 +769,7 @@ mod tests {
         tree.set_view_filter(TestViewFilter {
             show_success: false,
             show_failed: true,
+            show_ignored: false,
         });
 
         tree.refresh_from_tests(vec![discovered_test(
@@ -710,6 +781,7 @@ mod tests {
 
         assert!(!tree.view_filter.show_success);
         assert!(tree.view_filter.show_failed);
+        assert!(!tree.view_filter.show_ignored);
         assert!(visible_labels(&tree).contains(&"new".to_owned()));
     }
 

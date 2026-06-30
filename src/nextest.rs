@@ -80,6 +80,10 @@ impl RunScope {
 
 #[derive(Debug, Clone)]
 pub enum RunEvent {
+    RunMetadata {
+        run_id: Option<String>,
+        profile: Option<String>,
+    },
     TestStarted {
         key: TestKey,
     },
@@ -163,6 +167,9 @@ impl NextestClient {
                     Some(event) => {
                         let _ = stdout_tx.send(event);
                     }
+                    None if let Some(event) = parse_runner_line(&line) => {
+                        let _ = stdout_tx.send(event);
+                    }
                     None if !line.trim().is_empty() => {
                         let _ = stdout_tx.send(RunEvent::RunnerOutput(line));
                     }
@@ -176,7 +183,9 @@ impl NextestClient {
         let stderr_task = tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Some(line) = lines.next_line().await? {
-                if !line.trim().is_empty() {
+                if let Some(event) = parse_runner_line(&line) {
+                    let _ = stderr_tx.send(event);
+                } else if !line.trim().is_empty() {
                     let _ = stderr_tx.send(RunEvent::RunnerOutput(line));
                 }
             }
@@ -278,6 +287,16 @@ fn parse_run_line(line: &str) -> Option<RunEvent> {
         "suite" => parse_suite_record(record),
         _ => None,
     }
+}
+
+fn parse_runner_line(line: &str) -> Option<RunEvent> {
+    let line = line.trim();
+    let rest = line.strip_prefix("Nextest run ID ")?;
+    let (run_id, profile) = rest.split_once(" with nextest profile: ")?;
+    Some(RunEvent::RunMetadata {
+        run_id: Some(run_id.to_owned()),
+        profile: Some(profile.to_owned()),
+    })
 }
 
 fn parse_test_record(value: Value, record: LibtestRecord) -> Option<RunEvent> {
@@ -394,6 +413,22 @@ mod tests {
                 assert_eq!(key.binary_id.as_deref(), Some("demo"));
                 assert_eq!(key.event_prefix, None);
                 assert_eq!(key.name, "tests::it_works");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_nextest_run_metadata_banner() {
+        let line = " Nextest run ID 5d1f9f3a-f808-42cd-bdf9-3863de01b4d7 with nextest profile: default";
+        let event = parse_runner_line(line).expect("event");
+        match event {
+            RunEvent::RunMetadata { run_id, profile } => {
+                assert_eq!(
+                    run_id.as_deref(),
+                    Some("5d1f9f3a-f808-42cd-bdf9-3863de01b4d7")
+                );
+                assert_eq!(profile.as_deref(), Some("default"));
             }
             other => panic!("unexpected event: {other:?}"),
         }
