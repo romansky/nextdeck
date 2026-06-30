@@ -347,13 +347,38 @@ fn status_label(status: TestStatus) -> &'static str {
 fn draw_output(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     let text = app.tree.selected_output();
     let focused = app.focus == FocusPane::Output;
+    let title = output_title(app, &text);
     let output = Paragraph::new(text)
         .style(theme.text())
-        .block(theme.panel_block("Output", focused))
+        .block(theme.panel_block(&title, focused))
         .wrap(Wrap { trim: false })
         .scroll((app.output_scroll, 0));
     frame.render_widget(Clear, area);
     frame.render_widget(output, area);
+}
+
+fn output_title(app: &App, text: &str) -> String {
+    let total = text.lines().count().max(1);
+    let visible = app.output_page_size.max(1) as usize;
+    if total <= visible {
+        return format!("Output All {total}/{total}");
+    }
+
+    let top = (app.output_scroll as usize).min(total.saturating_sub(1));
+    let bottom = top.saturating_add(visible).min(total);
+    let position = if top == 0 {
+        "Top"
+    } else if bottom == total {
+        "Bot"
+    } else {
+        ""
+    };
+
+    if position.is_empty() {
+        format!("Output {}-{bottom}/{total}", top + 1)
+    } else {
+        format!("Output {position} {}-{bottom}/{total}", top + 1)
+    }
 }
 
 fn draw_status(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: ratatui::layout::Rect) {
@@ -467,4 +492,34 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tree::Tree;
+
+    #[test]
+    fn output_title_shows_all_when_text_fits() {
+        let mut app = App::new(Tree::from_tests(Vec::new()));
+        app.output_page_size = 5;
+
+        assert_eq!(output_title(&app, "one\ntwo"), "Output All 2/2");
+    }
+
+    #[test]
+    fn output_title_shows_top_middle_and_bottom_ranges() {
+        let mut app = App::new(Tree::from_tests(Vec::new()));
+        app.output_page_size = 3;
+        let text = "1\n2\n3\n4\n5\n6";
+
+        app.output_scroll = 0;
+        assert_eq!(output_title(&app, text), "Output Top 1-3/6");
+
+        app.output_scroll = 2;
+        assert_eq!(output_title(&app, text), "Output 3-5/6");
+
+        app.output_scroll = 3;
+        assert_eq!(output_title(&app, text), "Output Bot 4-6/6");
+    }
 }
