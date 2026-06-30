@@ -1,4 +1,8 @@
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use nextest_metadata::{FilterMatch, TestListSummary};
@@ -108,6 +112,10 @@ impl NextestClient {
             current_dir,
             passthrough_args,
         }
+    }
+
+    pub fn current_dir(&self) -> Option<&Path> {
+        self.current_dir.as_deref()
     }
 
     pub async fn discover(&self) -> Result<Vec<DiscoveredTest>> {

@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use crate::{
     app::{App, AppEffect},
     command::{AppCommand, command_for_input},
+    git_status,
     input::InputSource,
     nextest::{DiscoveryEvent, NextestClient, RunEvent, RunRequest},
     queue::{self, QueueEvent, QueueSender},
@@ -23,10 +24,12 @@ pub async fn run(
     let (queue_tx, queue_rx) = queue::channel();
 
     let discovery = start_discovery(client.clone(), queue_tx.clone());
+    let git_status = start_git_status(client.current_dir().map(ToOwned::to_owned), queue_tx.clone());
     let input = InputSource::start(queue_tx.clone());
     let ticker = queue::start_ticker(queue_tx.clone(), Duration::from_millis(250));
     let result = run_loop(terminal, app, client, run_on_start, queue_tx, queue_rx).await;
     discovery.abort();
+    git_status.abort();
     ticker.abort();
     drop(input);
     result
@@ -74,6 +77,7 @@ fn handle_queue_event(
                 start_run(app, client.clone(), RunRequest::default(), tx);
             }
         }
+        QueueEvent::GitStatus(git_status) => app.apply_git_status(git_status),
         QueueEvent::Run(event) => app.apply_run_event(event),
         QueueEvent::Tick => app.tick(),
     }
@@ -105,6 +109,22 @@ fn start_discovery(
             .await
             .map_err(|error| format!("{error:#}"));
         let _ = tx.send(QueueEvent::Discovery(DiscoveryEvent::Finished(result)));
+    })
+}
+
+fn start_git_status(
+    cwd: Option<std::path::PathBuf>,
+    tx: QueueSender,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(2));
+        loop {
+            ticker.tick().await;
+            let status = git_status::load(cwd.clone()).await;
+            if tx.send(QueueEvent::GitStatus(status)).is_err() {
+                break;
+            }
+        }
     })
 }
 

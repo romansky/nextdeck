@@ -1,5 +1,6 @@
 use crate::{
     command::{AppCommand, CommandContext},
+    git_status::GitStatus,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
     tree::{NodeKind, TestStatus, Tree},
 };
@@ -24,6 +25,7 @@ pub struct App {
     pub tree_page_size: usize,
     pub output_page_size: u16,
     pub discovery: DiscoveryState,
+    pub git_status: GitStatus,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +63,7 @@ impl App {
             tree_page_size: 1,
             output_page_size: 1,
             discovery: DiscoveryState::default(),
+            git_status: GitStatus::unknown(),
         }
     }
 
@@ -162,6 +165,10 @@ impl App {
                 false
             }
         }
+    }
+
+    pub fn apply_git_status(&mut self, git_status: GitStatus) {
+        self.git_status = git_status;
     }
 
     pub fn is_discovering(&self) -> bool {
@@ -445,29 +452,14 @@ impl App {
     }
 
     pub fn status_line(&self) -> String {
-        let counts = self.tree.status_counts();
-        let focus = match self.focus {
-            FocusPane::Tree => "tree",
-            FocusPane::Output => "output",
-        };
-        if self.discovery.running {
-            return format!(
-                "{} {}s | key:{} | q quit | h/? help",
-                self.status,
-                self.discovery_elapsed_seconds(),
-                self.key_echo_text()
-            );
-        }
         format!(
-            "{} | key:{} | {} | h/? help | {} | {} passed  {} failed  {} running  {} pending",
-            self.status,
-            self.key_echo_text(),
-            focus,
-            self.tree.selected_path(),
-            counts.passed,
-            counts.failed,
-            counts.running,
-            counts.pending
+            "{}|unstaged: {}:{}|staged: {}:{}| key:{}",
+            self.git_status.branch,
+            self.git_status.unstaged.added,
+            self.git_status.unstaged.deleted,
+            self.git_status.staged.added,
+            self.git_status.staged.deleted,
+            self.key_echo_text()
         )
     }
 

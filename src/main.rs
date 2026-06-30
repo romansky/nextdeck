@@ -1,5 +1,6 @@
 mod app;
 mod command;
+mod git_status;
 mod input;
 mod nextest;
 mod output;

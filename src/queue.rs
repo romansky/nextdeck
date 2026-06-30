@@ -3,6 +3,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::{
+    git_status::GitStatus,
     input::InputEvent,
     nextest::{DiscoveryEvent, RunEvent},
 };
@@ -11,6 +12,7 @@ use crate::{
 pub enum QueueEvent {
     Input(InputEvent),
     Discovery(DiscoveryEvent),
+    GitStatus(GitStatus),
     Run(RunEvent),
     Tick,
 }
