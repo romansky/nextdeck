@@ -17,7 +17,6 @@ use app::App;
 use clap::Parser;
 use nextest::NextestClient;
 use terminal::TerminalSession;
-use tree::Tree;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Terminal-native UI for cargo-nextest")]
@@ -50,14 +49,14 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let run_on_start = cli.run;
     let client = NextestClient::new(cli.manifest_path, cli.current_dir, cli.nextest_args);
-    let tests = client.discover().await?;
     if cli.list_json {
+        let tests = client.discover().await?;
         serde_json::to_writer_pretty(io::stdout(), &tests)?;
         println!();
         return Ok(());
     }
 
-    let mut app = App::new(Tree::from_tests(tests));
+    let mut app = App::discovering();
     let mut terminal = TerminalSession::enter()?;
     let result = runner::run(terminal.terminal_mut(), &mut app, &client, run_on_start).await;
     terminal.restore()?;

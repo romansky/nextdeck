@@ -8,7 +8,7 @@ use crate::{
     app::{App, AppEffect},
     command::{AppCommand, command_for_input},
     input::InputSource,
-    nextest::{NextestClient, RunEvent, RunRequest},
+    nextest::{DiscoveryEvent, NextestClient, RunEvent, RunRequest},
     queue::{self, QueueEvent, QueueSender},
     terminal::AppTerminal,
     ui,
@@ -22,13 +22,11 @@ pub async fn run(
 ) -> Result<()> {
     let (queue_tx, queue_rx) = queue::channel();
 
-    if run_on_start {
-        start_run(app, client.clone(), RunRequest::default(), queue_tx.clone());
-    }
-
+    let discovery = start_discovery(client.clone(), queue_tx.clone());
     let input = InputSource::start(queue_tx.clone());
     let ticker = queue::start_ticker(queue_tx.clone(), Duration::from_millis(250));
-    let result = run_loop(terminal, app, client, queue_tx, queue_rx).await;
+    let result = run_loop(terminal, app, client, run_on_start, queue_tx, queue_rx).await;
+    discovery.abort();
     ticker.abort();
     drop(input);
     result
@@ -38,6 +36,7 @@ async fn run_loop(
     terminal: &mut AppTerminal,
     app: &mut App,
     client: &NextestClient,
+    run_on_start: bool,
     queue_tx: QueueSender,
     mut queue_rx: queue::QueueReceiver,
 ) -> Result<()> {
@@ -49,12 +48,18 @@ async fn run_loop(
         let Some(event) = queue_rx.recv().await else {
             break;
         };
-        handle_queue_event(app, client, event, queue_tx.clone());
+        handle_queue_event(app, client, run_on_start, event, queue_tx.clone());
     }
     Ok(())
 }
 
-fn handle_queue_event(app: &mut App, client: &NextestClient, event: QueueEvent, tx: QueueSender) {
+fn handle_queue_event(
+    app: &mut App,
+    client: &NextestClient,
+    run_on_start: bool,
+    event: QueueEvent,
+    tx: QueueSender,
+) {
     match event {
         QueueEvent::Input(input) => {
             let command = command_for_input(&input, app.command_context());
@@ -63,6 +68,11 @@ fn handle_queue_event(app: &mut App, client: &NextestClient, event: QueueEvent, 
             }
             let effect = app.apply_command(command);
             handle_effect(app, client, effect, tx);
+        }
+        QueueEvent::Discovery(event) => {
+            if app.apply_discovery_event(event) && run_on_start {
+                start_run(app, client.clone(), RunRequest::default(), tx);
+            }
         }
         QueueEvent::Run(event) => app.apply_run_event(event),
         QueueEvent::Tick => app.tick(),
@@ -83,6 +93,19 @@ fn handle_effect(app: &mut App, client: &NextestClient, effect: AppEffect, tx: Q
             start_run(app, client.clone(), request, tx);
         }
     }
+}
+
+fn start_discovery(
+    client: NextestClient,
+    tx: QueueSender,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let result = client
+            .discover()
+            .await
+            .map_err(|error| format!("{error:#}"));
+        let _ = tx.send(QueueEvent::Discovery(DiscoveryEvent::Finished(result)));
+    })
 }
 
 fn start_run(app: &mut App, client: NextestClient, request: RunRequest, tx: QueueSender) {

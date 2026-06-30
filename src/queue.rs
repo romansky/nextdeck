@@ -2,11 +2,15 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use crate::{input::InputEvent, nextest::RunEvent};
+use crate::{
+    input::InputEvent,
+    nextest::{DiscoveryEvent, RunEvent},
+};
 
 #[derive(Debug, Clone)]
 pub enum QueueEvent {
     Input(InputEvent),
+    Discovery(DiscoveryEvent),
     Run(RunEvent),
     Tick,
 }

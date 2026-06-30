@@ -1,6 +1,6 @@
 use crate::{
     command::{AppCommand, CommandContext},
-    nextest::{RunEvent, RunRequest, RunScope},
+    nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
     tree::{NodeKind, TestStatus, Tree},
 };
 
@@ -23,12 +23,20 @@ pub struct App {
     pub show_help: bool,
     pub tree_page_size: usize,
     pub output_page_size: u16,
+    pub discovery: DiscoveryState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KeyEcho {
     pub text: String,
     ticks_remaining: u8,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DiscoveryState {
+    pub running: bool,
+    pub ticks: usize,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -52,7 +60,14 @@ impl App {
             show_help: false,
             tree_page_size: 1,
             output_page_size: 1,
+            discovery: DiscoveryState::default(),
         }
+    }
+
+    pub fn discovering() -> Self {
+        let mut app = Self::new(Tree::from_tests(Vec::new()));
+        app.begin_discovery();
+        app
     }
 
     pub fn prepare_frame(&mut self, tree_height: u16, output_height: u16) {
@@ -107,12 +122,59 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        if self.discovery.running {
+            self.discovery.ticks = self.discovery.ticks.saturating_add(1);
+        }
         if let Some(echo) = &mut self.key_echo {
             echo.ticks_remaining = echo.ticks_remaining.saturating_sub(1);
             if echo.ticks_remaining == 0 {
                 self.key_echo = None;
             }
         }
+    }
+
+    pub fn begin_discovery(&mut self) {
+        self.discovery = DiscoveryState {
+            running: true,
+            ticks: 0,
+            error: None,
+        };
+        self.status = "Discovering tests".to_owned();
+    }
+
+    pub fn apply_discovery_event(&mut self, event: DiscoveryEvent) -> bool {
+        match event {
+            DiscoveryEvent::Finished(Ok(tests)) => {
+                let count = tests.len();
+                self.tree = Tree::from_tests(tests);
+                self.tree_scroll = 0;
+                self.output_scroll = 0;
+                self.output_follow = true;
+                self.discovery.running = false;
+                self.discovery.error = None;
+                self.status = format!("Discovered {count} test(s)");
+                true
+            }
+            DiscoveryEvent::Finished(Err(error)) => {
+                self.discovery.running = false;
+                self.discovery.error = Some(error);
+                self.status = "Discovery failed".to_owned();
+                false
+            }
+        }
+    }
+
+    pub fn is_discovering(&self) -> bool {
+        self.discovery.running
+    }
+
+    pub fn discovery_spinner(&self) -> &'static str {
+        const FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
+        FRAMES[self.discovery.ticks % FRAMES.len()]
+    }
+
+    pub fn discovery_elapsed_seconds(&self) -> usize {
+        self.discovery.ticks / 4
     }
 
     pub fn apply_command(&mut self, command: AppCommand) -> AppEffect {
@@ -198,10 +260,21 @@ impl App {
                 }
                 AppEffect::None
             }
-            AppCommand::RunSelected => AppEffect::StartRun(RunRequest {
-                scope: self.selected_scope(),
-            }),
+            AppCommand::RunSelected => {
+                if self.discovery.running {
+                    self.status = "Discovering tests".to_owned();
+                    AppEffect::None
+                } else {
+                    AppEffect::StartRun(RunRequest {
+                        scope: self.selected_scope(),
+                    })
+                }
+            }
             AppCommand::RunFailed => {
+                if self.discovery.running {
+                    self.status = "Discovering tests".to_owned();
+                    return AppEffect::None;
+                }
                 if let Some(scope) = self.failed_scope() {
                     AppEffect::StartRun(RunRequest { scope })
                 } else {
@@ -377,6 +450,14 @@ impl App {
             FocusPane::Tree => "tree",
             FocusPane::Output => "output",
         };
+        if self.discovery.running {
+            return format!(
+                "{} {}s | key:{} | q quit | h/? help",
+                self.status,
+                self.discovery_elapsed_seconds(),
+                self.key_echo_text()
+            );
+        }
         format!(
             "{} | key:{} | {} | h/? help | {} | {} passed  {} failed  {} running  {} pending",
             self.status,

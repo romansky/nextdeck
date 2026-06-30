@@ -1,7 +1,7 @@
 use std::{path::PathBuf, process::Stdio, time::Duration};
 
-use anyhow::{Context, Result};
-use nextest_metadata::{FilterMatch, ListCommand, TestListSummary};
+use anyhow::{Context, Result, bail};
+use nextest_metadata::{FilterMatch, TestListSummary};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::{
@@ -92,6 +92,11 @@ pub enum RunEvent {
     },
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum DiscoveryEvent {
+    Finished(Result<Vec<DiscoveredTest>, String>),
+}
+
 impl NextestClient {
     pub fn new(
         manifest_path: Option<PathBuf>,
@@ -106,11 +111,23 @@ impl NextestClient {
     }
 
     pub async fn discover(&self) -> Result<Vec<DiscoveredTest>> {
-        let client = self.clone();
-        let summary = tokio::task::spawn_blocking(move || client.list_command().exec())
+        let mut command = self.list_command();
+        let output = command
+            .kill_on_drop(true)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
             .await
-            .context("joining nextest list task")?
             .context("running cargo nextest list --message-format=json")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("cargo nextest list exited with {}: {}", output.status, stderr.trim());
+        }
+
+        let summary = serde_json::from_slice::<TestListSummary>(&output.stdout)
+            .context("parsing cargo nextest list JSON")?;
         Ok(summary_to_tests(summary))
     }
 
@@ -121,6 +138,7 @@ impl NextestClient {
     ) -> Result<()> {
         let mut command = self.run_command(&request);
         let mut child = command
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -166,18 +184,16 @@ impl NextestClient {
         Ok(())
     }
 
-    fn list_command(&self) -> ListCommand {
-        let mut command = ListCommand::new();
-        if let Some(path) = &self.manifest_path {
-            command.add_args([
-                "--manifest-path".to_owned(),
-                path.to_string_lossy().to_string(),
-            ]);
-        }
+    fn list_command(&self) -> Command {
+        let mut command = Command::new("cargo");
         if let Some(path) = &self.current_dir {
-            command.current_dir(path.to_string_lossy().to_string());
+            command.current_dir(path);
         }
-        command.add_args(self.passthrough_args.clone());
+        command.args(["nextest", "list", "--message-format", "json"]);
+        if let Some(path) = &self.manifest_path {
+            command.args(["--manifest-path", &path.to_string_lossy()]);
+        }
+        command.args(&self.passthrough_args);
         command
     }
 

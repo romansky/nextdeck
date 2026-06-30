@@ -48,6 +48,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn draw_tree(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if app.is_discovering() || app.discovery.error.is_some() {
+        draw_discovery(frame, app, area);
+        return;
+    }
+
     let selected = app.tree.selected_index();
     let rows = app.tree.visible_rows();
     let visible_height = area.height.saturating_sub(2).max(1) as usize;
@@ -73,6 +78,39 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         );
     frame.render_widget(list, area);
+}
+
+fn draw_discovery(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let title = if app.is_discovering() {
+        "Tests *"
+    } else {
+        "Tests"
+    };
+    let lines = if let Some(error) = &app.discovery.error {
+        vec![
+            Line::from("Discovery failed"),
+            Line::from(""),
+            Line::from(error.as_str()),
+            Line::from(""),
+            Line::from("Press q to quit."),
+        ]
+    } else {
+        vec![
+            Line::from(format!(
+                "{} Discovering tests",
+                app.discovery_spinner()
+            )),
+            Line::from(""),
+            Line::from("Running cargo nextest list --message-format json"),
+            Line::from(format!("Elapsed: {}s", app.discovery_elapsed_seconds())),
+            Line::from(""),
+            Line::from("Press q to quit."),
+        ]
+    };
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
 }
 
 fn tree_item<'a>(depth: usize, node: &TestNode, selected: bool) -> ListItem<'a> {
@@ -111,6 +149,19 @@ fn node_label(node: &TestNode) -> String {
 }
 
 fn draw_output(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if app.is_discovering() {
+        let text = vec![
+            Line::from("Preparing test inventory"),
+            Line::from(""),
+            Line::from("Cold discovery may compile test binaries before the list is available."),
+        ];
+        let output = Paragraph::new(text)
+            .block(Block::default().title("Output").borders(Borders::ALL))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(output, area);
+        return;
+    }
+
     let text = app.tree.selected_output();
     let title = if app.focus == FocusPane::Output {
         "Output *"
