@@ -39,7 +39,7 @@ Useful local publishing commands:
 
 - `cargo xtask check --allow-dirty`: run format check, tests, and package verification.
 - `cargo xtask package --allow-dirty`: create and verify `target/package/cargo-test-tui-*.crate`.
-- `cargo xtask publish-local --allow-dirty`: package, then install from the verified package directory.
+- `cargo xtask publish-local --allow-dirty`: package, install from the verified package directory, and verify `PATH` resolves to the installed binary.
 - `cargo xtask install-path`: install directly from the workspace checkout.
 
 Keys:
@@ -53,7 +53,8 @@ Keys:
 - `r`: run selected scope, or all tests from the workspace node
 - `R`: rerun failed tests
 - `f` / `F`: jump to next/previous failure
-- `h` / `?` / `/` / `F1`: show help
+- `h` / `?` / `F1`: show help
+- `/`: search
 - `q`: quit
 
 ## Current checkpoint

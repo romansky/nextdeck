@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 const APP_PACKAGE: &str = "cargo-test-tui";
+const APP_BINARY: &str = "cargo-test-tui";
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Local project automation")]
@@ -133,7 +134,8 @@ fn install_path(workspace: &Path) -> Result<()> {
         workspace,
         "cargo",
         ["install", "--path", ".", "--locked", "--force"],
-    )
+    )?;
+    verify_local_install()
 }
 
 fn install_crate(workspace: &Path, crate_path: &Path) -> Result<()> {
@@ -144,7 +146,91 @@ fn install_crate(workspace: &Path, crate_path: &Path) -> Result<()> {
         workspace,
         "cargo",
         ["install", "--path", crate_arg, "--locked", "--force"],
-    )
+    )?;
+    verify_local_install()
+}
+
+fn verify_local_install() -> Result<()> {
+    let installed = cargo_install_bin_path()?;
+    if !installed.exists() {
+        bail!(
+            "cargo install completed but expected binary was not found at {}",
+            installed.display()
+        );
+    }
+
+    let path_binary = find_on_path(APP_BINARY);
+    let installed = fs::canonicalize(&installed)
+        .with_context(|| format!("canonicalizing installed binary {}", installed.display()))?;
+    let version = command_stdout(&installed, ["--version"])?;
+
+    println!("Installed {} at {}", version.trim(), installed.display());
+
+    match path_binary {
+        Some(path_binary) => {
+            let path_binary = fs::canonicalize(&path_binary)
+                .with_context(|| format!("canonicalizing PATH binary {}", path_binary.display()))?;
+            println!("PATH resolves {APP_BINARY} to {}", path_binary.display());
+            if path_binary != installed {
+                bail!(
+                    "PATH resolves {APP_BINARY} to {}, not the freshly installed binary at {}",
+                    path_binary.display(),
+                    installed.display()
+                );
+            }
+        }
+        None => {
+            bail!(
+                "{APP_BINARY} was installed at {}, but no {APP_BINARY} executable was found on PATH",
+                installed.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn cargo_install_bin_path() -> Result<PathBuf> {
+    let root = if let Some(root) = env::var_os("CARGO_INSTALL_ROOT") {
+        PathBuf::from(root)
+    } else if let Some(home) = env::var_os("CARGO_HOME") {
+        PathBuf::from(home)
+    } else {
+        let home = env::var_os("HOME").context("HOME is not set and CARGO_HOME is not set")?;
+        PathBuf::from(home).join(".cargo")
+    };
+    Ok(root.join("bin").join(exe_name(APP_BINARY)))
+}
+
+fn find_on_path(binary: &str) -> Option<PathBuf> {
+    let path = env::var_os("PATH")?;
+    env::split_paths(&path)
+        .map(|dir| dir.join(exe_name(binary)))
+        .find(|candidate| candidate.is_file())
+}
+
+fn exe_name(binary: &str) -> String {
+    format!("{binary}{}", env::consts::EXE_SUFFIX)
+}
+
+fn command_stdout<I, S>(program: &Path, args: I) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+    print_command(&program.display().to_string(), &args);
+    let output = Command::new(program)
+        .args(&args)
+        .output()
+        .with_context(|| format!("running {}", program.display()))?;
+
+    if !output.status.success() {
+        bail!("{} exited with {}", program.display(), output.status);
+    }
+
+    String::from_utf8(output.stdout)
+        .with_context(|| format!("{} stdout was not UTF-8", program.display()))
 }
 
 fn package_version(workspace: &Path) -> Result<String> {
