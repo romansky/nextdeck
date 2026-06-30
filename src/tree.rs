@@ -221,10 +221,7 @@ impl Tree {
             if matches!(node.kind, NodeKind::Test(_)) {
                 return node.output.display_text();
             }
-            let failures = failed_descendants(node);
-            if !failures.is_empty() {
-                return failures.join("\n\n");
-            }
+            return descendant_outputs(node);
         }
 
         if self.runner_output.is_empty() {
@@ -457,18 +454,59 @@ fn node_matches(node: &TestNode, key: &TestKey) -> bool {
     }
 }
 
-fn failed_descendants(node: &TestNode) -> Vec<String> {
-    let mut failures = Vec::new();
+fn descendant_outputs(node: &TestNode) -> String {
+    let mut outputs = Vec::new();
     visit(node, &mut |child| {
-        if child.status == TestStatus::Failed
-            && let NodeKind::Test(test) = &child.kind
+        if let NodeKind::Test(test) = &child.kind
+            && has_observable_output(child)
         {
-            let mut text = format!("{}::{}\n", test.package, test.full_name);
-            text.push_str(&child.output.display_text());
-            failures.push(text);
+            outputs.push(format!(
+                "{}::{} [{}]\n{}",
+                test.package,
+                test.full_name,
+                status_label(child.status),
+                child.output.display_text()
+            ));
         }
     });
-    failures
+
+    if outputs.is_empty() {
+        if descendant_test_count(node) == 0 {
+            "No tests under this selection".to_owned()
+        } else {
+            "No captured output for tests under this selection yet".to_owned()
+        }
+    } else {
+        outputs.join("\n\n")
+    }
+}
+
+fn has_observable_output(node: &TestNode) -> bool {
+    node.status != TestStatus::Pending
+        || node.output.duration.is_some()
+        || !node.output.stdout.is_empty()
+        || !node.output.stderr.is_empty()
+}
+
+fn descendant_test_count(node: &TestNode) -> usize {
+    let mut count = 0;
+    visit(node, &mut |child| {
+        if matches!(child.kind, NodeKind::Test(_)) {
+            count += 1;
+        }
+    });
+    count
+}
+
+fn status_label(status: TestStatus) -> &'static str {
+    match status {
+        TestStatus::Pending => "pending",
+        TestStatus::Running => "running",
+        TestStatus::Passed => "passed",
+        TestStatus::Failed => "failed",
+        TestStatus::Ignored => "ignored",
+        TestStatus::Skipped => "skipped",
+    }
 }
 
 #[cfg(test)]
@@ -499,5 +537,84 @@ mod tests {
             tree.root.children[0].children[0].children[0].children[0].label,
             "works"
         );
+    }
+
+    #[test]
+    fn module_output_shows_descendant_tests_not_runner_output() {
+        let mut tree = Tree::from_tests(vec![
+            discovered_test("demo::demo", "demo", "tests", "works"),
+            discovered_test("demo::demo", "demo", "tests", "also_works"),
+        ]);
+
+        tree.finish_test(
+            &TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: "tests::works".to_owned(),
+            },
+            TestStatus::Passed,
+            "hello from works".to_owned(),
+            String::new(),
+            Some(std::time::Duration::from_millis(12)),
+        );
+        tree.finish_test(
+            &TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: "tests::also_works".to_owned(),
+            },
+            TestStatus::Passed,
+            "hello from also_works".to_owned(),
+            String::new(),
+            Some(std::time::Duration::from_millis(20)),
+        );
+        tree.append_runner_output("unrelated runner line".to_owned());
+
+        tree.select_next();
+        tree.select_next();
+
+        let output = tree.selected_output();
+        assert!(output.contains("demo::tests::works [passed]"));
+        assert!(output.contains("hello from works"));
+        assert!(output.contains("demo::tests::also_works [passed]"));
+        assert!(output.contains("hello from also_works"));
+        assert!(!output.contains("unrelated runner line"));
+    }
+
+    #[test]
+    fn pending_module_output_stays_scoped_and_short() {
+        let mut tree = Tree::from_tests(vec![discovered_test(
+            "demo::demo",
+            "demo",
+            "tests",
+            "works",
+        )]);
+        tree.append_runner_output("unrelated runner line".to_owned());
+
+        tree.select_next();
+        tree.select_next();
+
+        let output = tree.selected_output();
+        assert_eq!(
+            output,
+            "No captured output for tests under this selection yet"
+        );
+    }
+
+    fn discovered_test(binary_id: &str, package: &str, module: &str, name: &str) -> DiscoveredTest {
+        DiscoveredTest {
+            key: TestKey {
+                binary_id: Some(binary_id.to_owned()),
+                event_prefix: Some(binary_id.to_owned()),
+                name: format!("{module}::{name}"),
+            },
+            package: package.to_owned(),
+            binary: package.to_owned(),
+            module: Some(module.to_owned()),
+            name: name.to_owned(),
+            full_name: format!("{module}::{name}"),
+            status: TestStatus::Pending,
+            ignored: false,
+        }
     }
 }
