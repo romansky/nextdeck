@@ -5,6 +5,7 @@ mod nextest;
 mod output;
 mod queue;
 mod state;
+mod terminal;
 mod tree;
 mod ui;
 
@@ -14,14 +15,10 @@ use anyhow::Result;
 use app::{App, AppEffect};
 use clap::Parser;
 use command::command_for_input;
-use crossterm::{
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
 use input::InputSource;
 use nextest::{NextestClient, RunEvent, RunRequest};
 use queue::{QueueEvent, QueueSender};
-use ratatui::{Terminal, backend::CrosstermBackend};
+use terminal::{AppTerminal, TerminalSession};
 use tokio::sync::mpsc;
 use tree::Tree;
 
@@ -74,18 +71,25 @@ async fn main() -> Result<()> {
         );
     }
 
-    let mut terminal = setup_terminal()?;
+    let mut terminal = TerminalSession::enter()?;
     let input = InputSource::start(queue_tx.clone());
     let ticker = queue::start_ticker(queue_tx.clone(), Duration::from_millis(250));
-    let result = run_app(&mut terminal, &mut app, &client, queue_tx, queue_rx).await;
+    let result = run_app(
+        terminal.terminal_mut(),
+        &mut app,
+        &client,
+        queue_tx,
+        queue_rx,
+    )
+    .await;
     ticker.abort();
     drop(input);
-    restore_terminal(&mut terminal)?;
+    terminal.restore()?;
     result
 }
 
 async fn run_app(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut AppTerminal,
     app: &mut App,
     client: &NextestClient,
     queue_tx: QueueSender,
@@ -144,19 +148,4 @@ fn start_run(app: &mut App, client: NextestClient, request: RunRequest, tx: Queu
             }
         }
     });
-}
-
-fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    Ok(Terminal::new(backend)?)
-}
-
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-    Ok(())
 }
