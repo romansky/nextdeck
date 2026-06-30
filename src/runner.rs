@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -41,6 +42,9 @@ async fn run_loop(
     mut queue_rx: queue::QueueReceiver,
 ) -> Result<()> {
     while !app.should_quit {
+        let size = terminal.size()?;
+        let layout = ui::layout(Rect::new(0, 0, size.width, size.height));
+        app.prepare_frame(layout.tree.height, layout.output.height);
         terminal.draw(|frame| ui::draw(frame, app))?;
         let Some(event) = queue_rx.recv().await else {
             break;

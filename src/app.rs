@@ -47,8 +47,10 @@ impl App {
         }
     }
 
-    pub fn prepare_draw(&mut self) {
-        self.ensure_tree_selection_visible();
+    pub fn prepare_frame(&mut self, tree_height: u16, output_height: u16) {
+        self.set_viewport_sizes(tree_height, output_height);
+        let line_count = self.tree.selected_output().lines().count().max(1);
+        self.set_output_line_count(line_count);
     }
 
     pub fn set_viewport_sizes(&mut self, tree_height: u16, output_height: u16) {

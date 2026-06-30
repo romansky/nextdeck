@@ -11,29 +11,43 @@ use crate::{
     tree::{NodeKind, TestNode, TestStatus},
 };
 
-pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    app.prepare_draw();
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AppLayout {
+    pub tree: Rect,
+    pub output: Rect,
+    pub status: Rect,
+}
+
+pub fn layout(area: Rect) -> AppLayout {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(frame.area());
+        .split(area);
 
     let panes = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
         .split(outer[0]);
 
-    app.set_viewport_sizes(panes[0].height, panes[1].height);
-    draw_tree(frame, app, panes[0]);
-    draw_output(frame, app, panes[1]);
-    draw_status(frame, app, outer[1]);
+    AppLayout {
+        tree: panes[0],
+        output: panes[1],
+        status: outer[1],
+    }
+}
+
+pub fn draw(frame: &mut Frame<'_>, app: &App) {
+    let app_layout = layout(frame.area());
+    draw_tree(frame, app, app_layout.tree);
+    draw_output(frame, app, app_layout.output);
+    draw_status(frame, app, app_layout.status);
 
     if app.show_help {
         draw_help(frame);
     }
 }
 
-fn draw_tree(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+fn draw_tree(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let selected = app.tree.selected_index();
     let rows = app.tree.visible_rows();
     let visible_height = area.height.saturating_sub(2).max(1) as usize;
@@ -96,10 +110,8 @@ fn node_label(node: &TestNode) -> String {
     }
 }
 
-fn draw_output(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+fn draw_output(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let text = app.tree.selected_output();
-    let line_count = text.lines().count().max(1);
-    app.set_output_line_count(line_count);
     let title = if app.focus == FocusPane::Output {
         "Output *"
     } else {
