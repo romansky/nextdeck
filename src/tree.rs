@@ -39,6 +39,7 @@ pub struct TestViewFilter {
     pub show_success: bool,
     pub show_failed: bool,
     pub show_ignored: bool,
+    pub show_skipped: bool,
 }
 
 impl Default for TestViewFilter {
@@ -47,6 +48,7 @@ impl Default for TestViewFilter {
             show_success: true,
             show_failed: true,
             show_ignored: true,
+            show_skipped: true,
         }
     }
 }
@@ -57,7 +59,8 @@ impl TestViewFilter {
             TestStatus::Passed => self.show_success,
             TestStatus::Failed => self.show_failed,
             TestStatus::Ignored => self.show_ignored,
-            TestStatus::Pending | TestStatus::Running | TestStatus::Skipped => true,
+            TestStatus::Skipped => self.show_skipped,
+            TestStatus::Pending | TestStatus::Running => true,
         }
     }
 }
@@ -713,6 +716,7 @@ mod tests {
             show_success: false,
             show_failed: true,
             show_ignored: true,
+            show_skipped: true,
         });
         let labels = visible_labels(&tree);
         assert!(!labels.contains(&"passed".to_owned()));
@@ -723,6 +727,7 @@ mod tests {
             show_success: true,
             show_failed: false,
             show_ignored: true,
+            show_skipped: true,
         });
         let labels = visible_labels(&tree);
         assert!(labels.contains(&"passed".to_owned()));
@@ -761,11 +766,54 @@ mod tests {
             show_success: true,
             show_failed: true,
             show_ignored: false,
+            show_skipped: true,
         });
 
         let labels = visible_labels(&tree);
         assert!(!labels.contains(&"ignored".to_owned()));
         assert!(labels.contains(&"pending".to_owned()));
+    }
+
+    #[test]
+    fn view_filter_hides_skipped_test_rows() {
+        let mut tree = Tree::from_tests(vec![
+            discovered_test("demo::demo", "demo", "tests", "skipped"),
+            discovered_test("demo::demo", "demo", "tests", "pending"),
+        ]);
+        set_test_status(&mut tree, "tests::skipped", TestStatus::Skipped);
+
+        tree.set_view_filter(TestViewFilter {
+            show_success: true,
+            show_failed: true,
+            show_ignored: true,
+            show_skipped: false,
+        });
+
+        let labels = visible_labels(&tree);
+        assert!(!labels.contains(&"skipped".to_owned()));
+        assert!(labels.contains(&"pending".to_owned()));
+    }
+
+    #[test]
+    fn view_filter_hides_tests_skipped_by_scoped_run() {
+        let mut tree = Tree::from_tests(vec![
+            discovered_test("demo::demo", "demo", "tests", "selected"),
+            discovered_test("demo::demo", "demo", "tests", "outside_scope"),
+        ]);
+        tree.mark_scope_pending(&crate::nextest::RunScope::Test {
+            name: "tests::selected".to_owned(),
+        });
+
+        tree.set_view_filter(TestViewFilter {
+            show_success: true,
+            show_failed: true,
+            show_ignored: true,
+            show_skipped: false,
+        });
+
+        let labels = visible_labels(&tree);
+        assert!(labels.contains(&"selected".to_owned()));
+        assert!(!labels.contains(&"outside_scope".to_owned()));
     }
 
     #[test]
@@ -776,6 +824,7 @@ mod tests {
             show_success: false,
             show_failed: true,
             show_ignored: false,
+            show_skipped: false,
         });
 
         tree.refresh_from_tests(vec![discovered_test("demo::demo", "demo", "tests", "new")]);
@@ -783,6 +832,7 @@ mod tests {
         assert!(!tree.view_filter.show_success);
         assert!(tree.view_filter.show_failed);
         assert!(!tree.view_filter.show_ignored);
+        assert!(!tree.view_filter.show_skipped);
         assert!(visible_labels(&tree).contains(&"new".to_owned()));
     }
 

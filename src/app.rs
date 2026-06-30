@@ -369,6 +369,10 @@ impl App {
                 self.toggle_show_ignored();
                 AppEffect::None
             }
+            AppCommand::ToggleShowSkipped => {
+                self.toggle_show_skipped();
+                AppEffect::None
+            }
             AppCommand::SelectNextFailed => {
                 self.select_next_failed();
                 AppEffect::None
@@ -478,6 +482,19 @@ impl App {
         self.status = format!(
             "Show ignored tests: {}",
             if filter.show_ignored { "on" } else { "off" }
+        );
+    }
+
+    pub fn toggle_show_skipped(&mut self) {
+        let mut filter = self.tree.view_filter;
+        filter.show_skipped = !filter.show_skipped;
+        self.tree.set_view_filter(filter);
+        self.ensure_tree_selection_visible();
+        self.output_scroll = 0;
+        self.output_follow = true;
+        self.status = format!(
+            "Show skipped tests: {}",
+            if filter.show_skipped { "on" } else { "off" }
         );
     }
 

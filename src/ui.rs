@@ -86,10 +86,11 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
 
     let focused = app.focus == FocusPane::Tree;
     let title = format!(
-        "Tests pass:{} fail:{} ign:{}",
+        "Tests pass:{} fail:{} ign:{} skip:{}",
         on_off(app.tree.view_filter.show_success),
         on_off(app.tree.view_filter.show_failed),
-        on_off(app.tree.view_filter.show_ignored)
+        on_off(app.tree.view_filter.show_ignored),
+        on_off(app.tree.view_filter.show_skipped)
     );
     let list = List::new(items)
         .block(theme.panel_block(&title, focused))
@@ -421,6 +422,7 @@ fn draw_help(frame: &mut Frame<'_>, theme: &Theme) {
         help_line("s", "toggle successful tests", theme),
         help_line("x", "toggle failed tests", theme),
         help_line("i", "toggle ignored tests", theme),
+        help_line("k", "toggle skipped tests", theme),
         Line::from(""),
         Line::styled("Output", theme.title(true)),
         help_line("End", "follow output bottom", theme),

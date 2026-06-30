@@ -27,6 +27,7 @@ pub enum AppCommand {
     ToggleShowSuccess,
     ToggleShowFailed,
     ToggleShowIgnored,
+    ToggleShowSkipped,
     SelectNextFailed,
     SelectPreviousFailed,
     SearchNavigationPending,
@@ -59,6 +60,7 @@ impl AppCommand {
             Self::ToggleShowSuccess => Some("toggle success"),
             Self::ToggleShowFailed => Some("toggle failed"),
             Self::ToggleShowIgnored => Some("toggle ignored"),
+            Self::ToggleShowSkipped => Some("toggle skipped"),
             Self::SelectNextFailed => Some("next failed"),
             Self::SelectPreviousFailed => Some("previous failed"),
             Self::SearchNavigationPending => Some("search"),
@@ -112,6 +114,7 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
         KeyCode::Char('s') => AppCommand::ToggleShowSuccess,
         KeyCode::Char('x') => AppCommand::ToggleShowFailed,
         KeyCode::Char('i') => AppCommand::ToggleShowIgnored,
+        KeyCode::Char('k') => AppCommand::ToggleShowSkipped,
         KeyCode::Char('r') => AppCommand::RunSelected,
         KeyCode::Char('R') => AppCommand::RunFailed,
         KeyCode::Char('f') => AppCommand::SelectNextFailed,
@@ -192,6 +195,10 @@ mod tests {
         assert_eq!(
             command_for_key(KeyCode::Char('i'), KeyModifiers::NONE),
             AppCommand::ToggleShowIgnored
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('k'), KeyModifiers::NONE),
+            AppCommand::ToggleShowSkipped
         );
     }
 
