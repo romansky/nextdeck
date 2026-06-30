@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::{
     command::{AppCommand, CommandContext},
+    config::{self, AppSettings, TREE_WIDTH_STEP_PERCENT},
     git_status::GitStatus,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
     tree::{NodeKind, TestStatus, Tree},
@@ -29,6 +30,7 @@ pub struct App {
     pub discovery: DiscoveryState,
     pub git_status: GitStatus,
     pub run: RunState,
+    pub settings: AppSettings,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,12 +72,18 @@ impl Default for RunState {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum AppEffect {
     None,
+    SaveSettings(AppSettings),
     StartDiscovery,
     StartRun(RunRequest),
 }
 
 impl App {
+    #[cfg(test)]
     pub fn new(tree: Tree) -> Self {
+        Self::with_settings(tree, AppSettings::default())
+    }
+
+    pub fn with_settings(tree: Tree, settings: AppSettings) -> Self {
         Self {
             tree,
             tree_scroll: 0,
@@ -92,11 +100,12 @@ impl App {
             discovery: DiscoveryState::default(),
             git_status: GitStatus::unknown(),
             run: RunState::default(),
+            settings: settings.normalized(),
         }
     }
 
-    pub fn discovering() -> Self {
-        let mut app = Self::new(Tree::from_tests(Vec::new()));
+    pub fn discovering(settings: AppSettings) -> Self {
+        let mut app = Self::with_settings(Tree::from_tests(Vec::new()), settings);
         app.begin_discovery();
         app
     }
@@ -295,6 +304,12 @@ impl App {
                 }
                 AppEffect::None
             }
+            AppCommand::NarrowTestsPane => {
+                self.resize_tests_pane(-(TREE_WIDTH_STEP_PERCENT as i16))
+            }
+            AppCommand::WidenTestsPane => {
+                self.resize_tests_pane(TREE_WIDTH_STEP_PERCENT as i16)
+            }
             AppCommand::RefreshTests => {
                 if self.discovery.running {
                     self.status = "Discovery already in progress".to_owned();
@@ -451,6 +466,21 @@ impl App {
             "Show ignored tests: {}",
             if filter.show_ignored { "on" } else { "off" }
         );
+    }
+
+    pub fn resize_tests_pane(&mut self, delta: i16) -> AppEffect {
+        let before = self.settings.tree_width_percent;
+        let after = config::clamp_tree_width(before.saturating_add_signed(delta));
+        if before == after {
+            self.status = format!("Tests pane width: {after}%");
+            return AppEffect::None;
+        }
+
+        self.settings.tree_width_percent = after;
+        self.ensure_tree_selection_visible();
+        self.clamp_output_scroll();
+        self.status = format!("Tests pane width: {after}%");
+        AppEffect::SaveSettings(self.settings)
     }
 
     pub fn scroll_output_up(&mut self, amount: u16) {
@@ -657,6 +687,41 @@ mod tests {
 
         app.set_viewport_sizes(5, 7);
         assert_selection_visible(&app);
+    }
+
+    #[test]
+    fn resize_tests_pane_updates_settings_and_requests_save() {
+        let mut app = App::with_settings(
+            Tree::from_tests(test_rows(1)),
+            AppSettings {
+                tree_width_percent: 45,
+            },
+        );
+
+        let effect = app.resize_tests_pane(5);
+
+        assert_eq!(app.settings.tree_width_percent, 50);
+        assert_eq!(
+            effect,
+            AppEffect::SaveSettings(AppSettings {
+                tree_width_percent: 50,
+            })
+        );
+    }
+
+    #[test]
+    fn resize_tests_pane_clamps_to_supported_range() {
+        let mut app = App::with_settings(
+            Tree::from_tests(test_rows(1)),
+            AppSettings {
+                tree_width_percent: 25,
+            },
+        );
+
+        let effect = app.resize_tests_pane(-5);
+
+        assert_eq!(app.settings.tree_width_percent, 25);
+        assert_eq!(effect, AppEffect::None);
     }
 
     fn assert_selection_visible(app: &App) {

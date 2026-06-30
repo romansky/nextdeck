@@ -19,6 +19,8 @@ pub enum AppCommand {
     MoveEnd,
     PageUp,
     PageDown,
+    NarrowTestsPane,
+    WidenTestsPane,
     RefreshTests,
     RunSelected,
     RunFailed,
@@ -49,6 +51,8 @@ impl AppCommand {
             Self::MoveEnd => Some("end"),
             Self::PageUp => Some("page up"),
             Self::PageDown => Some("page down"),
+            Self::NarrowTestsPane => Some("narrow tests"),
+            Self::WidenTestsPane => Some("widen tests"),
             Self::RefreshTests => Some("refresh tests"),
             Self::RunSelected => Some("run"),
             Self::RunFailed => Some("rerun failed"),
@@ -93,6 +97,8 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
         KeyCode::Tab => AppCommand::ToggleFocus,
         KeyCode::Up => AppCommand::MoveUp,
         KeyCode::Down => AppCommand::MoveDown,
+        KeyCode::Left if modifiers.contains(KeyModifiers::SHIFT) => AppCommand::NarrowTestsPane,
+        KeyCode::Right if modifiers.contains(KeyModifiers::SHIFT) => AppCommand::WidenTestsPane,
         KeyCode::Left => AppCommand::MoveLeft,
         KeyCode::Right => AppCommand::MoveRight,
         KeyCode::Enter | KeyCode::Char(' ') => AppCommand::ToggleSelected,
@@ -100,6 +106,8 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
         KeyCode::End => AppCommand::MoveEnd,
         KeyCode::PageUp => AppCommand::PageUp,
         KeyCode::PageDown => AppCommand::PageDown,
+        KeyCode::Char('[') => AppCommand::NarrowTestsPane,
+        KeyCode::Char(']') => AppCommand::WidenTestsPane,
         KeyCode::Char('u') => AppCommand::RefreshTests,
         KeyCode::Char('s') => AppCommand::ToggleShowSuccess,
         KeyCode::Char('x') => AppCommand::ToggleShowFailed,
@@ -184,6 +192,26 @@ mod tests {
         assert_eq!(
             command_for_key(KeyCode::Char('i'), KeyModifiers::NONE),
             AppCommand::ToggleShowIgnored
+        );
+    }
+
+    #[test]
+    fn maps_tests_pane_resize_keys() {
+        assert_eq!(
+            command_for_key(KeyCode::Left, KeyModifiers::SHIFT),
+            AppCommand::NarrowTestsPane
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Right, KeyModifiers::SHIFT),
+            AppCommand::WidenTestsPane
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('['), KeyModifiers::NONE),
+            AppCommand::NarrowTestsPane
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char(']'), KeyModifiers::NONE),
+            AppCommand::WidenTestsPane
         );
     }
 

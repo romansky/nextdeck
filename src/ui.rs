@@ -9,6 +9,7 @@ use ratatui::{
 
 use crate::{
     app::{App, FocusPane},
+    config,
     theme::Theme,
     tree::{NodeKind, TestNode, TestStatus},
 };
@@ -21,15 +22,19 @@ pub struct AppLayout {
     pub status: Rect,
 }
 
-pub fn layout(area: Rect) -> AppLayout {
+pub fn layout(area: Rect, tree_width_percent: u16) -> AppLayout {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(area);
 
+    let tree_width_percent = config::clamp_tree_width(tree_width_percent);
     let panes = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .constraints([
+            Constraint::Percentage(tree_width_percent),
+            Constraint::Percentage(100 - tree_width_percent),
+        ])
         .split(outer[0]);
 
     let details_height = if panes[1].height < 14 {
@@ -52,7 +57,7 @@ pub fn layout(area: Rect) -> AppLayout {
 }
 
 pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
-    let app_layout = layout(frame.area());
+    let app_layout = layout(frame.area(), app.settings.tree_width_percent);
     draw_tree(frame, app, theme, app_layout.tree);
     draw_details(frame, app, theme, app_layout.details);
     draw_output(frame, app, theme, app_layout.output);
@@ -344,6 +349,8 @@ fn draw_help(frame: &mut Frame<'_>, theme: &Theme) {
         help_line("Home/End", "first or last tree row", theme),
         help_line("Left/Right", "collapse or expand", theme),
         help_line("Tab", "switch tree/output focus", theme),
+        help_line("Shift+Left/[", "narrow tests pane", theme),
+        help_line("Shift+Right/]", "widen tests pane", theme),
         Line::from(""),
         Line::styled("Runs", theme.title(true)),
         help_line("u", "refresh test list", theme),

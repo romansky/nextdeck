@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use crate::{
     app::{App, AppEffect},
     command::{AppCommand, command_for_input},
+    config,
     git_status,
     input::InputSource,
     nextest::{DiscoveryEvent, NextestClient, RunEvent, RunRequest},
@@ -48,7 +49,10 @@ async fn run_loop(
 ) -> Result<()> {
     while !app.should_quit {
         let size = terminal.size()?;
-        let layout = ui::layout(Rect::new(0, 0, size.width, size.height));
+        let layout = ui::layout(
+            Rect::new(0, 0, size.width, size.height),
+            app.settings.tree_width_percent,
+        );
         app.prepare_frame(layout.tree.height, layout.output.height);
         terminal.draw(|frame| ui::draw(frame, app, &theme))?;
         let Some(event) = queue_rx.recv().await else {
@@ -97,6 +101,11 @@ fn key_echo_text(key: String, command: &AppCommand) -> String {
 fn handle_effect(app: &mut App, client: &NextestClient, effect: AppEffect, tx: QueueSender) {
     match effect {
         AppEffect::None => {}
+        AppEffect::SaveSettings(settings) => {
+            if let Err(error) = config::save(settings) {
+                app.status = format!("Failed to save settings: {error}");
+            }
+        }
         AppEffect::StartDiscovery => {
             start_discovery(client.clone(), tx);
         }
