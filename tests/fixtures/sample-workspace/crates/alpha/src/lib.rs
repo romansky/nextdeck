@@ -11,6 +11,10 @@ mod tests {
 
     #[test]
     fn alpha_only() {
+        assert!(
+            std::env::var_os("CARGO_TEST_TUI_FORCE_ALPHA_FAIL").is_none(),
+            "forced failure for cargo-test-tui manual verification"
+        );
         assert_eq!(super::add_one(2), 3);
     }
 }

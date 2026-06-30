@@ -254,6 +254,10 @@ impl Tree {
         }
     }
 
+    pub fn clear_runner_output(&mut self) {
+        self.runner_output.clear();
+    }
+
     pub fn refresh_from_tests(&mut self, tests: Vec<DiscoveredTest>) {
         let filter = self.view_filter;
         *self = Self::from_tests(tests);
@@ -336,18 +340,13 @@ impl Tree {
         }
     }
 
-    pub fn status_counts(&self) -> StatusCounts {
+    pub fn status_counts_for_scope(&self, scope: &crate::nextest::RunScope) -> StatusCounts {
         let mut counts = StatusCounts::default();
         visit(&self.root, &mut |node| {
-            if matches!(node.kind, NodeKind::Test(_)) {
-                match node.status {
-                    TestStatus::Pending => counts.pending += 1,
-                    TestStatus::Running => counts.running += 1,
-                    TestStatus::Passed => counts.passed += 1,
-                    TestStatus::Failed => counts.failed += 1,
-                    TestStatus::Ignored => counts.ignored += 1,
-                    TestStatus::Skipped => counts.skipped += 1,
-                }
+            if let NodeKind::Test(test) = &node.kind
+                && scope.matches_test(test)
+            {
+                add_status_count(&mut counts, node.status);
             }
         });
         counts
@@ -423,6 +422,17 @@ impl Tree {
         let target = self.selected_index();
         let mut current = 0;
         let _ = with_visible_mut(&mut self.root, target, &mut current, &mut f);
+    }
+}
+
+fn add_status_count(counts: &mut StatusCounts, status: TestStatus) {
+    match status {
+        TestStatus::Pending => counts.pending += 1,
+        TestStatus::Running => counts.running += 1,
+        TestStatus::Passed => counts.passed += 1,
+        TestStatus::Failed => counts.failed += 1,
+        TestStatus::Ignored => counts.ignored += 1,
+        TestStatus::Skipped => counts.skipped += 1,
     }
 }
 

@@ -5,6 +5,7 @@ use crate::{
     config::{self, AppSettings, TREE_WIDTH_STEP_PERCENT},
     git_status::GitStatus,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
+    state::StatusCounts,
     tree::{NodeKind, TestStatus, Tree},
 };
 
@@ -52,8 +53,20 @@ pub struct RunState {
     pub run_id: Option<String>,
     pub profile: String,
     pub scope: RunScope,
+    pub outcome: RunOutcome,
+    pub exit_code: Option<i32>,
     started_at: Option<Instant>,
     finished_duration: Option<Duration>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RunOutcome {
+    #[default]
+    NotStarted,
+    Running,
+    Passed,
+    Failed,
+    CommandFailed,
 }
 
 impl Default for RunState {
@@ -63,6 +76,8 @@ impl Default for RunState {
             run_id: None,
             profile: "default".to_owned(),
             scope: RunScope::Workspace,
+            outcome: RunOutcome::NotStarted,
+            exit_code: None,
             started_at: None,
             finished_duration: None,
         }
@@ -514,12 +529,15 @@ impl App {
             return false;
         }
 
+        self.tree.clear_runner_output();
         self.tree.mark_scope_pending(&request.scope);
         self.status = format!("Running {}", request.scope.label());
         self.running = true;
         self.run.active = true;
         self.run.run_id = None;
         self.run.scope = request.scope.clone();
+        self.run.outcome = RunOutcome::Running;
+        self.run.exit_code = None;
         self.run.started_at = Some(Instant::now());
         self.run.finished_duration = None;
         self.output_follow = true;
@@ -527,7 +545,7 @@ impl App {
     }
 
     pub fn apply_run_event(&mut self, event: RunEvent) {
-        let finished = match event {
+        let finished_exit_code = match event {
             RunEvent::RunMetadata { run_id, profile } => {
                 if let Some(run_id) = run_id {
                     self.run.run_id = Some(run_id);
@@ -535,11 +553,11 @@ impl App {
                 if let Some(profile) = profile {
                     self.run.profile = profile;
                 }
-                false
+                None
             }
             RunEvent::TestStarted { key } => {
                 self.tree.update_status(&key, TestStatus::Running);
-                false
+                None
             }
             RunEvent::TestFinished {
                 key,
@@ -550,40 +568,41 @@ impl App {
             } => {
                 self.tree
                     .finish_test(&key, status, stdout, stderr, duration);
-                false
+                None
             }
             RunEvent::RunnerOutput(line) => {
                 self.tree.append_runner_output(line);
-                false
+                None
             }
-            RunEvent::RunnerFinished { exit_code } => {
-                self.status = match exit_code {
-                    Some(code) => format!("nextest exited with {code}"),
-                    None => "nextest process ended".to_owned(),
-                };
-                true
-            }
+            RunEvent::RunnerFinished { exit_code } => Some(exit_code),
         };
 
-        if finished {
+        if let Some(exit_code) = finished_exit_code {
             self.running = false;
             self.run.active = false;
+            self.run.exit_code = exit_code;
             self.run.finished_duration = self.run.started_at.map(|started_at| started_at.elapsed());
-            let counts = self.tree.status_counts();
-            self.status = format!(
-                "Done: {} passed, {} failed, {} skipped, {} ignored",
-                counts.passed, counts.failed, counts.skipped, counts.ignored
-            );
+            let counts = self.tree.status_counts_for_scope(&self.run.scope);
+            self.run.outcome = run_outcome(exit_code, counts);
+            self.status = run_summary_status(self.run.outcome, counts, exit_code);
         }
     }
 
     pub fn run_status_label(&self) -> &'static str {
         if self.run.active {
             "running"
-        } else if self.run.finished_duration.is_some() {
-            "complete"
         } else {
             "not running"
+        }
+    }
+
+    pub fn run_result_label(&self) -> &'static str {
+        match self.run.outcome {
+            RunOutcome::NotStarted => "-",
+            RunOutcome::Running => "running",
+            RunOutcome::Passed => "passed",
+            RunOutcome::Failed => "failed",
+            RunOutcome::CommandFailed => "command failed",
         }
     }
 
@@ -655,6 +674,33 @@ impl App {
     }
 }
 
+fn run_outcome(exit_code: Option<i32>, counts: StatusCounts) -> RunOutcome {
+    match exit_code {
+        Some(0) if counts.failed == 0 => RunOutcome::Passed,
+        Some(_) if counts.failed > 0 => RunOutcome::Failed,
+        Some(_) | None => RunOutcome::CommandFailed,
+    }
+}
+
+fn run_summary_status(outcome: RunOutcome, counts: StatusCounts, exit_code: Option<i32>) -> String {
+    match outcome {
+        RunOutcome::Passed => format!(
+            "Passed: {} passed, {} skipped, {} ignored",
+            counts.passed, counts.skipped, counts.ignored
+        ),
+        RunOutcome::Failed => format!(
+            "Failed: {} passed, {} failed, {} skipped, {} ignored",
+            counts.passed, counts.failed, counts.skipped, counts.ignored
+        ),
+        RunOutcome::CommandFailed => match exit_code {
+            Some(code) => format!("Command failed: nextest exited with {code}"),
+            None => "Command failed: nextest did not complete".to_owned(),
+        },
+        RunOutcome::Running => "Running tests".to_owned(),
+        RunOutcome::NotStarted => "No run yet".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,6 +765,96 @@ mod tests {
         assert_eq!(effect, AppEffect::None);
     }
 
+    #[test]
+    fn command_failure_is_visible_and_not_overwritten_by_done_summary() {
+        let mut app = App::new(Tree::from_tests(test_rows(2)));
+        assert!(app.begin_run(&RunRequest::default()));
+
+        app.apply_run_event(RunEvent::RunnerOutput(
+            "nextest failed to start: no such command".to_owned(),
+        ));
+        app.apply_run_event(RunEvent::RunnerFinished { exit_code: None });
+
+        assert_eq!(app.run.outcome, RunOutcome::CommandFailed);
+        assert_eq!(app.run_result_label(), "command failed");
+        assert_eq!(app.run_status_label(), "not running");
+        assert_eq!(app.status, "Command failed: nextest did not complete");
+    }
+
+    #[test]
+    fn failing_test_run_reports_failed_result() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+        assert!(app.begin_run(&RunRequest::default()));
+        let key = test_key(0);
+
+        app.apply_run_event(RunEvent::TestStarted { key: key.clone() });
+        app.apply_run_event(RunEvent::TestFinished {
+            key,
+            status: TestStatus::Failed,
+            stdout: String::new(),
+            stderr: "boom".to_owned(),
+            duration: Some(Duration::from_millis(7)),
+        });
+        app.apply_run_event(RunEvent::RunnerFinished {
+            exit_code: Some(101),
+        });
+
+        assert_eq!(app.run.outcome, RunOutcome::Failed);
+        assert_eq!(app.run_result_label(), "failed");
+        assert!(app.status.starts_with("Failed:"));
+        assert!(app.status.contains("1 failed"));
+    }
+
+    #[test]
+    fn scoped_run_summary_counts_only_the_scope() {
+        let mut app = App::new(Tree::from_tests(test_rows(2)));
+        let request = RunRequest {
+            scope: RunScope::Test {
+                name: "tests::case_00".to_owned(),
+            },
+        };
+        assert!(app.begin_run(&request));
+        let key = test_key(0);
+
+        app.apply_run_event(RunEvent::TestStarted { key: key.clone() });
+        app.apply_run_event(RunEvent::TestFinished {
+            key,
+            status: TestStatus::Passed,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration: Some(Duration::from_millis(3)),
+        });
+        app.apply_run_event(RunEvent::RunnerFinished { exit_code: Some(0) });
+
+        assert_eq!(app.run.outcome, RunOutcome::Passed);
+        assert_eq!(app.run_progress(), (1, 1));
+        assert_eq!(app.status, "Passed: 1 passed, 0 skipped, 0 ignored");
+    }
+
+    #[test]
+    fn new_run_resets_previous_run_metadata_and_result() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+        assert!(app.begin_run(&RunRequest::default()));
+        app.apply_run_event(RunEvent::RunMetadata {
+            run_id: Some("old-run".to_owned()),
+            profile: Some("default".to_owned()),
+        });
+        app.apply_run_event(RunEvent::RunnerFinished { exit_code: Some(0) });
+        assert_eq!(app.run.outcome, RunOutcome::Passed);
+
+        assert!(app.begin_run(&RunRequest {
+            scope: RunScope::Test {
+                name: "tests::case_00".to_owned(),
+            },
+        }));
+
+        assert_eq!(app.run.run_id, None);
+        assert_eq!(app.run.outcome, RunOutcome::Running);
+        assert_eq!(app.run.exit_code, None);
+        assert_eq!(app.run_result_label(), "running");
+        assert_eq!(app.run_status_label(), "running");
+    }
+
     fn assert_selection_visible(app: &App) {
         let selected = app.tree.selected_index();
         assert!(
@@ -737,11 +873,7 @@ mod tests {
     fn test_rows(count: usize) -> Vec<DiscoveredTest> {
         (0..count)
             .map(|index| DiscoveredTest {
-                key: TestKey {
-                    binary_id: Some("demo".to_owned()),
-                    event_prefix: Some("demo::demo".to_owned()),
-                    name: format!("tests::case_{index:02}"),
-                },
+                key: test_key(index),
                 package: "demo".to_owned(),
                 binary: "demo".to_owned(),
                 module: Some("tests".to_owned()),
@@ -751,5 +883,13 @@ mod tests {
                 ignored: false,
             })
             .collect()
+    }
+
+    fn test_key(index: usize) -> TestKey {
+        TestKey {
+            binary_id: Some("demo".to_owned()),
+            event_prefix: Some("demo::demo".to_owned()),
+            name: format!("tests::case_{index:02}"),
+        }
     }
 }

@@ -262,7 +262,14 @@ fn run_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
             theme,
         ),
         detail_line("status", app.run_status_label(), theme.text(), theme),
+        detail_line(
+            "result",
+            app.run_result_label(),
+            run_result_style(app, theme),
+            theme,
+        ),
         detail_line("profile", app.run.profile.clone(), theme.accent(), theme),
+        detail_line("scope", app.run.scope.label(), theme.text(), theme),
         detail_line("duration", run_duration_label(app), theme.text(), theme),
         detail_line(
             "progress",
@@ -271,6 +278,15 @@ fn run_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
             theme,
         ),
     ]
+}
+
+fn run_result_style(app: &App, theme: &Theme) -> ratatui::style::Style {
+    match app.run.outcome {
+        crate::app::RunOutcome::Passed => theme.success(),
+        crate::app::RunOutcome::Failed | crate::app::RunOutcome::CommandFailed => theme.danger(),
+        crate::app::RunOutcome::Running => theme.accent(),
+        crate::app::RunOutcome::NotStarted => theme.muted(),
+    }
 }
 
 fn detail_line(

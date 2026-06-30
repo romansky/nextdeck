@@ -126,6 +126,10 @@ impl Theme {
         Style::default().fg(self.accent)
     }
 
+    pub fn success(&self) -> Style {
+        Style::default().fg(self.success)
+    }
+
     pub fn danger(&self) -> Style {
         Style::default().fg(self.danger)
     }
