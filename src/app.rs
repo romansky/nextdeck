@@ -128,10 +128,16 @@ impl App {
             }
             AppCommand::ToggleHelp => {
                 self.toggle_help();
+                self.status = if self.show_help {
+                    "Help opened".to_owned()
+                } else {
+                    "Help closed".to_owned()
+                };
                 AppEffect::None
             }
             AppCommand::CloseHelp => {
                 self.show_help = false;
+                self.status = "Help closed".to_owned();
                 AppEffect::None
             }
             AppCommand::ToggleFocus => {

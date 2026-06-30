@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     app::{App, AppEffect},
-    command::command_for_input,
+    command::{AppCommand, command_for_input},
     input::InputSource,
     nextest::{NextestClient, RunEvent, RunRequest},
     queue::{self, QueueEvent, QueueSender},
@@ -57,15 +57,22 @@ async fn run_loop(
 fn handle_queue_event(app: &mut App, client: &NextestClient, event: QueueEvent, tx: QueueSender) {
     match event {
         QueueEvent::Input(input) => {
-            if let Some(key) = input.key_display() {
-                app.record_key(key);
-            }
             let command = command_for_input(&input, app.command_context());
+            if let Some(key) = input.key_display() {
+                app.record_key(key_echo_text(key, &command));
+            }
             let effect = app.apply_command(command);
             handle_effect(app, client, effect, tx);
         }
         QueueEvent::Run(event) => app.apply_run_event(event),
         QueueEvent::Tick => app.tick(),
+    }
+}
+
+fn key_echo_text(key: String, command: &AppCommand) -> String {
+    match command.ticker_label() {
+        Some(label) => format!("{key} {label}"),
+        None => key,
     }
 }
 

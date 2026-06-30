@@ -27,6 +27,34 @@ pub enum AppCommand {
     ReportStatus(String),
 }
 
+impl AppCommand {
+    pub fn ticker_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Noop => None,
+            Self::Quit => Some("quit"),
+            Self::Resize => Some("resize"),
+            Self::ToggleHelp => Some("help"),
+            Self::CloseHelp => Some("close help"),
+            Self::ToggleFocus => Some("focus"),
+            Self::MoveUp => Some("up"),
+            Self::MoveDown => Some("down"),
+            Self::MoveLeft => Some("collapse"),
+            Self::MoveRight => Some("expand"),
+            Self::ToggleSelected => Some("toggle"),
+            Self::MoveHome => Some("home"),
+            Self::MoveEnd => Some("end"),
+            Self::PageUp => Some("page up"),
+            Self::PageDown => Some("page down"),
+            Self::RunSelected => Some("run"),
+            Self::RunFailed => Some("rerun failed"),
+            Self::SelectNextFailed => Some("next failed"),
+            Self::SelectPreviousFailed => Some("previous failed"),
+            Self::SearchNavigationPending => Some("search"),
+            Self::ReportStatus(_) => Some("status"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CommandContext {
     pub help_visible: bool,
@@ -53,6 +81,7 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
     match code {
         KeyCode::Char('q') => AppCommand::Quit,
         code if is_help_key(code, modifiers) => AppCommand::ToggleHelp,
+        KeyCode::Char('/') => AppCommand::SearchNavigationPending,
         KeyCode::Tab => AppCommand::ToggleFocus,
         KeyCode::Up => AppCommand::MoveUp,
         KeyCode::Down => AppCommand::MoveDown,
@@ -72,13 +101,17 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
     }
 }
 
-fn is_help_key(code: KeyCode, _modifiers: KeyModifiers) -> bool {
-    matches!(code, KeyCode::Char('?'))
+fn is_help_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    is_question_mark(code, modifiers)
         || matches!(
             code,
             KeyCode::Char('h') | KeyCode::Char('H') | KeyCode::F(1)
         )
-        || matches!(code, KeyCode::Char('/'))
+}
+
+fn is_question_mark(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    matches!(code, KeyCode::Char('?'))
+        || (matches!(code, KeyCode::Char('/')) && modifiers.contains(KeyModifiers::SHIFT))
 }
 
 #[cfg(test)]
@@ -96,14 +129,14 @@ mod tests {
             command_for_key(KeyCode::Char('?'), KeyModifiers::SHIFT),
             AppCommand::ToggleHelp
         );
+        assert_eq!(
+            command_for_key(KeyCode::Char('/'), KeyModifiers::SHIFT),
+            AppCommand::ToggleHelp
+        );
     }
 
     #[test]
     fn maps_fallback_help_keys() {
-        assert_eq!(
-            command_for_key(KeyCode::Char('/'), KeyModifiers::NONE),
-            AppCommand::ToggleHelp
-        );
         assert_eq!(
             command_for_key(KeyCode::Char('h'), KeyModifiers::NONE),
             AppCommand::ToggleHelp
@@ -111,6 +144,14 @@ mod tests {
         assert_eq!(
             command_for_key(KeyCode::F(1), KeyModifiers::NONE),
             AppCommand::ToggleHelp
+        );
+    }
+
+    #[test]
+    fn plain_slash_starts_search_instead_of_help() {
+        assert_eq!(
+            command_for_key(KeyCode::Char('/'), KeyModifiers::NONE),
+            AppCommand::SearchNavigationPending
         );
     }
 
