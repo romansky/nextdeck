@@ -165,7 +165,8 @@ fn isolated_package_dir(crate_path: &Path) -> Result<PathBuf> {
 
 fn copy_dir(from: &Path, to: &Path) -> Result<()> {
     fs::create_dir_all(to).with_context(|| format!("creating directory {}", to.display()))?;
-    for entry in fs::read_dir(from).with_context(|| format!("reading directory {}", from.display()))?
+    for entry in
+        fs::read_dir(from).with_context(|| format!("reading directory {}", from.display()))?
     {
         let entry = entry.with_context(|| format!("reading entry in {}", from.display()))?;
         let source = entry.path();
@@ -177,9 +178,8 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
         if file_type.is_dir() {
             copy_dir(&source, &target)?;
         } else if file_type.is_file() {
-            fs::copy(&source, &target).with_context(|| {
-                format!("copying {} to {}", source.display(), target.display())
-            })?;
+            fs::copy(&source, &target)
+                .with_context(|| format!("copying {} to {}", source.display(), target.display()))?;
         }
     }
     Ok(())

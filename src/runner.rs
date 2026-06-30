@@ -7,8 +7,7 @@ use tokio::sync::mpsc;
 use crate::{
     app::{App, AppEffect},
     command::{AppCommand, command_for_input},
-    config,
-    git_status,
+    config, git_status,
     input::InputSource,
     nextest::{DiscoveryEvent, NextestClient, RunEvent, RunRequest},
     queue::{self, QueueEvent, QueueSender},
@@ -27,10 +26,22 @@ pub async fn run(
     let (queue_tx, queue_rx) = queue::channel();
 
     let discovery = start_discovery(client.clone(), queue_tx.clone());
-    let git_status = start_git_status(client.current_dir().map(ToOwned::to_owned), queue_tx.clone());
+    let git_status = start_git_status(
+        client.current_dir().map(ToOwned::to_owned),
+        queue_tx.clone(),
+    );
     let input = InputSource::start(queue_tx.clone());
     let ticker = queue::start_ticker(queue_tx.clone(), Duration::from_millis(250));
-    let result = run_loop(terminal, app, client, run_on_start, theme, queue_tx, queue_rx).await;
+    let result = run_loop(
+        terminal,
+        app,
+        client,
+        run_on_start,
+        theme,
+        queue_tx,
+        queue_rx,
+    )
+    .await;
     discovery.abort();
     git_status.abort();
     ticker.abort();
@@ -115,10 +126,7 @@ fn handle_effect(app: &mut App, client: &NextestClient, effect: AppEffect, tx: Q
     }
 }
 
-fn start_discovery(
-    client: NextestClient,
-    tx: QueueSender,
-) -> tokio::task::JoinHandle<()> {
+fn start_discovery(client: NextestClient, tx: QueueSender) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let result = client
             .discover()

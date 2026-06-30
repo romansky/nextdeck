@@ -115,9 +115,18 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
                 theme.accent(),
             ),
             Line::from(""),
-            Line::styled("Running cargo nextest list --message-format json", theme.text()),
-            Line::styled("Cold discovery may compile test binaries first.", theme.muted()),
-            Line::styled(format!("Elapsed: {}s", app.discovery_elapsed_seconds()), theme.text()),
+            Line::styled(
+                "Running cargo nextest list --message-format json",
+                theme.text(),
+            ),
+            Line::styled(
+                "Cold discovery may compile test binaries first.",
+                theme.muted(),
+            ),
+            Line::styled(
+                format!("Elapsed: {}s", app.discovery_elapsed_seconds()),
+                theme.text(),
+            ),
             Line::styled("Press q to quit.", theme.muted()),
         ]
     };
@@ -138,7 +147,11 @@ fn tree_item<'a>(depth: usize, node: &TestNode, selected: bool, theme: &Theme) -
     } else {
         ">"
     };
-    let row_style = if selected { theme.selected() } else { theme.text() };
+    let row_style = if selected {
+        theme.selected()
+    } else {
+        theme.text()
+    };
     let status_style = theme.status(node.status, selected);
     ListItem::new(Line::from(vec![
         Span::styled(indent, row_style),
@@ -148,7 +161,10 @@ fn tree_item<'a>(depth: usize, node: &TestNode, selected: bool, theme: &Theme) -
         Span::styled(" ", row_style),
         Span::styled(duration_field(node.duration()), row_style),
         Span::styled(" ", row_style),
-        Span::styled(node_label(node), if selected { row_style } else { status_style }),
+        Span::styled(
+            node_label(node),
+            if selected { row_style } else { status_style },
+        ),
     ]))
 }
 
@@ -193,36 +209,41 @@ fn selected_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     match &node.kind {
         NodeKind::Workspace => {
             lines.extend([
-            detail_line("kind", "workspace", theme.text(), theme),
-            detail_status_line(node.status, theme),
-            detail_line("path", app.tree.selected_path(), theme.text(), theme),
+                detail_line("kind", "workspace", theme.text(), theme),
+                detail_status_line(node.status, theme),
+                detail_line("path", app.tree.selected_path(), theme.text(), theme),
             ]);
         }
         NodeKind::Package { name } => {
             lines.extend([
-            detail_line("kind", "package", theme.text(), theme),
-            detail_line("pkg", name.clone(), theme.accent(), theme),
-            detail_status_line(node.status, theme),
-            detail_line("duration", duration_label(node), theme.text(), theme),
+                detail_line("kind", "package", theme.text(), theme),
+                detail_line("pkg", name.clone(), theme.accent(), theme),
+                detail_status_line(node.status, theme),
+                detail_line("duration", duration_label(node), theme.text(), theme),
             ]);
         }
         NodeKind::Module { path } => {
             lines.extend([
-            detail_line("kind", "module", theme.text(), theme),
-            detail_line("module", path.clone(), theme.accent(), theme),
-            detail_status_line(node.status, theme),
-            detail_line("duration", duration_label(node), theme.text(), theme),
+                detail_line("kind", "module", theme.text(), theme),
+                detail_line("module", path.clone(), theme.accent(), theme),
+                detail_status_line(node.status, theme),
+                detail_line("duration", duration_label(node), theme.text(), theme),
             ]);
         }
         NodeKind::Test(test) => {
             lines.extend([
-            detail_line("kind", "test", theme.text(), theme),
-            detail_status_line(node.status, theme),
-            detail_line("pkg", test.package.clone(), theme.accent(), theme),
-            detail_line("bin", test.binary.clone(), theme.text(), theme),
-            detail_line("module", test.module.clone().unwrap_or_else(|| "-".to_owned()), theme.text(), theme),
-            detail_line("test", test.full_name.clone(), theme.accent(), theme),
-            detail_line("duration", duration_label(node), theme.text(), theme),
+                detail_line("kind", "test", theme.text(), theme),
+                detail_status_line(node.status, theme),
+                detail_line("pkg", test.package.clone(), theme.accent(), theme),
+                detail_line("bin", test.binary.clone(), theme.text(), theme),
+                detail_line(
+                    "module",
+                    test.module.clone().unwrap_or_else(|| "-".to_owned()),
+                    theme.text(),
+                    theme,
+                ),
+                detail_line("test", test.full_name.clone(), theme.accent(), theme),
+                detail_line("duration", duration_label(node), theme.text(), theme),
             ]);
         }
     }
@@ -243,7 +264,12 @@ fn run_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
         detail_line("status", app.run_status_label(), theme.text(), theme),
         detail_line("profile", app.run.profile.clone(), theme.accent(), theme),
         detail_line("duration", run_duration_label(app), theme.text(), theme),
-        detail_line("progress", format!("{finished}/{total}"), theme.text(), theme),
+        detail_line(
+            "progress",
+            format!("{finished}/{total}"),
+            theme.text(),
+            theme,
+        ),
     ]
 }
 
@@ -260,7 +286,12 @@ fn detail_line(
 }
 
 fn detail_status_line(status: TestStatus, theme: &Theme) -> Line<'static> {
-    detail_line("status", status_label(status), theme.status(status, false), theme)
+    detail_line(
+        "status",
+        status_label(status),
+        theme.status(status, false),
+        theme,
+    )
 }
 
 fn duration_label(node: &TestNode) -> String {
@@ -326,13 +357,25 @@ fn status_spans<'a>(app: &'a App, theme: &'a Theme) -> Vec<Span<'a>> {
         Span::styled(" branch ", theme.footer_label()),
         Span::styled(app.git_status.branch.as_str(), theme.footer_value()),
         Span::styled(" | unstaged ", theme.footer_label()),
-        Span::styled(app.git_status.unstaged.added.to_string(), theme.footer_dirty(true)),
+        Span::styled(
+            app.git_status.unstaged.added.to_string(),
+            theme.footer_dirty(true),
+        ),
         Span::styled(":", theme.footer_label()),
-        Span::styled(app.git_status.unstaged.deleted.to_string(), theme.footer_dirty(false)),
+        Span::styled(
+            app.git_status.unstaged.deleted.to_string(),
+            theme.footer_dirty(false),
+        ),
         Span::styled(" | staged ", theme.footer_label()),
-        Span::styled(app.git_status.staged.added.to_string(), theme.footer_dirty(true)),
+        Span::styled(
+            app.git_status.staged.added.to_string(),
+            theme.footer_dirty(true),
+        ),
         Span::styled(":", theme.footer_label()),
-        Span::styled(app.git_status.staged.deleted.to_string(), theme.footer_dirty(false)),
+        Span::styled(
+            app.git_status.staged.deleted.to_string(),
+            theme.footer_dirty(false),
+        ),
         Span::styled(" | key ", theme.footer_label()),
         Span::styled(key, theme.footer_value()),
         Span::styled(" | ", theme.footer_label()),

@@ -135,7 +135,11 @@ impl NextestClient {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("cargo nextest list exited with {}: {}", output.status, stderr.trim());
+            bail!(
+                "cargo nextest list exited with {}: {}",
+                output.status,
+                stderr.trim()
+            );
         }
 
         let summary = serde_json::from_slice::<TestListSummary>(&output.stdout)
@@ -420,7 +424,8 @@ mod tests {
 
     #[test]
     fn parses_nextest_run_metadata_banner() {
-        let line = " Nextest run ID 5d1f9f3a-f808-42cd-bdf9-3863de01b4d7 with nextest profile: default";
+        let line =
+            " Nextest run ID 5d1f9f3a-f808-42cd-bdf9-3863de01b4d7 with nextest profile: default";
         let event = parse_runner_line(line).expect("event");
         match event {
             RunEvent::RunMetadata { run_id, profile } => {

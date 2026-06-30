@@ -83,7 +83,14 @@ async fn main() -> Result<()> {
     let mut app = App::discovering(config::load());
     let theme = Theme::resolve(cli.theme.into());
     let mut terminal = TerminalSession::enter()?;
-    let result = runner::run(terminal.terminal_mut(), &mut app, &client, run_on_start, theme).await;
+    let result = runner::run(
+        terminal.terminal_mut(),
+        &mut app,
+        &client,
+        run_on_start,
+        theme,
+    )
+    .await;
     terminal.restore()?;
     result
 }

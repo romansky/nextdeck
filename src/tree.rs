@@ -760,24 +760,15 @@ mod tests {
 
     #[test]
     fn refresh_from_tests_preserves_view_filter() {
-        let mut tree = Tree::from_tests(vec![discovered_test(
-            "demo::demo",
-            "demo",
-            "tests",
-            "old",
-        )]);
+        let mut tree =
+            Tree::from_tests(vec![discovered_test("demo::demo", "demo", "tests", "old")]);
         tree.set_view_filter(TestViewFilter {
             show_success: false,
             show_failed: true,
             show_ignored: false,
         });
 
-        tree.refresh_from_tests(vec![discovered_test(
-            "demo::demo",
-            "demo",
-            "tests",
-            "new",
-        )]);
+        tree.refresh_from_tests(vec![discovered_test("demo::demo", "demo", "tests", "new")]);
 
         assert!(!tree.view_filter.show_success);
         assert!(tree.view_filter.show_failed);

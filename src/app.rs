@@ -307,9 +307,7 @@ impl App {
             AppCommand::NarrowTestsPane => {
                 self.resize_tests_pane(-(TREE_WIDTH_STEP_PERCENT as i16))
             }
-            AppCommand::WidenTestsPane => {
-                self.resize_tests_pane(TREE_WIDTH_STEP_PERCENT as i16)
-            }
+            AppCommand::WidenTestsPane => self.resize_tests_pane(TREE_WIDTH_STEP_PERCENT as i16),
             AppCommand::RefreshTests => {
                 if self.discovery.running {
                     self.status = "Discovery already in progress".to_owned();
@@ -470,7 +468,7 @@ impl App {
 
     pub fn resize_tests_pane(&mut self, delta: i16) -> AppEffect {
         let before = self.settings.tree_width_percent;
-        let after = config::clamp_tree_width(before.saturating_add_signed(delta));
+        let after = config::resize_tree_width(before, delta);
         if before == after {
             self.status = format!("Tests pane width: {after}%");
             return AppEffect::None;
@@ -570,10 +568,7 @@ impl App {
         if finished {
             self.running = false;
             self.run.active = false;
-            self.run.finished_duration = self
-                .run
-                .started_at
-                .map(|started_at| started_at.elapsed());
+            self.run.finished_duration = self.run.started_at.map(|started_at| started_at.elapsed());
             let counts = self.tree.status_counts();
             self.status = format!(
                 "Done: {} passed, {} failed, {} skipped, {} ignored",
