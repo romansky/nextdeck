@@ -63,7 +63,7 @@ pub struct CommandContext {
 pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppCommand {
     match event {
         InputEvent::Terminal(Event::Resize(_, _)) => AppCommand::Resize,
-        InputEvent::Terminal(Event::Key(key)) if key.kind == KeyEventKind::Release => {
+        InputEvent::Terminal(Event::Key(key)) if key.kind != KeyEventKind::Press => {
             AppCommand::Noop
         }
         InputEvent::Terminal(Event::Key(key)) if context.help_visible => match key.code {
@@ -165,6 +165,27 @@ mod tests {
         let event =
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         assert_eq!(command_for_input(&event, context), AppCommand::CloseHelp);
+    }
+
+    #[test]
+    fn ignores_non_press_key_events() {
+        let repeat = InputEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('h'),
+            KeyModifiers::NONE,
+        )));
+        let mut repeat = match repeat {
+            InputEvent::Terminal(Event::Key(key)) => key,
+            _ => unreachable!(),
+        };
+        repeat.kind = KeyEventKind::Repeat;
+
+        assert_eq!(
+            command_for_input(
+                &InputEvent::Terminal(Event::Key(repeat)),
+                CommandContext::default()
+            ),
+            AppCommand::Noop
+        );
     }
 
     #[test]

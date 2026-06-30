@@ -51,7 +51,7 @@ impl InputSource {
 }
 
 fn should_forward(event: &Event) -> bool {
-    !matches!(event, Event::Key(key) if key.kind == KeyEventKind::Release)
+    !matches!(event, Event::Key(key) if key.kind != KeyEventKind::Press)
 }
 
 fn key_display(key: KeyEvent) -> String {
