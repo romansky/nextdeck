@@ -38,7 +38,7 @@ cargo xtask --help
 Useful local publishing commands:
 
 - `cargo xtask check --allow-dirty`: run format check, tests, and package verification.
-- `cargo xtask package --allow-dirty`: create and verify `target/package/cargo-test-tui-*.crate`.
+- `cargo xtask package --allow-dirty`: create and verify `target/package-verify/package/cargo-test-tui-*.crate`.
 - `cargo xtask publish-local --allow-dirty`: package, install from the verified package directory, and verify `PATH` resolves to the installed binary.
 - `cargo xtask install-path`: install directly from the workspace checkout.
 

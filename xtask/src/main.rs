@@ -87,16 +87,10 @@ struct PackageArtifact {
 
 fn package(workspace: &Path, allow_dirty: bool) -> Result<PackageArtifact> {
     let version = package_version(workspace)?;
-    let crate_path = workspace
-        .join("target")
-        .join("package")
-        .join(format!("{APP_PACKAGE}-{version}.crate"));
-    let unpacked_dir = workspace
-        .join("target")
-        .join("package")
-        .join(format!("{APP_PACKAGE}-{version}"));
-
     let package_verify_target = workspace.join("target/package-verify");
+    let package_dir = package_verify_target.join("package");
+    let crate_path = package_dir.join(format!("{APP_PACKAGE}-{version}.crate"));
+    let unpacked_dir = package_dir.join(format!("{APP_PACKAGE}-{version}"));
     let package_verify_target = package_verify_target
         .to_str()
         .context("package verify target path is not UTF-8")?
@@ -139,15 +133,56 @@ fn install_path(workspace: &Path) -> Result<()> {
 }
 
 fn install_crate(workspace: &Path, crate_path: &Path) -> Result<()> {
-    let crate_arg = crate_path
+    let install_dir = isolated_package_dir(crate_path)?;
+    copy_dir(crate_path, &install_dir)?;
+    let crate_arg = install_dir
         .to_str()
-        .with_context(|| format!("package path is not UTF-8: {}", crate_path.display()))?;
+        .with_context(|| format!("package path is not UTF-8: {}", install_dir.display()))?;
     run(
         workspace,
         "cargo",
         ["install", "--path", crate_arg, "--locked", "--force"],
     )?;
     verify_local_install()
+}
+
+fn isolated_package_dir(crate_path: &Path) -> Result<PathBuf> {
+    let package_name = crate_path
+        .file_name()
+        .context("verified package directory has no file name")?;
+    let root = env::temp_dir().join(format!("{APP_PACKAGE}-publish-local"));
+    let install_dir = root.join(package_name);
+
+    if install_dir.exists() {
+        fs::remove_dir_all(&install_dir)
+            .with_context(|| format!("removing old isolated package {}", install_dir.display()))?;
+    }
+    fs::create_dir_all(&root)
+        .with_context(|| format!("creating isolated package root {}", root.display()))?;
+
+    Ok(install_dir)
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    fs::create_dir_all(to).with_context(|| format!("creating directory {}", to.display()))?;
+    for entry in fs::read_dir(from).with_context(|| format!("reading directory {}", from.display()))?
+    {
+        let entry = entry.with_context(|| format!("reading entry in {}", from.display()))?;
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("reading file type for {}", source.display()))?;
+
+        if file_type.is_dir() {
+            copy_dir(&source, &target)?;
+        } else if file_type.is_file() {
+            fs::copy(&source, &target).with_context(|| {
+                format!("copying {} to {}", source.display(), target.display())
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn verify_local_install() -> Result<()> {
