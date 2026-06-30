@@ -8,6 +8,7 @@ mod queue;
 mod runner;
 mod state;
 mod terminal;
+mod theme;
 mod tree;
 mod ui;
 

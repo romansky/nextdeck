@@ -451,25 +451,6 @@ impl App {
         }
     }
 
-    pub fn status_line(&self) -> String {
-        format!(
-            "{}|unstaged: {}:{}|staged: {}:{}| key:{}",
-            self.git_status.branch,
-            self.git_status.unstaged.added,
-            self.git_status.unstaged.deleted,
-            self.git_status.staged.added,
-            self.git_status.staged.deleted,
-            self.key_echo_text()
-        )
-    }
-
-    fn key_echo_text(&self) -> &str {
-        self.key_echo
-            .as_ref()
-            .map(|echo| echo.text.as_str())
-            .unwrap_or("-")
-    }
-
     fn with_selection_reset(&mut self, action: impl FnOnce(&mut Tree)) {
         let before = self.tree.selected_index();
         action(&mut self.tree);
