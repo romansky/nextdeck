@@ -1,7 +1,9 @@
 use std::time::{Duration, Instant};
 
+use regex::{Regex, RegexBuilder};
+
 use crate::{
-    command::{AppCommand, CommandContext},
+    command::{AppCommand, CommandContext, CommandFocus},
     config::{self, AppSettings, TREE_WIDTH_STEP_PERCENT},
     git_status::GitStatus,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
@@ -24,6 +26,7 @@ pub struct App {
     pub should_quit: bool,
     pub output_scroll: u16,
     pub output_follow: bool,
+    pub output_search: OutputSearchState,
     pub focus: FocusPane,
     pub show_help: bool,
     pub tree_page_size: usize,
@@ -45,6 +48,16 @@ pub struct DiscoveryState {
     pub running: bool,
     pub ticks: usize,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct OutputSearchState {
+    pub input_active: bool,
+    pub query: String,
+    pub filter: bool,
+    pub regex: bool,
+    pub case_sensitive: bool,
+    pub current_line: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +121,7 @@ impl App {
             should_quit: false,
             output_scroll: 0,
             output_follow: true,
+            output_search: OutputSearchState::default(),
             focus: FocusPane::Tree,
             show_help: false,
             tree_page_size: 1,
@@ -127,7 +141,7 @@ impl App {
 
     pub fn prepare_frame(&mut self, tree_height: u16, output_height: u16) {
         self.set_viewport_sizes(tree_height, output_height);
-        let line_count = self.tree.selected_output().lines().count().max(1);
+        let line_count = self.output_text().lines().count().max(1);
         self.set_output_line_count(line_count);
     }
 
@@ -166,6 +180,11 @@ impl App {
     pub fn command_context(&self) -> CommandContext {
         CommandContext {
             help_visible: self.show_help,
+            focus: match self.focus {
+                FocusPane::Tree => CommandFocus::Tests,
+                FocusPane::Output => CommandFocus::Output,
+            },
+            output_search_input: self.output_search.input_active,
         }
     }
 
@@ -381,8 +400,44 @@ impl App {
                 self.select_previous_failed();
                 AppEffect::None
             }
-            AppCommand::SearchNavigationPending => {
-                self.status = "Search navigation is planned for phase 3".to_owned();
+            AppCommand::StartOutputSearch => {
+                self.start_output_search();
+                AppEffect::None
+            }
+            AppCommand::OutputSearchInput(char) => {
+                self.push_output_search_char(char);
+                AppEffect::None
+            }
+            AppCommand::OutputSearchBackspace => {
+                self.pop_output_search_char();
+                AppEffect::None
+            }
+            AppCommand::AcceptOutputSearch => {
+                self.accept_output_search();
+                AppEffect::None
+            }
+            AppCommand::CancelOutputSearch => {
+                self.cancel_output_search();
+                AppEffect::None
+            }
+            AppCommand::FindNextOutputMatch => {
+                self.find_output_match(SearchDirection::Next);
+                AppEffect::None
+            }
+            AppCommand::FindPreviousOutputMatch => {
+                self.find_output_match(SearchDirection::Previous);
+                AppEffect::None
+            }
+            AppCommand::ToggleOutputFilter => {
+                self.toggle_output_filter();
+                AppEffect::None
+            }
+            AppCommand::ToggleOutputRegex => {
+                self.toggle_output_regex();
+                AppEffect::None
+            }
+            AppCommand::ToggleOutputCaseSensitive => {
+                self.toggle_output_case_sensitive();
                 AppEffect::None
             }
             AppCommand::ReportStatus(status) => {
@@ -526,6 +581,48 @@ impl App {
         self.output_follow = true;
     }
 
+    pub fn output_text(&self) -> String {
+        let text = self.tree.selected_output();
+        if !self.output_search.filter || self.output_search.query.is_empty() {
+            return text;
+        }
+
+        let matcher = match output_matcher(&self.output_search) {
+            Ok(Some(matcher)) => matcher,
+            Ok(None) => return text,
+            Err(error) => return format!("Invalid output search regex: {error}"),
+        };
+
+        let filtered = text
+            .lines()
+            .filter(|line| matcher.is_match(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if filtered.is_empty() {
+            format!("No output lines match '{}'", self.output_search.query)
+        } else {
+            filtered
+        }
+    }
+
+    pub fn output_search_match_summary(&self) -> Option<(usize, usize)> {
+        let matches = self.output_search_match_lines().ok()?;
+        if matches.is_empty() {
+            return Some((0, 0));
+        }
+        let current = self
+            .output_search
+            .current_line
+            .and_then(|line| matches.iter().position(|match_line| *match_line == line))
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        Some((current, matches.len()))
+    }
+
+    pub fn output_search_error(&self) -> Option<String> {
+        output_matcher(&self.output_search).err()
+    }
+
     pub fn selected_scope(&self) -> RunScope {
         let Some(node) = self.tree.selected_node() else {
             return RunScope::Workspace;
@@ -656,6 +753,7 @@ impl App {
         if before != after {
             self.output_scroll = 0;
             self.output_follow = true;
+            self.output_search.current_line = None;
         }
     }
 
@@ -689,6 +787,186 @@ impl App {
             .saturating_sub(self.output_page_size as usize)
             .min(u16::MAX as usize) as u16
     }
+
+    fn start_output_search(&mut self) {
+        self.focus = FocusPane::Output;
+        self.output_search.input_active = true;
+        self.status = output_search_prompt(&self.output_search);
+    }
+
+    fn push_output_search_char(&mut self, char: char) {
+        self.output_search.query.push(char);
+        self.output_search.current_line = None;
+        self.status = output_search_prompt(&self.output_search);
+    }
+
+    fn pop_output_search_char(&mut self) {
+        self.output_search.query.pop();
+        self.output_search.current_line = None;
+        self.status = output_search_prompt(&self.output_search);
+    }
+
+    fn accept_output_search(&mut self) {
+        self.output_search.input_active = false;
+        if self.output_search.query.is_empty() {
+            self.output_search.current_line = None;
+            self.status = "Output search cleared".to_owned();
+        } else {
+            self.find_output_match(SearchDirection::Next);
+        }
+    }
+
+    fn cancel_output_search(&mut self) {
+        self.output_search.input_active = false;
+        self.status = "Output search cancelled".to_owned();
+    }
+
+    fn toggle_output_filter(&mut self) {
+        self.output_search.filter = !self.output_search.filter;
+        self.output_search.current_line = None;
+        self.output_scroll = 0;
+        self.output_follow = false;
+        self.status = format!(
+            "Output filter: {}",
+            if self.output_search.filter { "on" } else { "off" }
+        );
+    }
+
+    fn toggle_output_regex(&mut self) {
+        self.output_search.regex = !self.output_search.regex;
+        self.output_search.current_line = None;
+        self.status = match self.output_search_error() {
+            Some(error) => format!("Invalid output search regex: {error}"),
+            None => format!(
+                "Output regex: {}",
+                if self.output_search.regex { "on" } else { "off" }
+            ),
+        };
+    }
+
+    fn toggle_output_case_sensitive(&mut self) {
+        self.output_search.case_sensitive = !self.output_search.case_sensitive;
+        self.output_search.current_line = None;
+        self.status = format!(
+            "Output case sensitive: {}",
+            if self.output_search.case_sensitive {
+                "on"
+            } else {
+                "off"
+            }
+        );
+    }
+
+    fn find_output_match(&mut self, direction: SearchDirection) {
+        let matches = match self.output_search_match_lines() {
+            Ok(matches) => matches,
+            Err(error) => {
+                self.status = format!("Invalid output search regex: {error}");
+                return;
+            }
+        };
+
+        if self.output_search.query.is_empty() {
+            self.status = "No output search query".to_owned();
+            return;
+        }
+
+        if matches.is_empty() {
+            self.output_search.current_line = None;
+            self.status = format!("No output matches for '{}'", self.output_search.query);
+            return;
+        }
+
+        let current = self.output_search.current_line;
+        let next_index = match direction {
+            SearchDirection::Next => matches
+                .iter()
+                .position(|line| current.is_none_or(|current| *line > current))
+                .unwrap_or(0),
+            SearchDirection::Previous => matches
+                .iter()
+                .rposition(|line| current.is_none_or(|current| *line < current))
+                .unwrap_or(matches.len() - 1),
+        };
+        let line = matches[next_index];
+        self.output_search.current_line = Some(line);
+        self.output_scroll = line.min(u16::MAX as usize) as u16;
+        self.output_follow = false;
+        self.status = format!(
+            "Output match {}/{} for '{}'",
+            next_index + 1,
+            matches.len(),
+            self.output_search.query
+        );
+    }
+
+    fn output_search_match_lines(&self) -> Result<Vec<usize>, String> {
+        let Some(matcher) = output_matcher(&self.output_search)? else {
+            return Ok(Vec::new());
+        };
+        let text = self.output_text();
+        Ok(text
+            .lines()
+            .enumerate()
+            .filter_map(|(index, line)| matcher.is_match(line).then_some(index))
+            .collect())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SearchDirection {
+    Next,
+    Previous,
+}
+
+enum OutputMatcher {
+    Literal {
+        needle: String,
+        case_sensitive: bool,
+    },
+    Regex(Regex),
+}
+
+impl OutputMatcher {
+    fn is_match(&self, line: &str) -> bool {
+        match self {
+            Self::Literal {
+                needle,
+                case_sensitive,
+            } if *case_sensitive => line.contains(needle),
+            Self::Literal { needle, .. } => line.to_lowercase().contains(needle),
+            Self::Regex(regex) => regex.is_match(line),
+        }
+    }
+}
+
+fn output_matcher(search: &OutputSearchState) -> Result<Option<OutputMatcher>, String> {
+    if search.query.is_empty() {
+        return Ok(None);
+    }
+
+    if search.regex {
+        RegexBuilder::new(&search.query)
+            .case_insensitive(!search.case_sensitive)
+            .build()
+            .map(OutputMatcher::Regex)
+            .map(Some)
+            .map_err(|error| error.to_string())
+    } else {
+        let needle = if search.case_sensitive {
+            search.query.clone()
+        } else {
+            search.query.to_lowercase()
+        };
+        Ok(Some(OutputMatcher::Literal {
+            needle,
+            case_sensitive: search.case_sensitive,
+        }))
+    }
+}
+
+fn output_search_prompt(search: &OutputSearchState) -> String {
+    format!("Output search: {}", search.query)
 }
 
 fn run_outcome(exit_code: Option<i32>, counts: StatusCounts) -> RunOutcome {
@@ -872,6 +1150,84 @@ mod tests {
         assert_eq!(app.run_status_label(), "running");
     }
 
+    #[test]
+    fn output_search_filter_keeps_matching_lines() {
+        let mut app = app_with_finished_output("alpha\npanic here\nomega", "");
+        app.output_search.query = "panic".to_owned();
+        app.output_search.filter = true;
+
+        assert_eq!(app.output_text(), "panic here");
+    }
+
+    #[test]
+    fn output_search_literal_is_case_insensitive_by_default() {
+        let mut app = app_with_finished_output("PANIC\nok", "");
+        app.output_search.query = "panic".to_owned();
+        app.output_search.filter = true;
+
+        assert_eq!(app.output_text(), "PANIC");
+
+        app.apply_command(AppCommand::ToggleOutputCaseSensitive);
+
+        assert_eq!(app.output_text(), "No output lines match 'panic'");
+    }
+
+    #[test]
+    fn output_search_regex_filters_and_reports_invalid_regex() {
+        let mut app = app_with_finished_output("case_01\ncase_aa\ncase_22", "");
+        app.output_search.query = r"case_\d+".to_owned();
+        app.output_search.filter = true;
+        app.output_search.regex = true;
+
+        assert_eq!(app.output_text(), "case_01\ncase_22");
+
+        app.output_search.query = "(".to_owned();
+
+        assert!(app.output_text().starts_with("Invalid output search regex:"));
+    }
+
+    #[test]
+    fn output_find_next_and_previous_scroll_to_matching_lines() {
+        let mut app = app_with_finished_output("zero\nmatch one\nskip\nmatch two", "");
+        app.output_search.query = "match".to_owned();
+        app.output_page_size = 2;
+
+        app.apply_command(AppCommand::FindNextOutputMatch);
+
+        assert_eq!(app.output_scroll, 2);
+        assert_eq!(app.output_search.current_line, Some(2));
+
+        app.apply_command(AppCommand::FindNextOutputMatch);
+
+        assert_eq!(app.output_scroll, 4);
+        assert_eq!(app.output_search.current_line, Some(4));
+
+        app.apply_command(AppCommand::FindPreviousOutputMatch);
+
+        assert_eq!(app.output_scroll, 2);
+        assert_eq!(app.output_search.current_line, Some(2));
+    }
+
+    #[test]
+    fn output_search_input_edits_query_and_enter_finds_match() {
+        let mut app = app_with_finished_output("zero\npanic\nok", "");
+        app.output_page_size = 2;
+
+        app.apply_command(AppCommand::StartOutputSearch);
+        app.apply_command(AppCommand::OutputSearchInput('p'));
+        app.apply_command(AppCommand::OutputSearchInput('x'));
+        app.apply_command(AppCommand::OutputSearchBackspace);
+        app.apply_command(AppCommand::OutputSearchInput('a'));
+        app.apply_command(AppCommand::OutputSearchInput('n'));
+        app.apply_command(AppCommand::OutputSearchInput('i'));
+        app.apply_command(AppCommand::OutputSearchInput('c'));
+        app.apply_command(AppCommand::AcceptOutputSearch);
+
+        assert!(!app.output_search.input_active);
+        assert_eq!(app.output_search.query, "panic");
+        assert_eq!(app.output_scroll, 2);
+    }
+
     fn assert_selection_visible(app: &App) {
         let selected = app.tree.selected_index();
         assert!(
@@ -908,5 +1264,20 @@ mod tests {
             event_prefix: Some("demo::demo".to_owned()),
             name: format!("tests::case_{index:02}"),
         }
+    }
+
+    fn app_with_finished_output(stdout: &str, stderr: &str) -> App {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+        app.tree.finish_test(
+            &test_key(0),
+            TestStatus::Passed,
+            stdout.to_owned(),
+            stderr.to_owned(),
+            None,
+        );
+        app.tree.select_next();
+        app.tree.select_next();
+        app.tree.select_next();
+        app
     }
 }

@@ -353,7 +353,7 @@ fn status_label(status: TestStatus) -> &'static str {
 }
 
 fn draw_output(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
-    let text = app.tree.selected_output();
+    let text = app.output_text();
     let focused = app.focus == FocusPane::Output;
     let title = output_title(app, &text);
     let output = Paragraph::new(text)
@@ -368,8 +368,9 @@ fn draw_output(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
 fn output_title(app: &App, text: &str) -> String {
     let total = text.lines().count().max(1);
     let visible = app.output_page_size.max(1) as usize;
+    let search = output_search_title(app);
     if total <= visible {
-        return format!("Output All {total}/{total}");
+        return format!("Output All {total}/{total}{search}");
     }
 
     let top = (app.output_scroll as usize).min(total.saturating_sub(1));
@@ -383,10 +384,38 @@ fn output_title(app: &App, text: &str) -> String {
     };
 
     if position.is_empty() {
-        format!("Output {}-{bottom}/{total}", top + 1)
+        format!("Output {}-{bottom}/{total}{search}", top + 1)
     } else {
-        format!("Output {position} {}-{bottom}/{total}", top + 1)
+        format!("Output {position} {}-{bottom}/{total}{search}", top + 1)
     }
+}
+
+fn output_search_title(app: &App) -> String {
+    if app.output_search.query.is_empty()
+        && !app.output_search.filter
+        && !app.output_search.regex
+        && !app.output_search.case_sensitive
+    {
+        return String::new();
+    }
+
+    let query = if app.output_search.input_active {
+        format!("/{query}_", query = app.output_search.query)
+    } else if app.output_search.query.is_empty() {
+        "/-".to_owned()
+    } else {
+        format!("/{query}", query = app.output_search.query)
+    };
+    let summary = app
+        .output_search_match_summary()
+        .map(|(current, total)| format!(" {current}/{total}"))
+        .unwrap_or_default();
+    format!(
+        " {query}{summary} f:{} r:{} c:{}",
+        on_off(app.output_search.filter),
+        on_off(app.output_search.regex),
+        on_off(app.output_search.case_sensitive)
+    )
 }
 
 fn draw_status(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: ratatui::layout::Rect) {
@@ -459,6 +488,11 @@ fn draw_help(frame: &mut Frame<'_>, theme: &Theme) {
         Line::from(""),
         Line::styled("Output", theme.title(true)),
         help_line("End", "follow output bottom", theme),
+        help_line("/", "search output", theme),
+        help_line("n/N", "next or previous output match", theme),
+        help_line("f", "toggle output match filter", theme),
+        help_line("r", "toggle output regex", theme),
+        help_line("c", "toggle output case sensitivity", theme),
         help_line("h/?/F1", "close help", theme),
         help_line("q", "quit", theme),
     ];
@@ -531,5 +565,18 @@ mod tests {
     fn filter_hint_includes_toggle_key() {
         assert_eq!(filter_hint("pass", "s", true), "pass[s]:on");
         assert_eq!(filter_hint("fail", "x", false), "fail[x]:off");
+    }
+
+    #[test]
+    fn output_title_includes_search_flags() {
+        let mut app = App::new(Tree::from_tests(Vec::new()));
+        app.output_page_size = 5;
+        app.output_search.query = "panic".to_owned();
+        app.output_search.filter = true;
+
+        assert_eq!(
+            output_title(&app, "panic line"),
+            "Output All 1/1 /panic 0/1 f:on r:off c:off"
+        );
     }
 }

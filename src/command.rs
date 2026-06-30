@@ -30,7 +30,16 @@ pub enum AppCommand {
     ToggleShowSkipped,
     SelectNextFailed,
     SelectPreviousFailed,
-    SearchNavigationPending,
+    StartOutputSearch,
+    OutputSearchInput(char),
+    OutputSearchBackspace,
+    AcceptOutputSearch,
+    CancelOutputSearch,
+    FindNextOutputMatch,
+    FindPreviousOutputMatch,
+    ToggleOutputFilter,
+    ToggleOutputRegex,
+    ToggleOutputCaseSensitive,
     ReportStatus(String),
 }
 
@@ -63,15 +72,33 @@ impl AppCommand {
             Self::ToggleShowSkipped => Some("toggle skipped"),
             Self::SelectNextFailed => Some("next failed"),
             Self::SelectPreviousFailed => Some("previous failed"),
-            Self::SearchNavigationPending => Some("search"),
+            Self::StartOutputSearch => Some("search output"),
+            Self::OutputSearchInput(_) => Some("search text"),
+            Self::OutputSearchBackspace => Some("search erase"),
+            Self::AcceptOutputSearch => Some("search accept"),
+            Self::CancelOutputSearch => Some("search cancel"),
+            Self::FindNextOutputMatch => Some("next match"),
+            Self::FindPreviousOutputMatch => Some("previous match"),
+            Self::ToggleOutputFilter => Some("output filter"),
+            Self::ToggleOutputRegex => Some("regex"),
+            Self::ToggleOutputCaseSensitive => Some("case"),
             Self::ReportStatus(_) => Some("status"),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CommandFocus {
+    #[default]
+    Tests,
+    Output,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CommandContext {
     pub help_visible: bool,
+    pub focus: CommandFocus,
+    pub output_search_input: bool,
 }
 
 pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppCommand {
@@ -80,36 +107,63 @@ pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppComm
         InputEvent::Terminal(Event::Key(key)) if key.kind != KeyEventKind::Press => {
             AppCommand::Noop
         }
-        InputEvent::Terminal(Event::Key(key)) if context.help_visible => match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => AppCommand::CloseHelp,
-            code if is_help_key(code, key.modifiers) => AppCommand::CloseHelp,
-            _ => AppCommand::Noop,
-        },
-        InputEvent::Terminal(Event::Key(key)) => command_for_key(key.code, key.modifiers),
+        InputEvent::Terminal(Event::Key(key)) if context.output_search_input => {
+            command_for_output_search_input(key.code, key.modifiers)
+        }
+        InputEvent::Terminal(Event::Key(key)) if context.help_visible => {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => AppCommand::CloseHelp,
+                code if is_help_key(code, key.modifiers) => AppCommand::CloseHelp,
+                _ => AppCommand::Noop,
+            }
+        }
+        InputEvent::Terminal(Event::Key(key)) => {
+            command_for_key(key.code, key.modifiers, context.focus)
+        }
         InputEvent::Terminal(_) => AppCommand::Noop,
         InputEvent::Error(error) => AppCommand::ReportStatus(format!("Input error: {error}")),
     }
 }
 
-fn command_for_key(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+fn command_for_output_search_input(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+    match code {
+        KeyCode::Esc => AppCommand::CancelOutputSearch,
+        KeyCode::Enter => AppCommand::AcceptOutputSearch,
+        KeyCode::Backspace => AppCommand::OutputSearchBackspace,
+        KeyCode::Char(char) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
+            AppCommand::OutputSearchInput(char)
+        }
+        _ => AppCommand::Noop,
+    }
+}
+
+fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) -> AppCommand {
     match code {
         KeyCode::Char('q') => AppCommand::Quit,
         code if is_help_key(code, modifiers) => AppCommand::ToggleHelp,
-        KeyCode::Char('/') => AppCommand::SearchNavigationPending,
         KeyCode::Tab => AppCommand::ToggleFocus,
         KeyCode::Up => AppCommand::MoveUp,
         KeyCode::Down => AppCommand::MoveDown,
         KeyCode::Left if modifiers.contains(KeyModifiers::SHIFT) => AppCommand::NarrowTestsPane,
         KeyCode::Right if modifiers.contains(KeyModifiers::SHIFT) => AppCommand::WidenTestsPane,
-        KeyCode::Left => AppCommand::MoveLeft,
-        KeyCode::Right => AppCommand::MoveRight,
-        KeyCode::Enter | KeyCode::Char(' ') => AppCommand::ToggleSelected,
         KeyCode::Home => AppCommand::MoveHome,
         KeyCode::End => AppCommand::MoveEnd,
         KeyCode::PageUp => AppCommand::PageUp,
         KeyCode::PageDown => AppCommand::PageDown,
         KeyCode::Char('[') => AppCommand::NarrowTestsPane,
         KeyCode::Char(']') => AppCommand::WidenTestsPane,
+        _ => match focus {
+            CommandFocus::Tests => command_for_tests_key(code),
+            CommandFocus::Output => command_for_output_key(code),
+        },
+    }
+}
+
+fn command_for_tests_key(code: KeyCode) -> AppCommand {
+    match code {
+        KeyCode::Left => AppCommand::MoveLeft,
+        KeyCode::Right => AppCommand::MoveRight,
+        KeyCode::Enter | KeyCode::Char(' ') => AppCommand::ToggleSelected,
         KeyCode::Char('u') => AppCommand::RefreshTests,
         KeyCode::Char('s') => AppCommand::ToggleShowSuccess,
         KeyCode::Char('x') => AppCommand::ToggleShowFailed,
@@ -119,7 +173,18 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
         KeyCode::Char('R') => AppCommand::RunFailed,
         KeyCode::Char('f') => AppCommand::SelectNextFailed,
         KeyCode::Char('F') => AppCommand::SelectPreviousFailed,
-        KeyCode::Char('n') | KeyCode::Char('N') => AppCommand::SearchNavigationPending,
+        _ => AppCommand::Noop,
+    }
+}
+
+fn command_for_output_key(code: KeyCode) -> AppCommand {
+    match code {
+        KeyCode::Char('/') => AppCommand::StartOutputSearch,
+        KeyCode::Char('n') => AppCommand::FindNextOutputMatch,
+        KeyCode::Char('N') => AppCommand::FindPreviousOutputMatch,
+        KeyCode::Char('f') => AppCommand::ToggleOutputFilter,
+        KeyCode::Char('r') => AppCommand::ToggleOutputRegex,
+        KeyCode::Char('c') => AppCommand::ToggleOutputCaseSensitive,
         _ => AppCommand::Noop,
     }
 }
@@ -145,15 +210,27 @@ mod tests {
     #[test]
     fn maps_normalized_question_mark_to_help() {
         assert_eq!(
-            command_for_key(KeyCode::Char('?'), KeyModifiers::NONE),
+            command_for_key(
+                KeyCode::Char('?'),
+                KeyModifiers::NONE,
+                CommandFocus::Tests
+            ),
             AppCommand::ToggleHelp
         );
         assert_eq!(
-            command_for_key(KeyCode::Char('?'), KeyModifiers::SHIFT),
+            command_for_key(
+                KeyCode::Char('?'),
+                KeyModifiers::SHIFT,
+                CommandFocus::Tests
+            ),
             AppCommand::ToggleHelp
         );
         assert_eq!(
-            command_for_key(KeyCode::Char('/'), KeyModifiers::SHIFT),
+            command_for_key(
+                KeyCode::Char('/'),
+                KeyModifiers::SHIFT,
+                CommandFocus::Tests
+            ),
             AppCommand::ToggleHelp
         );
     }
@@ -161,43 +238,47 @@ mod tests {
     #[test]
     fn maps_fallback_help_keys() {
         assert_eq!(
-            command_for_key(KeyCode::Char('h'), KeyModifiers::NONE),
+            command_for_key(KeyCode::Char('h'), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::ToggleHelp
         );
         assert_eq!(
-            command_for_key(KeyCode::F(1), KeyModifiers::NONE),
+            command_for_key(KeyCode::F(1), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::ToggleHelp
         );
     }
 
     #[test]
-    fn plain_slash_starts_search_instead_of_help() {
+    fn plain_slash_searches_output_only_when_output_is_focused() {
         assert_eq!(
-            command_for_key(KeyCode::Char('/'), KeyModifiers::NONE),
-            AppCommand::SearchNavigationPending
+            command_for_key(KeyCode::Char('/'), KeyModifiers::NONE, CommandFocus::Tests),
+            AppCommand::Noop
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('/'), KeyModifiers::NONE, CommandFocus::Output),
+            AppCommand::StartOutputSearch
         );
     }
 
     #[test]
     fn maps_refresh_and_view_filter_keys() {
         assert_eq!(
-            command_for_key(KeyCode::Char('u'), KeyModifiers::NONE),
+            command_for_key(KeyCode::Char('u'), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::RefreshTests
         );
         assert_eq!(
-            command_for_key(KeyCode::Char('s'), KeyModifiers::NONE),
+            command_for_key(KeyCode::Char('s'), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::ToggleShowSuccess
         );
         assert_eq!(
-            command_for_key(KeyCode::Char('x'), KeyModifiers::NONE),
+            command_for_key(KeyCode::Char('x'), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::ToggleShowFailed
         );
         assert_eq!(
-            command_for_key(KeyCode::Char('i'), KeyModifiers::NONE),
+            command_for_key(KeyCode::Char('i'), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::ToggleShowIgnored
         );
         assert_eq!(
-            command_for_key(KeyCode::Char('k'), KeyModifiers::NONE),
+            command_for_key(KeyCode::Char('k'), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::ToggleShowSkipped
         );
     }
@@ -205,26 +286,83 @@ mod tests {
     #[test]
     fn maps_tests_pane_resize_keys() {
         assert_eq!(
-            command_for_key(KeyCode::Left, KeyModifiers::SHIFT),
+            command_for_key(KeyCode::Left, KeyModifiers::SHIFT, CommandFocus::Tests),
             AppCommand::NarrowTestsPane
         );
         assert_eq!(
-            command_for_key(KeyCode::Right, KeyModifiers::SHIFT),
+            command_for_key(KeyCode::Right, KeyModifiers::SHIFT, CommandFocus::Tests),
             AppCommand::WidenTestsPane
         );
         assert_eq!(
-            command_for_key(KeyCode::Char('['), KeyModifiers::NONE),
+            command_for_key(KeyCode::Char('['), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::NarrowTestsPane
         );
         assert_eq!(
-            command_for_key(KeyCode::Char(']'), KeyModifiers::NONE),
+            command_for_key(KeyCode::Char(']'), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::WidenTestsPane
         );
     }
 
     #[test]
+    fn output_focus_uses_output_search_commands() {
+        assert_eq!(
+            command_for_key(KeyCode::Char('f'), KeyModifiers::NONE, CommandFocus::Output),
+            AppCommand::ToggleOutputFilter
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('r'), KeyModifiers::NONE, CommandFocus::Output),
+            AppCommand::ToggleOutputRegex
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('c'), KeyModifiers::NONE, CommandFocus::Output),
+            AppCommand::ToggleOutputCaseSensitive
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('n'), KeyModifiers::NONE, CommandFocus::Output),
+            AppCommand::FindNextOutputMatch
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('N'), KeyModifiers::SHIFT, CommandFocus::Output),
+            AppCommand::FindPreviousOutputMatch
+        );
+    }
+
+    #[test]
+    fn output_search_input_accepts_text_and_controls() {
+        let context = CommandContext {
+            output_search_input: true,
+            ..CommandContext::default()
+        };
+        let text = InputEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            command_for_input(&text, context),
+            AppCommand::OutputSearchInput('p')
+        );
+
+        let backspace =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
+        assert_eq!(
+            command_for_input(&backspace, context),
+            AppCommand::OutputSearchBackspace
+        );
+
+        let enter =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert_eq!(
+            command_for_input(&enter, context),
+            AppCommand::AcceptOutputSearch
+        );
+    }
+
+    #[test]
     fn help_context_only_closes_on_close_keys() {
-        let context = CommandContext { help_visible: true };
+        let context = CommandContext {
+            help_visible: true,
+            ..CommandContext::default()
+        };
         let event =
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         assert_eq!(command_for_input(&event, context), AppCommand::Noop);
