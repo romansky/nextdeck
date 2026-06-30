@@ -1,0 +1,4 @@
+{"type":"suite","event":"started","test_count":1,"nextest":{"crate":"alpha","test_binary":"alpha","kind":"lib"}}
+{"type":"test","event":"started","name":"alpha::alpha$tests::duplicate_name"}
+{"type":"test","event":"ok","name":"alpha::alpha$tests::duplicate_name","exec_time":0.011}
+{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":0,"measured":0,"filtered_out":0,"exec_time":0.011,"nextest":{"crate":"alpha","test_binary":"alpha","kind":"lib"}}

@@ -1,0 +1,25 @@
+[package]
+name = "cargo-test-tui"
+version = "0.1.0"
+edition = "2024"
+description = "Terminal-native UI for cargo-nextest"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+documentation = "https://docs.rs/cargo-test-tui"
+
+[workspace]
+members = [".", "xtask"]
+resolver = "3"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.29"
+futures = "0.3"
+nextest-metadata = "0.14.1"
+ratatui = "0.29"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.48", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
