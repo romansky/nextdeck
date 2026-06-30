@@ -1,7 +1,9 @@
 mod app;
-mod events;
+mod command;
+mod input;
 mod nextest;
 mod output;
+mod queue;
 mod state;
 mod tree;
 mod ui;
@@ -9,14 +11,18 @@ mod ui;
 use std::{io, path::PathBuf, time::Duration};
 
 use anyhow::Result;
-use app::App;
+use app::{App, AppEffect};
 use clap::Parser;
+use command::command_for_input;
 use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use nextest::{NextestClient, RunRequest};
+use input::InputSource;
+use nextest::{NextestClient, RunEvent, RunRequest};
+use queue::{QueueEvent, QueueSender};
 use ratatui::{Terminal, backend::CrosstermBackend};
+use tokio::sync::mpsc;
 use tree::Tree;
 
 #[derive(Debug, Parser)]
@@ -57,13 +63,23 @@ async fn main() -> Result<()> {
     }
 
     let mut app = App::new(Tree::from_tests(tests));
+    let (queue_tx, queue_rx) = queue::channel();
 
     if cli.run {
-        app.start_run(client.clone(), RunRequest::default());
+        start_run(
+            &mut app,
+            client.clone(),
+            RunRequest::default(),
+            queue_tx.clone(),
+        );
     }
 
     let mut terminal = setup_terminal()?;
-    let result = run_app(&mut terminal, &mut app, &client).await;
+    let input = InputSource::start(queue_tx.clone());
+    let ticker = queue::start_ticker(queue_tx.clone(), Duration::from_millis(250));
+    let result = run_app(&mut terminal, &mut app, &client, queue_tx, queue_rx).await;
+    ticker.abort();
+    drop(input);
     restore_terminal(&mut terminal)?;
     result
 }
@@ -72,14 +88,62 @@ async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     client: &NextestClient,
+    queue_tx: QueueSender,
+    mut queue_rx: queue::QueueReceiver,
 ) -> Result<()> {
     while !app.should_quit {
-        app.drain_run_events();
         terminal.draw(|frame| ui::draw(frame, app))?;
-        events::handle_input(app, client)?;
-        tokio::time::sleep(Duration::from_millis(16)).await;
+        let Some(event) = queue_rx.recv().await else {
+            break;
+        };
+        handle_queue_event(app, client, event, queue_tx.clone());
     }
     Ok(())
+}
+
+fn handle_queue_event(app: &mut App, client: &NextestClient, event: QueueEvent, tx: QueueSender) {
+    match event {
+        QueueEvent::Input(input) => {
+            let command = command_for_input(&input, app.command_context());
+            let effect = app.apply_command(command);
+            handle_effect(app, client, effect, tx);
+        }
+        QueueEvent::Run(event) => app.apply_run_event(event),
+        QueueEvent::Tick => {}
+    }
+}
+
+fn handle_effect(app: &mut App, client: &NextestClient, effect: AppEffect, tx: QueueSender) {
+    match effect {
+        AppEffect::None => {}
+        AppEffect::StartRun(request) => {
+            start_run(app, client.clone(), request, tx);
+        }
+    }
+}
+
+fn start_run(app: &mut App, client: NextestClient, request: RunRequest, tx: QueueSender) {
+    if !app.begin_run(&request) {
+        return;
+    }
+
+    let (run_tx, mut run_rx) = mpsc::unbounded_channel::<RunEvent>();
+    tokio::spawn(async move {
+        if let Err(error) = client.run(request, run_tx.clone()).await {
+            let _ = run_tx.send(RunEvent::RunnerOutput(format!(
+                "nextest failed to start: {error}"
+            )));
+            let _ = run_tx.send(RunEvent::RunnerFinished { exit_code: None });
+        }
+    });
+
+    tokio::spawn(async move {
+        while let Some(event) = run_rx.recv().await {
+            if tx.send(QueueEvent::Run(event)).is_err() {
+                break;
+            }
+        }
+    });
 }
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {

@@ -19,7 +19,7 @@ pub struct NextestClient {
     passthrough_args: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RunRequest {
     pub scope: RunScope,
 }

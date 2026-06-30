@@ -1,8 +1,8 @@
 use crate::{
-    nextest::{NextestClient, RunEvent, RunRequest, RunScope},
+    command::{AppCommand, CommandContext},
+    nextest::{RunEvent, RunRequest, RunScope},
     tree::{NodeKind, TestStatus, Tree},
 };
-use tokio::sync::mpsc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FocusPane {
@@ -22,7 +22,12 @@ pub struct App {
     pub show_help: bool,
     pub tree_page_size: usize,
     pub output_page_size: u16,
-    run_rx: Option<mpsc::UnboundedReceiver<RunEvent>>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum AppEffect {
+    None,
+    StartRun(RunRequest),
 }
 
 impl App {
@@ -39,7 +44,6 @@ impl App {
             show_help: false,
             tree_page_size: 1,
             output_page_size: 1,
-            run_rx: None,
         }
     }
 
@@ -77,6 +81,119 @@ impl App {
     pub fn on_resize(&mut self) {
         self.ensure_tree_selection_visible();
         self.clamp_output_scroll();
+    }
+
+    pub fn command_context(&self) -> CommandContext {
+        CommandContext {
+            help_visible: self.show_help,
+        }
+    }
+
+    pub fn apply_command(&mut self, command: AppCommand) -> AppEffect {
+        match command {
+            AppCommand::Noop => AppEffect::None,
+            AppCommand::Quit => {
+                self.should_quit = true;
+                AppEffect::None
+            }
+            AppCommand::Resize => {
+                self.on_resize();
+                AppEffect::None
+            }
+            AppCommand::ToggleHelp => {
+                self.toggle_help();
+                AppEffect::None
+            }
+            AppCommand::CloseHelp => {
+                self.show_help = false;
+                AppEffect::None
+            }
+            AppCommand::ToggleFocus => {
+                self.toggle_focus();
+                AppEffect::None
+            }
+            AppCommand::MoveUp => {
+                match self.focus {
+                    FocusPane::Tree => self.select_previous(),
+                    FocusPane::Output => self.scroll_output_up(1),
+                }
+                AppEffect::None
+            }
+            AppCommand::MoveDown => {
+                match self.focus {
+                    FocusPane::Tree => self.select_next(),
+                    FocusPane::Output => self.scroll_output_down(1),
+                }
+                AppEffect::None
+            }
+            AppCommand::MoveLeft => {
+                self.collapse_selected();
+                AppEffect::None
+            }
+            AppCommand::MoveRight => {
+                self.expand_selected();
+                AppEffect::None
+            }
+            AppCommand::ToggleSelected => {
+                self.toggle_selected();
+                AppEffect::None
+            }
+            AppCommand::MoveHome => {
+                match self.focus {
+                    FocusPane::Tree => self.select_first(),
+                    FocusPane::Output => self.scroll_output_up(u16::MAX),
+                }
+                AppEffect::None
+            }
+            AppCommand::MoveEnd => {
+                match self.focus {
+                    FocusPane::Tree => self.select_last(),
+                    FocusPane::Output => self.scroll_output_bottom(),
+                }
+                AppEffect::None
+            }
+            AppCommand::PageUp => {
+                match self.focus {
+                    FocusPane::Tree => self.select_previous_page(),
+                    FocusPane::Output => self.scroll_output_up(self.output_page_size),
+                }
+                AppEffect::None
+            }
+            AppCommand::PageDown => {
+                match self.focus {
+                    FocusPane::Tree => self.select_next_page(),
+                    FocusPane::Output => self.scroll_output_down(self.output_page_size),
+                }
+                AppEffect::None
+            }
+            AppCommand::RunSelected => AppEffect::StartRun(RunRequest {
+                scope: self.selected_scope(),
+            }),
+            AppCommand::RunFailed => {
+                if let Some(scope) = self.failed_scope() {
+                    AppEffect::StartRun(RunRequest { scope })
+                } else {
+                    self.status = "No failed tests to rerun".to_owned();
+                    AppEffect::None
+                }
+            }
+            AppCommand::SelectNextFailed => {
+                self.select_next_failed();
+                AppEffect::None
+            }
+            AppCommand::SelectPreviousFailed => {
+                self.select_previous_failed();
+                AppEffect::None
+            }
+            AppCommand::SearchNavigationPending => {
+                self.status = "Search navigation is planned for phase 3".to_owned();
+                AppEffect::None
+            }
+            AppCommand::ReportStatus(status) => {
+                self.status = status;
+                AppEffect::None
+            }
+        }
     }
 
     pub fn select_next(&mut self) {
@@ -160,59 +277,21 @@ impl App {
         }
     }
 
-    pub fn start_run(&mut self, client: NextestClient, request: RunRequest) {
+    pub fn begin_run(&mut self, request: &RunRequest) -> bool {
         if self.running {
             self.status = "Run already in progress".to_owned();
-            return;
+            return false;
         }
 
         self.tree.mark_scope_pending(&request.scope);
         self.status = format!("Running {}", request.scope.label());
         self.running = true;
         self.output_follow = true;
-
-        let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            if let Err(error) = client.run(request, tx.clone()).await {
-                let _ = tx.send(RunEvent::RunnerOutput(format!(
-                    "nextest failed to start: {error}"
-                )));
-                let _ = tx.send(RunEvent::RunnerFinished { exit_code: None });
-            }
-        });
-        self.run_rx = Some(rx);
+        true
     }
 
-    pub fn drain_run_events(&mut self) {
-        let mut finished = false;
-        while let Some(rx) = &mut self.run_rx {
-            match rx.try_recv() {
-                Ok(event) => {
-                    if self.apply_run_event(event) {
-                        finished = true;
-                    }
-                }
-                Err(mpsc::error::TryRecvError::Empty) => break,
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    finished = true;
-                    break;
-                }
-            }
-        }
-
-        if finished {
-            self.running = false;
-            self.run_rx = None;
-            let counts = self.tree.status_counts();
-            self.status = format!(
-                "Done: {} passed, {} failed, {} skipped, {} ignored",
-                counts.passed, counts.failed, counts.skipped, counts.ignored
-            );
-        }
-    }
-
-    fn apply_run_event(&mut self, event: RunEvent) -> bool {
-        match event {
+    pub fn apply_run_event(&mut self, event: RunEvent) {
+        let finished = match event {
             RunEvent::TestStarted { key } => {
                 self.tree.update_status(&key, TestStatus::Running);
                 false
@@ -239,6 +318,15 @@ impl App {
                 };
                 true
             }
+        };
+
+        if finished {
+            self.running = false;
+            let counts = self.tree.status_counts();
+            self.status = format!(
+                "Done: {} passed, {} failed, {} skipped, {} ignored",
+                counts.passed, counts.failed, counts.skipped, counts.ignored
+            );
         }
     }
 
