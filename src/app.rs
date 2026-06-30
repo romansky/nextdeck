@@ -14,6 +14,7 @@ pub struct App {
     pub tree: Tree,
     pub tree_scroll: usize,
     pub status: String,
+    pub key_echo: Option<KeyEcho>,
     pub running: bool,
     pub should_quit: bool,
     pub output_scroll: u16,
@@ -22,6 +23,12 @@ pub struct App {
     pub show_help: bool,
     pub tree_page_size: usize,
     pub output_page_size: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyEcho {
+    pub text: String,
+    ticks_remaining: u8,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -36,6 +43,7 @@ impl App {
             tree,
             tree_scroll: 0,
             status: "Ready".to_owned(),
+            key_echo: None,
             running: false,
             should_quit: false,
             output_scroll: 0,
@@ -88,6 +96,22 @@ impl App {
     pub fn command_context(&self) -> CommandContext {
         CommandContext {
             help_visible: self.show_help,
+        }
+    }
+
+    pub fn record_key(&mut self, text: impl Into<String>) {
+        self.key_echo = Some(KeyEcho {
+            text: text.into(),
+            ticks_remaining: 8,
+        });
+    }
+
+    pub fn tick(&mut self) {
+        if let Some(echo) = &mut self.key_echo {
+            echo.ticks_remaining = echo.ticks_remaining.saturating_sub(1);
+            if echo.ticks_remaining == 0 {
+                self.key_echo = None;
+            }
         }
     }
 
@@ -348,8 +372,9 @@ impl App {
             FocusPane::Output => "output",
         };
         format!(
-            "{} | {} | h/? help | {} | {} passed  {} failed  {} running  {} pending",
+            "{} | key:{} | {} | h/? help | {} | {} passed  {} failed  {} running  {} pending",
             self.status,
+            self.key_echo_text(),
             focus,
             self.tree.selected_path(),
             counts.passed,
@@ -357,6 +382,13 @@ impl App {
             counts.running,
             counts.pending
         )
+    }
+
+    fn key_echo_text(&self) -> &str {
+        self.key_echo
+            .as_ref()
+            .map(|echo| echo.text.as_str())
+            .unwrap_or("-")
     }
 
     fn with_selection_reset(&mut self, action: impl FnOnce(&mut Tree)) {

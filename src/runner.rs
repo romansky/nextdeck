@@ -57,12 +57,15 @@ async fn run_loop(
 fn handle_queue_event(app: &mut App, client: &NextestClient, event: QueueEvent, tx: QueueSender) {
     match event {
         QueueEvent::Input(input) => {
+            if let Some(key) = input.key_display() {
+                app.record_key(key);
+            }
             let command = command_for_input(&input, app.command_context());
             let effect = app.apply_command(command);
             handle_effect(app, client, effect, tx);
         }
         QueueEvent::Run(event) => app.apply_run_event(event),
-        QueueEvent::Tick => {}
+        QueueEvent::Tick => app.tick(),
     }
 }
 
