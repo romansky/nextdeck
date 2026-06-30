@@ -3,8 +3,16 @@ use ratatui::{
     text::Line,
     widgets::{Block, Borders},
 };
+use terminal_colorsaurus::{QueryOptions, ThemeMode as TerminalThemeMode};
 
 use crate::tree::TestStatus;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThemeMode {
+    Auto,
+    Dark,
+    Light,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
@@ -23,7 +31,24 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub const fn default() -> Self {
+    pub fn resolve(mode: ThemeMode) -> Self {
+        match mode {
+            ThemeMode::Auto => Self::auto(),
+            ThemeMode::Dark => Self::dark(),
+            ThemeMode::Light => Self::light(),
+        }
+    }
+
+    pub fn auto() -> Self {
+        let mut options = QueryOptions::default();
+        options.timeout = std::time::Duration::from_millis(200);
+        match terminal_colorsaurus::theme_mode(options) {
+            Ok(TerminalThemeMode::Light) => Self::light(),
+            Ok(TerminalThemeMode::Dark) | Err(_) => Self::dark(),
+        }
+    }
+
+    pub const fn dark() -> Self {
         Self {
             text: Color::Gray,
             muted: Color::DarkGray,
@@ -34,6 +59,23 @@ impl Theme {
             focused_border: Color::LightCyan,
             footer_bg: Color::Blue,
             footer_fg: Color::White,
+            success: Color::Green,
+            danger: Color::Red,
+            warning: Color::Yellow,
+        }
+    }
+
+    pub const fn light() -> Self {
+        Self {
+            text: Color::Black,
+            muted: Color::Gray,
+            accent: Color::Blue,
+            selected_bg: Color::Blue,
+            selected_fg: Color::White,
+            border: Color::Gray,
+            focused_border: Color::Blue,
+            footer_bg: Color::Reset,
+            footer_fg: Color::Black,
             success: Color::Green,
             danger: Color::Red,
             warning: Color::Yellow,
@@ -133,5 +175,27 @@ impl Theme {
         } else {
             Style::default().fg(color)
         }
+    }
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::dark()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forced_modes_select_expected_palettes() {
+        assert_eq!(Theme::resolve(ThemeMode::Dark).text, Color::Gray);
+        assert_eq!(Theme::resolve(ThemeMode::Light).text, Color::Black);
+    }
+
+    #[test]
+    fn light_palette_uses_terminal_background_for_footer() {
+        assert_eq!(Theme::light().footer_bg, Color::Reset);
     }
 }

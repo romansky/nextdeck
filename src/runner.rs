@@ -12,6 +12,7 @@ use crate::{
     nextest::{DiscoveryEvent, NextestClient, RunEvent, RunRequest},
     queue::{self, QueueEvent, QueueSender},
     terminal::AppTerminal,
+    theme::Theme,
     ui,
 };
 
@@ -20,6 +21,7 @@ pub async fn run(
     app: &mut App,
     client: &NextestClient,
     run_on_start: bool,
+    theme: Theme,
 ) -> Result<()> {
     let (queue_tx, queue_rx) = queue::channel();
 
@@ -27,7 +29,7 @@ pub async fn run(
     let git_status = start_git_status(client.current_dir().map(ToOwned::to_owned), queue_tx.clone());
     let input = InputSource::start(queue_tx.clone());
     let ticker = queue::start_ticker(queue_tx.clone(), Duration::from_millis(250));
-    let result = run_loop(terminal, app, client, run_on_start, queue_tx, queue_rx).await;
+    let result = run_loop(terminal, app, client, run_on_start, theme, queue_tx, queue_rx).await;
     discovery.abort();
     git_status.abort();
     ticker.abort();
@@ -40,6 +42,7 @@ async fn run_loop(
     app: &mut App,
     client: &NextestClient,
     run_on_start: bool,
+    theme: Theme,
     queue_tx: QueueSender,
     mut queue_rx: queue::QueueReceiver,
 ) -> Result<()> {
@@ -47,7 +50,7 @@ async fn run_loop(
         let size = terminal.size()?;
         let layout = ui::layout(Rect::new(0, 0, size.width, size.height));
         app.prepare_frame(layout.tree.height, layout.output.height);
-        terminal.draw(|frame| ui::draw(frame, app))?;
+        terminal.draw(|frame| ui::draw(frame, app, &theme))?;
         let Some(event) = queue_rx.recv().await else {
             break;
         };

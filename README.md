@@ -27,6 +27,14 @@ Non-interactive discovery smoke:
 cargo run -- --list-json
 ```
 
+Theme mode defaults to terminal background detection:
+
+```sh
+cargo run -- --theme auto
+cargo run -- --theme dark
+cargo run -- --theme light
+```
+
 ## Local Publishing
 
 Project automation lives in `xtask` and is available through the Cargo alias:

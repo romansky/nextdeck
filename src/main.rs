@@ -16,9 +16,27 @@ use std::{io, path::PathBuf};
 
 use anyhow::Result;
 use app::App;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use nextest::NextestClient;
 use terminal::TerminalSession;
+use theme::{Theme, ThemeMode};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ThemeArg {
+    Auto,
+    Dark,
+    Light,
+}
+
+impl From<ThemeArg> for ThemeMode {
+    fn from(value: ThemeArg) -> Self {
+        match value {
+            ThemeArg::Auto => Self::Auto,
+            ThemeArg::Dark => Self::Dark,
+            ThemeArg::Light => Self::Light,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Terminal-native UI for cargo-nextest")]
@@ -31,6 +49,9 @@ struct Cli {
 
     #[arg(long, help = "Run all discovered tests immediately on startup")]
     run: bool,
+
+    #[arg(long, value_enum, default_value = "auto", help = "Theme mode to use")]
+    theme: ThemeArg,
 
     #[arg(long, help = "Print discovered tests as JSON and exit")]
     list_json: bool,
@@ -59,8 +80,9 @@ async fn main() -> Result<()> {
     }
 
     let mut app = App::discovering();
+    let theme = Theme::resolve(cli.theme.into());
     let mut terminal = TerminalSession::enter()?;
-    let result = runner::run(terminal.terminal_mut(), &mut app, &client, run_on_start).await;
+    let result = runner::run(terminal.terminal_mut(), &mut app, &client, run_on_start, theme).await;
     terminal.restore()?;
     result
 }

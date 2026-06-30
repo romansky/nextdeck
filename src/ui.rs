@@ -49,20 +49,19 @@ pub fn layout(area: Rect) -> AppLayout {
     }
 }
 
-pub fn draw(frame: &mut Frame<'_>, app: &App) {
-    let theme = Theme::default();
+pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let app_layout = layout(frame.area());
-    draw_tree(frame, app, &theme, app_layout.tree);
-    draw_details(frame, app, &theme, app_layout.details);
-    draw_output(frame, app, &theme, app_layout.output);
-    draw_status(frame, app, &theme, app_layout.status);
+    draw_tree(frame, app, theme, app_layout.tree);
+    draw_details(frame, app, theme, app_layout.details);
+    draw_output(frame, app, theme, app_layout.output);
+    draw_status(frame, app, theme, app_layout.status);
 
     if app.is_discovering() || app.discovery.error.is_some() {
-        draw_discovery_modal(frame, app, &theme);
+        draw_discovery_modal(frame, app, theme);
     }
 
     if app.show_help {
-        draw_help(frame, &theme);
+        draw_help(frame, theme);
     }
 }
 
