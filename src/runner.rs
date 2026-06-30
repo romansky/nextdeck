@@ -41,7 +41,7 @@ async fn run_loop(
     terminal: &mut AppTerminal,
     app: &mut App,
     client: &NextestClient,
-    run_on_start: bool,
+    mut run_on_start: bool,
     theme: Theme,
     queue_tx: QueueSender,
     mut queue_rx: queue::QueueReceiver,
@@ -54,7 +54,7 @@ async fn run_loop(
         let Some(event) = queue_rx.recv().await else {
             break;
         };
-        handle_queue_event(app, client, run_on_start, event, queue_tx.clone());
+        handle_queue_event(app, client, &mut run_on_start, event, queue_tx.clone());
     }
     Ok(())
 }
@@ -62,7 +62,7 @@ async fn run_loop(
 fn handle_queue_event(
     app: &mut App,
     client: &NextestClient,
-    run_on_start: bool,
+    run_on_start: &mut bool,
     event: QueueEvent,
     tx: QueueSender,
 ) {
@@ -76,7 +76,8 @@ fn handle_queue_event(
             handle_effect(app, client, effect, tx);
         }
         QueueEvent::Discovery(event) => {
-            if app.apply_discovery_event(event) && run_on_start {
+            if app.apply_discovery_event(event) && *run_on_start {
+                *run_on_start = false;
                 start_run(app, client.clone(), RunRequest::default(), tx);
             }
         }
@@ -96,6 +97,9 @@ fn key_echo_text(key: String, command: &AppCommand) -> String {
 fn handle_effect(app: &mut App, client: &NextestClient, effect: AppEffect, tx: QueueSender) {
     match effect {
         AppEffect::None => {}
+        AppEffect::StartDiscovery => {
+            start_discovery(client.clone(), tx);
+        }
         AppEffect::StartRun(request) => {
             start_run(app, client.clone(), request, tx);
         }

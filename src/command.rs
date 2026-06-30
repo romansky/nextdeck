@@ -19,8 +19,11 @@ pub enum AppCommand {
     MoveEnd,
     PageUp,
     PageDown,
+    RefreshTests,
     RunSelected,
     RunFailed,
+    ToggleShowSuccess,
+    ToggleShowFailed,
     SelectNextFailed,
     SelectPreviousFailed,
     SearchNavigationPending,
@@ -45,8 +48,11 @@ impl AppCommand {
             Self::MoveEnd => Some("end"),
             Self::PageUp => Some("page up"),
             Self::PageDown => Some("page down"),
+            Self::RefreshTests => Some("refresh tests"),
             Self::RunSelected => Some("run"),
             Self::RunFailed => Some("rerun failed"),
+            Self::ToggleShowSuccess => Some("toggle success"),
+            Self::ToggleShowFailed => Some("toggle failed"),
             Self::SelectNextFailed => Some("next failed"),
             Self::SelectPreviousFailed => Some("previous failed"),
             Self::SearchNavigationPending => Some("search"),
@@ -92,6 +98,9 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
         KeyCode::End => AppCommand::MoveEnd,
         KeyCode::PageUp => AppCommand::PageUp,
         KeyCode::PageDown => AppCommand::PageDown,
+        KeyCode::Char('u') => AppCommand::RefreshTests,
+        KeyCode::Char('s') => AppCommand::ToggleShowSuccess,
+        KeyCode::Char('x') => AppCommand::ToggleShowFailed,
         KeyCode::Char('r') => AppCommand::RunSelected,
         KeyCode::Char('R') => AppCommand::RunFailed,
         KeyCode::Char('f') => AppCommand::SelectNextFailed,
@@ -152,6 +161,22 @@ mod tests {
         assert_eq!(
             command_for_key(KeyCode::Char('/'), KeyModifiers::NONE),
             AppCommand::SearchNavigationPending
+        );
+    }
+
+    #[test]
+    fn maps_refresh_and_view_filter_keys() {
+        assert_eq!(
+            command_for_key(KeyCode::Char('u'), KeyModifiers::NONE),
+            AppCommand::RefreshTests
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('s'), KeyModifiers::NONE),
+            AppCommand::ToggleShowSuccess
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('x'), KeyModifiers::NONE),
+            AppCommand::ToggleShowFailed
         );
     }
 

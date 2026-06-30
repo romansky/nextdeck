@@ -47,6 +47,31 @@ impl TestStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TestViewFilter {
+    pub show_success: bool,
+    pub show_failed: bool,
+}
+
+impl Default for TestViewFilter {
+    fn default() -> Self {
+        Self {
+            show_success: true,
+            show_failed: true,
+        }
+    }
+}
+
+impl TestViewFilter {
+    fn allows(self, status: TestStatus) -> bool {
+        match status {
+            TestStatus::Passed => self.show_success,
+            TestStatus::Failed => self.show_failed,
+            TestStatus::Pending | TestStatus::Running | TestStatus::Ignored | TestStatus::Skipped => true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NodeKind {
     Workspace,
@@ -80,6 +105,7 @@ impl TestNode {
 
 pub struct Tree {
     pub root: TestNode,
+    pub view_filter: TestViewFilter,
     selected: usize,
     runner_output: Vec<String>,
 }
@@ -88,6 +114,7 @@ impl Tree {
     pub fn from_tests(tests: Vec<DiscoveredTest>) -> Self {
         let mut tree = Self {
             root: TestNode::new("workspace", NodeKind::Workspace),
+            view_filter: TestViewFilter::default(),
             selected: 0,
             runner_output: Vec::new(),
         };
@@ -100,8 +127,13 @@ impl Tree {
 
     pub fn visible_rows(&self) -> Vec<(usize, &TestNode)> {
         let mut rows = Vec::new();
-        collect_visible(&self.root, 0, &mut rows);
+        collect_visible(&self.root, 0, self.view_filter, true, &mut rows);
         rows
+    }
+
+    pub fn set_view_filter(&mut self, filter: TestViewFilter) {
+        self.view_filter = filter;
+        self.clamp_selection();
     }
 
     pub fn selected_index(&self) -> usize {
@@ -214,6 +246,12 @@ impl Tree {
         if self.runner_output.len() > 500 {
             self.runner_output.drain(0..100);
         }
+    }
+
+    pub fn refresh_from_tests(&mut self, tests: Vec<DiscoveredTest>) {
+        let filter = self.view_filter;
+        *self = Self::from_tests(tests);
+        self.set_view_filter(filter);
     }
 
     pub fn selected_output(&self) -> String {
@@ -369,12 +407,32 @@ fn child_position(parent: &TestNode, label: &str) -> Option<usize> {
         .position(|child| child.label == label)
 }
 
-fn collect_visible<'a>(node: &'a TestNode, depth: usize, rows: &mut Vec<(usize, &'a TestNode)>) {
+fn collect_visible<'a>(
+    node: &'a TestNode,
+    depth: usize,
+    filter: TestViewFilter,
+    force_include: bool,
+    rows: &mut Vec<(usize, &'a TestNode)>,
+) {
+    if !force_include && !node_has_visible_tests(node, filter) {
+        return;
+    }
+
     rows.push((depth, node));
     if node.expanded {
         for child in &node.children {
-            collect_visible(child, depth + 1, rows);
+            collect_visible(child, depth + 1, filter, false, rows);
         }
+    }
+}
+
+fn node_has_visible_tests(node: &TestNode, filter: TestViewFilter) -> bool {
+    match &node.kind {
+        NodeKind::Test(_) => filter.allows(node.status),
+        NodeKind::Workspace | NodeKind::Package { .. } | NodeKind::Module { .. } => node
+            .children
+            .iter()
+            .any(|child| node_has_visible_tests(child, filter)),
     }
 }
 
@@ -599,6 +657,78 @@ mod tests {
             output,
             "No captured output for tests under this selection yet"
         );
+    }
+
+    #[test]
+    fn view_filter_hides_passed_and_failed_test_rows() {
+        let mut tree = Tree::from_tests(vec![
+            discovered_test("demo::demo", "demo", "tests", "passed"),
+            discovered_test("demo::demo", "demo", "tests", "failed"),
+            discovered_test("demo::demo", "demo", "tests", "pending"),
+        ]);
+        set_test_status(&mut tree, "tests::passed", TestStatus::Passed);
+        set_test_status(&mut tree, "tests::failed", TestStatus::Failed);
+
+        tree.set_view_filter(TestViewFilter {
+            show_success: false,
+            show_failed: true,
+        });
+        let labels = visible_labels(&tree);
+        assert!(!labels.contains(&"passed".to_owned()));
+        assert!(labels.contains(&"failed".to_owned()));
+        assert!(labels.contains(&"pending".to_owned()));
+
+        tree.set_view_filter(TestViewFilter {
+            show_success: true,
+            show_failed: false,
+        });
+        let labels = visible_labels(&tree);
+        assert!(labels.contains(&"passed".to_owned()));
+        assert!(!labels.contains(&"failed".to_owned()));
+        assert!(labels.contains(&"pending".to_owned()));
+    }
+
+    #[test]
+    fn refresh_from_tests_preserves_view_filter() {
+        let mut tree = Tree::from_tests(vec![discovered_test(
+            "demo::demo",
+            "demo",
+            "tests",
+            "old",
+        )]);
+        tree.set_view_filter(TestViewFilter {
+            show_success: false,
+            show_failed: true,
+        });
+
+        tree.refresh_from_tests(vec![discovered_test(
+            "demo::demo",
+            "demo",
+            "tests",
+            "new",
+        )]);
+
+        assert!(!tree.view_filter.show_success);
+        assert!(tree.view_filter.show_failed);
+        assert!(visible_labels(&tree).contains(&"new".to_owned()));
+    }
+
+    fn set_test_status(tree: &mut Tree, name: &str, status: TestStatus) {
+        tree.update_status(
+            &TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: name.to_owned(),
+            },
+            status,
+        );
+    }
+
+    fn visible_labels(tree: &Tree) -> Vec<String> {
+        tree.visible_rows()
+            .iter()
+            .map(|(_, node)| node.label.clone())
+            .collect()
     }
 
     fn discovered_test(binary_id: &str, package: &str, module: &str, name: &str) -> DiscoveredTest {

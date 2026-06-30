@@ -78,8 +78,13 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
         .collect::<Vec<_>>();
 
     let focused = app.focus == FocusPane::Tree;
+    let title = format!(
+        "Tests pass:{} fail:{}",
+        on_off(app.tree.view_filter.show_success),
+        on_off(app.tree.view_filter.show_failed)
+    );
     let list = List::new(items)
-        .block(theme.panel_block("Tests", focused))
+        .block(theme.panel_block(&title, focused))
         .highlight_style(theme.selected());
     frame.render_widget(Clear, area);
     frame.render_widget(list, area);
@@ -267,7 +272,7 @@ fn status_spans<'a>(app: &'a App, theme: &'a Theme) -> Vec<Span<'a>> {
 }
 
 fn draw_help(frame: &mut Frame<'_>, theme: &Theme) {
-    let area = centered_rect(68, 82, frame.area());
+    let area = centered_rect(72, 96, frame.area());
     let text = vec![
         Line::styled("Navigation", theme.title(true)),
         help_line("Up/Down", "move selection", theme),
@@ -277,9 +282,14 @@ fn draw_help(frame: &mut Frame<'_>, theme: &Theme) {
         help_line("Tab", "switch tree/output focus", theme),
         Line::from(""),
         Line::styled("Runs", theme.title(true)),
+        help_line("u", "refresh test list", theme),
         help_line("r", "run selected scope", theme),
         help_line("R", "rerun failures", theme),
         help_line("f/F", "next or previous failure", theme),
+        Line::from(""),
+        Line::styled("View", theme.title(true)),
+        help_line("s", "toggle successful tests", theme),
+        help_line("x", "toggle failed tests", theme),
         Line::from(""),
         Line::styled("Output", theme.title(true)),
         help_line("End", "follow output bottom", theme),
@@ -301,6 +311,10 @@ fn help_line(key: &'static str, label: &'static str, theme: &Theme) -> Line<'sta
         Span::raw(" "),
         Span::styled(label, theme.text()),
     ])
+}
+
+fn on_off(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

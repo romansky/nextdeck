@@ -44,6 +44,7 @@ pub struct DiscoveryState {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum AppEffect {
     None,
+    StartDiscovery,
     StartRun(RunRequest),
 }
 
@@ -149,7 +150,7 @@ impl App {
         match event {
             DiscoveryEvent::Finished(Ok(tests)) => {
                 let count = tests.len();
-                self.tree = Tree::from_tests(tests);
+                self.tree.refresh_from_tests(tests);
                 self.tree_scroll = 0;
                 self.output_scroll = 0;
                 self.output_follow = true;
@@ -267,6 +268,18 @@ impl App {
                 }
                 AppEffect::None
             }
+            AppCommand::RefreshTests => {
+                if self.discovery.running {
+                    self.status = "Discovery already in progress".to_owned();
+                    AppEffect::None
+                } else if self.running {
+                    self.status = "Run in progress".to_owned();
+                    AppEffect::None
+                } else {
+                    self.begin_discovery();
+                    AppEffect::StartDiscovery
+                }
+            }
             AppCommand::RunSelected => {
                 if self.discovery.running {
                     self.status = "Discovering tests".to_owned();
@@ -288,6 +301,14 @@ impl App {
                     self.status = "No failed tests to rerun".to_owned();
                     AppEffect::None
                 }
+            }
+            AppCommand::ToggleShowSuccess => {
+                self.toggle_show_success();
+                AppEffect::None
+            }
+            AppCommand::ToggleShowFailed => {
+                self.toggle_show_failed();
+                AppEffect::None
             }
             AppCommand::SelectNextFailed => {
                 self.select_next_failed();
@@ -360,6 +381,32 @@ impl App {
             self.status = "No failed test visible".to_owned();
         }
         self.after_selection_action(before);
+    }
+
+    pub fn toggle_show_success(&mut self) {
+        let mut filter = self.tree.view_filter;
+        filter.show_success = !filter.show_success;
+        self.tree.set_view_filter(filter);
+        self.ensure_tree_selection_visible();
+        self.output_scroll = 0;
+        self.output_follow = true;
+        self.status = format!(
+            "Show successful tests: {}",
+            if filter.show_success { "on" } else { "off" }
+        );
+    }
+
+    pub fn toggle_show_failed(&mut self) {
+        let mut filter = self.tree.view_filter;
+        filter.show_failed = !filter.show_failed;
+        self.tree.set_view_filter(filter);
+        self.ensure_tree_selection_visible();
+        self.output_scroll = 0;
+        self.output_follow = true;
+        self.status = format!(
+            "Show failed tests: {}",
+            if filter.show_failed { "on" } else { "off" }
+        );
     }
 
     pub fn scroll_output_up(&mut self, amount: u16) {
