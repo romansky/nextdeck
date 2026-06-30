@@ -86,17 +86,25 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
 
     let focused = app.focus == FocusPane::Tree;
     let title = format!(
-        "Tests pass:{} fail:{} ign:{} skip:{}",
-        on_off(app.tree.view_filter.show_success),
-        on_off(app.tree.view_filter.show_failed),
-        on_off(app.tree.view_filter.show_ignored),
-        on_off(app.tree.view_filter.show_skipped)
+        "Tests {} {} {} {}",
+        filter_hint("pass", "s", app.tree.view_filter.show_success),
+        filter_hint("fail", "x", app.tree.view_filter.show_failed),
+        filter_hint("ign", "i", app.tree.view_filter.show_ignored),
+        filter_hint("skip", "k", app.tree.view_filter.show_skipped)
     );
     let list = List::new(items)
         .block(theme.panel_block(&title, focused))
         .highlight_style(theme.selected());
     frame.render_widget(Clear, area);
     frame.render_widget(list, area);
+}
+
+fn filter_hint(label: &str, key: &str, enabled: bool) -> String {
+    format!("{label}[{key}]:{}", on_off(enabled))
+}
+
+fn on_off(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
 }
 
 fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
@@ -471,10 +479,6 @@ fn help_line(key: &'static str, label: &'static str, theme: &Theme) -> Line<'sta
     ])
 }
 
-fn on_off(value: bool) -> &'static str {
-    if value { "on" } else { "off" }
-}
-
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -521,5 +525,11 @@ mod tests {
 
         app.output_scroll = 3;
         assert_eq!(output_title(&app, text), "Output Bot 4-6/6");
+    }
+
+    #[test]
+    fn filter_hint_includes_toggle_key() {
+        assert_eq!(filter_hint("pass", "s", true), "pass[s]:on");
+        assert_eq!(filter_hint("fail", "x", false), "fail[x]:off");
     }
 }
