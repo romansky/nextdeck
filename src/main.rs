@@ -8,6 +8,7 @@ mod nextest;
 mod output;
 mod output_pane;
 mod queue;
+mod scroll;
 mod source;
 mod runner;
 mod state;

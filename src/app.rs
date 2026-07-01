@@ -7,6 +7,7 @@ use crate::{
     git_status::GitStatus,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
     output_pane::{OutputSearchState, SearchDirection},
+    scroll,
     source,
     state::StatusCounts,
     tree::{DiscoveredTest, NodeKind, TestNode, TestStatus, Tree},
@@ -586,12 +587,17 @@ impl App {
     }
 
     pub fn scroll_output_up(&mut self, amount: u16) {
-        self.output_scroll = self.output_scroll.saturating_sub(amount.max(1));
+        self.output_scroll = scroll::up(self.output_scroll as usize, amount as usize) as u16;
         self.output_follow = false;
     }
 
     pub fn scroll_output_down(&mut self, amount: u16) {
-        self.output_scroll = self.output_scroll.saturating_add(amount.max(1));
+        self.output_scroll = scroll::down(
+            self.output_scroll as usize,
+            amount as usize,
+            usize::from(u16::MAX) + 1,
+            1,
+        ) as u16;
     }
 
     pub fn scroll_output_bottom(&mut self) {
@@ -800,21 +806,12 @@ impl App {
 
     fn ensure_tree_selection_visible(&mut self) {
         let rows_len = self.tree.visible_rows().len();
-        if rows_len == 0 {
-            self.tree_scroll = 0;
-            return;
-        }
-
-        let selected = self.tree.selected_index();
-        let viewport = self.tree_page_size.max(1);
-        if selected < self.tree_scroll {
-            self.tree_scroll = selected;
-        } else if selected >= self.tree_scroll.saturating_add(viewport) {
-            self.tree_scroll = selected.saturating_add(1).saturating_sub(viewport);
-        }
-
-        let max_scroll = rows_len.saturating_sub(viewport);
-        self.tree_scroll = self.tree_scroll.min(max_scroll);
+        self.tree_scroll = scroll::ensure_visible(
+            self.tree_scroll,
+            self.tree.selected_index(),
+            rows_len,
+            self.tree_page_size,
+        );
     }
 
     fn clamp_output_scroll(&mut self) {
@@ -824,9 +821,7 @@ impl App {
     }
 
     fn max_output_scroll(&self, line_count: usize) -> u16 {
-        line_count
-            .saturating_sub(self.output_page_size as usize)
-            .min(u16::MAX as usize) as u16
+        scroll::max_scroll(line_count, self.output_page_size as usize).min(u16::MAX as usize) as u16
     }
 
     fn reset_for_run(&mut self, request: &RunRequest) {
