@@ -24,6 +24,8 @@ pub enum AppCommand {
     RefreshTests,
     RunSelected,
     RunFailed,
+    OpenSource,
+    OpenOutput,
     ToggleShowSuccess,
     ToggleShowFailed,
     ToggleShowIgnored,
@@ -66,6 +68,8 @@ impl AppCommand {
             Self::RefreshTests => Some("refresh tests"),
             Self::RunSelected => Some("run"),
             Self::RunFailed => Some("rerun failed"),
+            Self::OpenSource => Some("open source"),
+            Self::OpenOutput => Some("open output"),
             Self::ToggleShowSuccess => Some("toggle success"),
             Self::ToggleShowFailed => Some("toggle failed"),
             Self::ToggleShowIgnored => Some("toggle ignored"),
@@ -171,6 +175,7 @@ fn command_for_tests_key(code: KeyCode) -> AppCommand {
         KeyCode::Char('k') => AppCommand::ToggleShowSkipped,
         KeyCode::Char('r') => AppCommand::RunSelected,
         KeyCode::Char('R') => AppCommand::RunFailed,
+        KeyCode::Char('o') => AppCommand::OpenSource,
         KeyCode::Char('f') => AppCommand::SelectNextFailed,
         KeyCode::Char('F') => AppCommand::SelectPreviousFailed,
         _ => AppCommand::Noop,
@@ -185,6 +190,7 @@ fn command_for_output_key(code: KeyCode) -> AppCommand {
         KeyCode::Char('f') => AppCommand::ToggleOutputFilter,
         KeyCode::Char('r') => AppCommand::ToggleOutputRegex,
         KeyCode::Char('c') => AppCommand::ToggleOutputCaseSensitive,
+        KeyCode::Char('o') => AppCommand::OpenOutput,
         _ => AppCommand::Noop,
     }
 }
@@ -281,6 +287,10 @@ mod tests {
             command_for_key(KeyCode::Char('k'), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::ToggleShowSkipped
         );
+        assert_eq!(
+            command_for_key(KeyCode::Char('o'), KeyModifiers::NONE, CommandFocus::Tests),
+            AppCommand::OpenSource
+        );
     }
 
     #[test]
@@ -324,6 +334,10 @@ mod tests {
         assert_eq!(
             command_for_key(KeyCode::Char('N'), KeyModifiers::SHIFT, CommandFocus::Output),
             AppCommand::FindPreviousOutputMatch
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('o'), KeyModifiers::NONE, CommandFocus::Output),
+            AppCommand::OpenOutput
         );
     }
 

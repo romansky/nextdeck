@@ -14,7 +14,10 @@ use tokio::{
     sync::mpsc,
 };
 
-use crate::tree::{DiscoveredTest, TestKey, TestStatus};
+use crate::{
+    source,
+    tree::{DiscoveredTest, TestKey, TestStatus},
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct NextestClient {
@@ -279,6 +282,9 @@ impl NextestClient {
 fn summary_to_tests(summary: TestListSummary) -> Vec<DiscoveredTest> {
     let mut tests = Vec::with_capacity(summary.test_count);
     for (binary_id, suite) in summary.rust_suites {
+        let cwd = suite.cwd.as_std_path().to_path_buf();
+        let source_path =
+            source::binary_source_path(&cwd, suite.binary.kind.as_str(), &suite.binary.binary_name);
         for (case_name, case) in suite.test_cases {
             let full_name = case_name.as_str().to_owned();
             let (module, name) = case_name.module_path_and_name();
@@ -302,6 +308,8 @@ fn summary_to_tests(summary: TestListSummary) -> Vec<DiscoveredTest> {
                 package: suite.package_name.clone(),
                 binary: suite.binary.binary_name.clone(),
                 binary_kind: suite.binary.kind.as_str().to_owned(),
+                cwd: cwd.clone(),
+                source_path: source_path.clone(),
                 module: module.map(ToOwned::to_owned),
                 name: name.to_owned(),
                 full_name,

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use serde::Serialize;
 
@@ -17,6 +17,8 @@ pub struct DiscoveredTest {
     pub package: String,
     pub binary: String,
     pub binary_kind: String,
+    pub cwd: PathBuf,
+    pub source_path: Option<PathBuf>,
     pub module: Option<String>,
     pub name: String,
     pub full_name: String,
@@ -651,6 +653,8 @@ mod tests {
             package: "demo".to_owned(),
             binary: "demo".to_owned(),
             binary_kind: "lib".to_owned(),
+            cwd: PathBuf::from("."),
+            source_path: None,
             module: Some("a::b".to_owned()),
             name: "works".to_owned(),
             full_name: "a::b::works".to_owned(),
@@ -678,6 +682,8 @@ mod tests {
             package: "demo".to_owned(),
             binary: "scenario".to_owned(),
             binary_kind: "test".to_owned(),
+            cwd: PathBuf::from("."),
+            source_path: Some(PathBuf::from("src/tier_scenario.rs")),
             module: None,
             name: "top_level_test".to_owned(),
             full_name: "top_level_test".to_owned(),
@@ -960,6 +966,8 @@ mod tests {
             package: package.to_owned(),
             binary: package.to_owned(),
             binary_kind: "lib".to_owned(),
+            cwd: PathBuf::from("."),
+            source_path: None,
             module: Some(module.to_owned()),
             name: name.to_owned(),
             full_name: format!("{module}::{name}"),

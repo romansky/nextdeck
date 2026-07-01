@@ -1,11 +1,13 @@
 mod app;
 mod command;
 mod config;
+mod editor;
 mod git_status;
 mod input;
 mod nextest;
 mod output;
 mod queue;
+mod source;
 mod runner;
 mod state;
 mod terminal;
@@ -54,6 +56,12 @@ struct Cli {
     #[arg(long, value_enum, default_value = "auto", help = "Theme mode to use")]
     theme: ThemeArg,
 
+    #[arg(
+        long,
+        help = "Editor command for opening sources/output. Also reads CARGO_TEST_TUI_EDITOR, VISUAL, EDITOR"
+    )]
+    editor: Option<String>,
+
     #[arg(long, help = "Print discovered tests as JSON and exit")]
     list_json: bool,
 
@@ -72,6 +80,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let run_on_start = cli.run;
+    let editor = editor::EditorConfig::resolve(cli.editor);
     let client = NextestClient::new(cli.manifest_path, cli.current_dir, cli.nextest_args);
     if cli.list_json {
         let tests = client.discover().await?;
@@ -89,6 +98,7 @@ async fn main() -> Result<()> {
         &client,
         run_on_start,
         theme,
+        editor,
     )
     .await;
     terminal.restore()?;

@@ -35,6 +35,14 @@ cargo run -- --theme dark
 cargo run -- --theme light
 ```
 
+Open source/output in an editor with `--editor`, `CARGO_TEST_TUI_EDITOR`, `VISUAL`, or `EDITOR`:
+
+```sh
+cargo run -- --editor idea
+cargo run -- --editor code
+cargo run -- --editor 'open -a "IntelliJ IDEA"'
+```
+
 ## Local Publishing
 
 Project automation lives in `xtask` and is available through the Cargo alias:
@@ -58,6 +66,7 @@ Keys:
 - `Left` / `Right`: collapse or expand
 - `Enter` / `Space`: toggle expansion
 - `Tab`: switch focus between tree and output
+- `o`: open the selected test source in tree focus, or current output as a temp text file in output focus
 - `r`: run selected scope, or all tests from the workspace node
 - `R`: rerun failed tests
 - `f` / `F`: jump to next/previous failure

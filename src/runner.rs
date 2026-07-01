@@ -7,7 +7,9 @@ use tokio::sync::mpsc;
 use crate::{
     app::{App, AppEffect},
     command::{AppCommand, command_for_input},
-    config, git_status,
+    config,
+    editor::EditorConfig,
+    git_status,
     input::InputSource,
     nextest::{DiscoveryEvent, NextestClient, RunEvent, RunRequest},
     queue::{self, QueueEvent, QueueSender},
@@ -22,6 +24,7 @@ pub async fn run(
     client: &NextestClient,
     run_on_start: bool,
     theme: Theme,
+    editor: EditorConfig,
 ) -> Result<()> {
     let (queue_tx, queue_rx) = queue::channel();
 
@@ -35,10 +38,13 @@ pub async fn run(
     let result = run_loop(
         terminal,
         app,
-        client,
         run_on_start,
-        theme,
-        queue_tx,
+        RunLoopContext {
+            client,
+            theme,
+            editor,
+            queue_tx,
+        },
         queue_rx,
     )
     .await;
@@ -52,10 +58,8 @@ pub async fn run(
 async fn run_loop(
     terminal: &mut AppTerminal,
     app: &mut App,
-    client: &NextestClient,
     mut run_on_start: bool,
-    theme: Theme,
-    queue_tx: QueueSender,
+    context: RunLoopContext<'_>,
     mut queue_rx: queue::QueueReceiver,
 ) -> Result<()> {
     while !app.should_quit {
@@ -65,18 +69,33 @@ async fn run_loop(
             app.settings.tree_width_percent,
         );
         app.prepare_frame(layout.tree.height, layout.output.height);
-        terminal.draw(|frame| ui::draw(frame, app, &theme))?;
+        terminal.draw(|frame| ui::draw(frame, app, &context.theme))?;
         let Some(event) = queue_rx.recv().await else {
             break;
         };
-        handle_queue_event(app, client, &mut run_on_start, event, queue_tx.clone());
+        handle_queue_event(
+            app,
+            context.client,
+            &context.editor,
+            &mut run_on_start,
+            event,
+            context.queue_tx.clone(),
+        );
     }
     Ok(())
+}
+
+struct RunLoopContext<'a> {
+    client: &'a NextestClient,
+    theme: Theme,
+    editor: EditorConfig,
+    queue_tx: QueueSender,
 }
 
 fn handle_queue_event(
     app: &mut App,
     client: &NextestClient,
+    editor: &EditorConfig,
     run_on_start: &mut bool,
     event: QueueEvent,
     tx: QueueSender,
@@ -88,7 +107,7 @@ fn handle_queue_event(
                 app.record_key(key_echo_text(key, &command));
             }
             let effect = app.apply_command(command);
-            handle_effect(app, client, effect, tx);
+            handle_effect(app, client, editor, effect, tx);
         }
         QueueEvent::Discovery(event) => {
             if app.apply_discovery_event(event) && *run_on_start {
@@ -109,7 +128,13 @@ fn key_echo_text(key: String, command: &AppCommand) -> String {
     }
 }
 
-fn handle_effect(app: &mut App, client: &NextestClient, effect: AppEffect, tx: QueueSender) {
+fn handle_effect(
+    app: &mut App,
+    client: &NextestClient,
+    editor: &EditorConfig,
+    effect: AppEffect,
+    tx: QueueSender,
+) {
     match effect {
         AppEffect::None => {}
         AppEffect::SaveSettings(settings) => {
@@ -123,6 +148,22 @@ fn handle_effect(app: &mut App, client: &NextestClient, effect: AppEffect, tx: Q
         AppEffect::StartRun(request) => {
             start_run(app, client.clone(), request, tx);
         }
+        AppEffect::OpenSource(location) => match editor.open_source(&location) {
+            Ok(()) => {
+                app.status = format!("Opened source with {}", editor.command());
+            }
+            Err(error) => {
+                app.status = format!("Failed to open source: {error}");
+            }
+        },
+        AppEffect::OpenOutput(request) => match editor.open_text(&request.title, &request.text) {
+            Ok(path) => {
+                app.status = format!("Opened output {}", path.display());
+            }
+            Err(error) => {
+                app.status = format!("Failed to open output: {error}");
+            }
+        },
     }
 }
 

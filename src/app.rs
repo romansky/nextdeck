@@ -5,10 +5,12 @@ use regex::{Regex, RegexBuilder};
 use crate::{
     command::{AppCommand, CommandContext, CommandFocus},
     config::{self, AppSettings, TREE_WIDTH_STEP_PERCENT},
+    editor::SourceLocation,
     git_status::GitStatus,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
+    source,
     state::StatusCounts,
-    tree::{NodeKind, TestStatus, Tree},
+    tree::{DiscoveredTest, NodeKind, TestNode, TestStatus, Tree},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,6 +105,14 @@ pub enum AppEffect {
     SaveSettings(AppSettings),
     StartDiscovery,
     StartRun(RunRequest),
+    OpenSource(SourceLocation),
+    OpenOutput(OutputOpenRequest),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OutputOpenRequest {
+    pub title: String,
+    pub text: String,
 }
 
 impl App {
@@ -376,6 +386,8 @@ impl App {
                     AppEffect::None
                 }
             }
+            AppCommand::OpenSource => self.open_source_effect(),
+            AppCommand::OpenOutput => self.open_output_effect(),
             AppCommand::ToggleShowSuccess => {
                 self.toggle_show_success();
                 AppEffect::None
@@ -739,6 +751,34 @@ impl App {
         }
     }
 
+    fn open_source_effect(&mut self) -> AppEffect {
+        let Some(location) = self.selected_source_location() else {
+            self.status = "No source path available for selection".to_owned();
+            return AppEffect::None;
+        };
+        self.status = format!("Opening {}", location.path.display());
+        AppEffect::OpenSource(location)
+    }
+
+    fn open_output_effect(&mut self) -> AppEffect {
+        let title = self.tree.selected_path();
+        let text = self.output_text();
+        self.status = "Opening output".to_owned();
+        AppEffect::OpenOutput(OutputOpenRequest { title, text })
+    }
+
+    fn selected_source_location(&self) -> Option<SourceLocation> {
+        let node = self.tree.selected_node()?;
+        match &node.kind {
+            NodeKind::Test(test) => source_location_for_test(test, true),
+            NodeKind::Binary { .. } | NodeKind::Module { .. } => {
+                let test = first_descendant_test(node)?;
+                source_location_for_test(test, false)
+            }
+            NodeKind::Workspace | NodeKind::Package { .. } => None,
+        }
+    }
+
     fn with_selection_reset(&mut self, action: impl FnOnce(&mut Tree)) {
         let before = self.tree.selected_index();
         action(&mut self.tree);
@@ -925,6 +965,21 @@ impl App {
             .filter_map(|(index, line)| matcher.is_match(line).then_some(index))
             .collect())
     }
+}
+
+fn first_descendant_test(node: &TestNode) -> Option<&DiscoveredTest> {
+    if let NodeKind::Test(test) = &node.kind {
+        return Some(test);
+    }
+    node.children.iter().find_map(first_descendant_test)
+}
+
+fn source_location_for_test(test: &DiscoveredTest, include_line: bool) -> Option<SourceLocation> {
+    let path = test.source_path.clone()?;
+    let line = include_line
+        .then(|| source::find_test_line(&path, &test.full_name))
+        .flatten();
+    Some(SourceLocation { path, line })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1289,6 +1344,8 @@ mod tests {
                 package: "demo".to_owned(),
                 binary: "demo".to_owned(),
                 binary_kind: "lib".to_owned(),
+                cwd: std::path::PathBuf::from("."),
+                source_path: None,
                 module: Some("tests".to_owned()),
                 name: format!("case_{index:02}"),
                 full_name: format!("tests::case_{index:02}"),

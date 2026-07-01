@@ -238,11 +238,13 @@ fn selected_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
             name,
             kind,
         } => {
+            let source = first_source_path(node);
             lines.extend([
                 detail_line("kind", "target", theme.text(), theme),
                 detail_line("pkg", package.clone(), theme.accent(), theme),
                 detail_line("target", name.clone(), theme.accent(), theme),
                 detail_line("type", kind.clone(), theme.text(), theme),
+                detail_line("source", source, theme.text(), theme),
                 detail_status_line(node.status, theme),
                 detail_line("duration", duration_label(node), theme.text(), theme),
             ]);
@@ -268,12 +270,36 @@ fn selected_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
                     theme,
                 ),
                 detail_line("test", test.full_name.clone(), theme.accent(), theme),
+                detail_line(
+                    "source",
+                    test.source_path
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
+                    theme.text(),
+                    theme,
+                ),
                 detail_line("duration", duration_label(node), theme.text(), theme),
             ]);
         }
     }
 
     lines
+}
+
+fn first_source_path(node: &TestNode) -> String {
+    if let NodeKind::Test(test) = &node.kind
+        && let Some(path) = &test.source_path
+    {
+        return path.display().to_string();
+    }
+    node.children
+        .iter()
+        .find_map(|child| {
+            let path = first_source_path(child);
+            (path != "-").then_some(path)
+        })
+        .unwrap_or_else(|| "-".to_owned())
 }
 
 fn run_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
@@ -494,6 +520,7 @@ fn draw_help(frame: &mut Frame<'_>, theme: &Theme) {
         help_line("u", "refresh test list", theme),
         help_line("r", "run selected scope", theme),
         help_line("R", "rerun failures", theme),
+        help_line("o", "open selected test source", theme),
         help_line("f/F", "next or previous failure", theme),
         Line::from(""),
         Line::styled("View", theme.title(true)),
@@ -509,6 +536,7 @@ fn draw_help(frame: &mut Frame<'_>, theme: &Theme) {
         help_line("f", "toggle output match filter", theme),
         help_line("r", "toggle output regex", theme),
         help_line("c", "toggle output case sensitivity", theme),
+        help_line("o", "open output as text file", theme),
         help_line("h/?/F1", "close help", theme),
         help_line("q", "quit", theme),
     ];
