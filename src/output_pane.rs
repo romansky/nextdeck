@@ -10,6 +10,37 @@ pub struct OutputSearchState {
     pub current_line: Option<usize>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchBoxView {
+    pub box_text: String,
+    pub match_summary: Option<(usize, usize)>,
+    pub filter: bool,
+    pub regex: bool,
+    pub case_sensitive: bool,
+    pub invalid: bool,
+}
+
+impl SearchBoxView {
+    pub fn title_fragment(&self) -> String {
+        let summary = self
+            .match_summary
+            .map(|(current, total)| format!(" {current}/{total}"))
+            .unwrap_or_default();
+        let invalid = if self.invalid { " !regex" } else { "" };
+        format!(
+            " search{}{}{} f:{} r:{} c:{}",
+            self.box_text,
+            summary,
+            invalid,
+            on_off(self.filter),
+            on_off(self.regex),
+            on_off(self.case_sensitive)
+        )
+    }
+}
+
+const SEARCH_BOX_WIDTH: usize = 18;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchDirection {
     Next,
@@ -17,6 +48,30 @@ pub enum SearchDirection {
 }
 
 impl OutputSearchState {
+    pub fn view(&self, text: &str) -> SearchBoxView {
+        SearchBoxView {
+            box_text: self.box_text(SEARCH_BOX_WIDTH),
+            match_summary: if self.query.is_empty() {
+                None
+            } else {
+                self.match_summary(text)
+            },
+            filter: self.filter,
+            regex: self.regex,
+            case_sensitive: self.case_sensitive,
+            invalid: self.error().is_some(),
+        }
+    }
+
+    pub fn box_text(&self, width: usize) -> String {
+        let mut content = format!("/{}", self.query);
+        if self.input_active {
+            content.push('_');
+        }
+        let content = fit_search_content(&content, width);
+        format!("[{content:<width$}]")
+    }
+
     pub fn prompt(&self) -> String {
         format!("Output search: {}", self.query)
     }
@@ -100,6 +155,21 @@ impl OutputSearchState {
             total: matches.len(),
         }))
     }
+}
+
+fn fit_search_content(content: &str, width: usize) -> String {
+    let char_count = content.chars().count();
+    if char_count <= width {
+        return content.to_owned();
+    }
+    content
+        .chars()
+        .skip(char_count.saturating_sub(width))
+        .collect()
+}
+
+fn on_off(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -191,5 +261,39 @@ mod tests {
             .expect("valid search")
             .expect("match");
         assert_eq!(previous.line, 2);
+    }
+
+    #[test]
+    fn search_box_view_is_fixed_width_and_marks_active_input() {
+        let search = OutputSearchState {
+            query: "panic".to_owned(),
+            input_active: true,
+            ..OutputSearchState::default()
+        };
+
+        assert_eq!(search.box_text(18), "[/panic_           ]");
+        assert_eq!(search.box_text(18).len(), 20);
+    }
+
+    #[test]
+    fn search_box_view_truncates_long_query_from_left() {
+        let search = OutputSearchState {
+            query: "abcdefghijklmnopqrstuvwxyz".to_owned(),
+            ..OutputSearchState::default()
+        };
+
+        assert_eq!(search.box_text(18), "[ijklmnopqrstuvwxyz]");
+    }
+
+    #[test]
+    fn search_box_view_marks_invalid_regex() {
+        let search = OutputSearchState {
+            query: "(".to_owned(),
+            regex: true,
+            ..OutputSearchState::default()
+        };
+
+        assert!(search.view("anything").invalid);
+        assert!(search.view("anything").title_fragment().contains("!regex"));
     }
 }

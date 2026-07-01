@@ -35,6 +35,7 @@ pub enum AppCommand {
     StartOutputSearch,
     OutputSearchInput(char),
     OutputSearchBackspace,
+    ClearOutputSearch,
     AcceptOutputSearch,
     CancelOutputSearch,
     FindNextOutputMatch,
@@ -343,6 +344,7 @@ impl AppCommand {
             Self::StartOutputSearch => Some(CommandKind::StartOutputSearch),
             Self::OutputSearchInput(_)
             | Self::OutputSearchBackspace
+            | Self::ClearOutputSearch
             | Self::AcceptOutputSearch
             | Self::CancelOutputSearch => None,
             Self::FindNextOutputMatch | Self::FindPreviousOutputMatch => {
@@ -368,6 +370,7 @@ impl AppCommand {
             Self::Resize => Some("resize"),
             Self::OutputSearchInput(_) => Some("search text"),
             Self::OutputSearchBackspace => Some("search erase"),
+            Self::ClearOutputSearch => Some("search clear"),
             Self::AcceptOutputSearch => Some("search accept"),
             Self::CancelOutputSearch => Some("search cancel"),
             Self::ReportStatus(_) => Some("status"),
@@ -419,6 +422,9 @@ fn command_for_output_search_input(code: KeyCode, modifiers: KeyModifiers) -> Ap
         KeyCode::Esc => AppCommand::CancelOutputSearch,
         KeyCode::Enter => AppCommand::AcceptOutputSearch,
         KeyCode::Backspace => AppCommand::OutputSearchBackspace,
+        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+            AppCommand::ClearOutputSearch
+        }
         KeyCode::Char(char) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
             AppCommand::OutputSearchInput(char)
         }
@@ -669,6 +675,15 @@ mod tests {
         assert_eq!(
             command_for_input(&backspace, context),
             AppCommand::OutputSearchBackspace
+        );
+
+        let clear = InputEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(
+            command_for_input(&clear, context),
+            AppCommand::ClearOutputSearch
         );
 
         let enter =

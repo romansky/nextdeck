@@ -430,6 +430,10 @@ impl App {
                 self.pop_output_search_char();
                 AppEffect::None
             }
+            AppCommand::ClearOutputSearch => {
+                self.clear_output_search();
+                AppEffect::None
+            }
             AppCommand::AcceptOutputSearch => {
                 self.accept_output_search();
                 AppEffect::None
@@ -607,11 +611,6 @@ impl App {
     pub fn output_text(&self) -> String {
         let text = self.tree.selected_output();
         self.output_search.filtered_text(&text)
-    }
-
-    pub fn output_search_match_summary(&self) -> Option<(usize, usize)> {
-        let text = self.output_text();
-        self.output_search.match_summary(&text)
     }
 
     pub fn output_search_error(&self) -> Option<String> {
@@ -907,6 +906,14 @@ impl App {
         self.output_search.query.pop();
         self.output_search.current_line = None;
         self.status = output_search_prompt(&self.output_search);
+    }
+
+    fn clear_output_search(&mut self) {
+        self.output_search.query.clear();
+        self.output_search.current_line = None;
+        self.output_scroll = 0;
+        self.output_follow = false;
+        self.status = "Output search cleared".to_owned();
     }
 
     fn accept_output_search(&mut self) {
@@ -1341,6 +1348,25 @@ mod tests {
         assert!(!app.output_search.input_active);
         assert_eq!(app.output_search.query, "panic");
         assert_eq!(app.output_scroll, 2);
+    }
+
+    #[test]
+    fn output_search_clear_keeps_input_active_and_resets_match() {
+        let mut app = app_with_finished_output("zero\npanic\nok", "");
+
+        app.apply_command(AppCommand::StartOutputSearch);
+        app.apply_command(AppCommand::OutputSearchInput('p'));
+        app.apply_command(AppCommand::OutputSearchInput('a'));
+        app.apply_command(AppCommand::AcceptOutputSearch);
+        assert_eq!(app.output_search.current_line, Some(2));
+
+        app.apply_command(AppCommand::StartOutputSearch);
+        app.apply_command(AppCommand::ClearOutputSearch);
+
+        assert!(app.output_search.input_active);
+        assert_eq!(app.output_search.query, "");
+        assert_eq!(app.output_search.current_line, None);
+        assert_eq!(app.status, "Output search cleared");
     }
 
     fn assert_selection_visible(app: &App) {

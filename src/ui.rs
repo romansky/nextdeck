@@ -442,42 +442,7 @@ fn output_title(app: &App, text: &str) -> String {
 }
 
 fn output_search_title(app: &App) -> String {
-    let query = output_search_box(app);
-    let summary = if app.output_search.query.is_empty() {
-        String::new()
-    } else {
-        app.output_search_match_summary()
-            .map(|(current, total)| format!(" {current}/{total}"))
-            .unwrap_or_default()
-    };
-    format!(
-        " search{query}{summary} f:{} r:{} c:{}",
-        on_off(app.output_search.filter),
-        on_off(app.output_search.regex),
-        on_off(app.output_search.case_sensitive)
-    )
-}
-
-const OUTPUT_SEARCH_FIELD_WIDTH: usize = 18;
-
-fn output_search_box(app: &App) -> String {
-    let mut content = format!("/{}", app.output_search.query);
-    if app.output_search.input_active {
-        content.push('_');
-    }
-    let content = fit_search_content(content, OUTPUT_SEARCH_FIELD_WIDTH);
-    format!("[{content:<OUTPUT_SEARCH_FIELD_WIDTH$}]")
-}
-
-fn fit_search_content(content: String, width: usize) -> String {
-    let char_count = content.chars().count();
-    if char_count <= width {
-        return content;
-    }
-    content
-        .chars()
-        .skip(char_count.saturating_sub(width))
-        .collect()
+    app.output_search.view(&app.output_text()).title_fragment()
 }
 
 fn draw_status(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: ratatui::layout::Rect) {
@@ -671,7 +636,7 @@ mod tests {
         app.output_search.query = "panic".to_owned();
         app.output_search.input_active = true;
 
-        assert_eq!(output_search_box(&app), "[/panic_           ]");
+        assert_eq!(app.output_search.box_text(18), "[/panic_           ]");
     }
 
     #[test]
@@ -679,7 +644,7 @@ mod tests {
         let mut app = App::new(Tree::from_tests(Vec::new()));
         app.output_search.query = "abcdefghijklmnopqrstuvwxyz".to_owned();
 
-        assert_eq!(output_search_box(&app).len(), OUTPUT_SEARCH_FIELD_WIDTH + 2);
-        assert_eq!(output_search_box(&app), "[ijklmnopqrstuvwxyz]");
+        assert_eq!(app.output_search.box_text(18).len(), 20);
+        assert_eq!(app.output_search.box_text(18), "[ijklmnopqrstuvwxyz]");
     }
 }
