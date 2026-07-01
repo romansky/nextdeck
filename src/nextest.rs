@@ -116,6 +116,9 @@ pub enum RunEvent {
         run_id: Option<String>,
         profile: Option<String>,
     },
+    SuiteStarted {
+        test_count: usize,
+    },
     TestStarted {
         key: TestKey,
     },
@@ -387,10 +390,9 @@ fn parse_test_record(value: Value, record: LibtestRecord) -> Option<RunEvent> {
 
 fn parse_suite_record(record: LibtestRecord) -> Option<RunEvent> {
     match record.event.as_deref()? {
-        "started" => Some(RunEvent::RunnerOutput(format!(
-            "Starting {} test(s)",
-            record.test_count.unwrap_or_default()
-        ))),
+        "started" => Some(RunEvent::SuiteStarted {
+            test_count: record.test_count.unwrap_or_default(),
+        }),
         "ok" | "failed" => Some(RunEvent::RunnerOutput(format!(
             "Suite finished: {} passed, {} failed, {} ignored, {} filtered out",
             record.passed.unwrap_or_default(),
@@ -559,7 +561,7 @@ mod tests {
 
         assert_eq!(events.len(), 4);
         match &events[0] {
-            RunEvent::RunnerOutput(line) => assert_eq!(line, "Starting 1 test(s)"),
+            RunEvent::SuiteStarted { test_count } => assert_eq!(*test_count, 1),
             other => panic!("unexpected event: {other:?}"),
         }
         match &events[1] {

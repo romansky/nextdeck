@@ -322,6 +322,8 @@ fn run_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
         detail_line("profile", app.run.profile.clone(), theme.accent(), theme),
         detail_line("scope", app.run.scope.label(), theme.text(), theme),
         detail_line("duration", run_duration_label(app), theme.text(), theme),
+        detail_line("build", build_duration_label(app), theme.text(), theme),
+        detail_line("tests", test_duration_label(app), theme.text(), theme),
         detail_line(
             "progress",
             format!("{finished}/{total}"),
@@ -369,6 +371,18 @@ fn duration_label(node: &TestNode) -> String {
 
 fn run_duration_label(app: &App) -> String {
     app.run_duration()
+        .map(format_duration)
+        .unwrap_or_else(|| "-".to_owned())
+}
+
+fn build_duration_label(app: &App) -> String {
+    app.build_duration()
+        .map(format_duration)
+        .unwrap_or_else(|| "-".to_owned())
+}
+
+fn test_duration_label(app: &App) -> String {
+    app.test_duration()
         .map(format_duration)
         .unwrap_or_else(|| "-".to_owned())
 }

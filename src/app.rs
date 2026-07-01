@@ -65,13 +65,25 @@ pub struct OutputSearchState {
 #[derive(Clone, Debug)]
 pub struct RunState {
     pub active: bool,
+    pub phase: RunPhase,
     pub run_id: Option<String>,
     pub profile: String,
     pub scope: RunScope,
     pub outcome: RunOutcome,
     pub exit_code: Option<i32>,
     started_at: Option<Instant>,
+    tests_started_at: Option<Instant>,
+    build_duration: Option<Duration>,
+    test_duration: Option<Duration>,
     finished_duration: Option<Duration>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RunPhase {
+    #[default]
+    NotRunning,
+    Building,
+    RunningTests,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -88,12 +100,16 @@ impl Default for RunState {
     fn default() -> Self {
         Self {
             active: false,
+            phase: RunPhase::NotRunning,
             run_id: None,
             profile: "default".to_owned(),
             scope: RunScope::Workspace,
             outcome: RunOutcome::NotStarted,
             exit_code: None,
             started_at: None,
+            tests_started_at: None,
+            build_duration: None,
+            test_duration: None,
             finished_duration: None,
         }
     }
@@ -679,7 +695,14 @@ impl App {
                 }
                 None
             }
+            RunEvent::SuiteStarted { test_count } => {
+                self.mark_tests_running();
+                self.tree
+                    .append_runner_output(format!("Starting {test_count} test(s)"));
+                None
+            }
             RunEvent::TestStarted { key } => {
+                self.mark_tests_running();
                 self.tree.update_status(&key, TestStatus::Running);
                 None
             }
@@ -690,6 +713,7 @@ impl App {
                 stderr,
                 duration,
             } => {
+                self.mark_tests_running();
                 self.tree
                     .finish_test(&key, status, stdout, stderr, duration);
                 None
@@ -704,8 +728,9 @@ impl App {
         if let Some(exit_code) = finished_exit_code {
             self.running = false;
             self.run.active = false;
+            self.finish_run_timers();
+            self.run.phase = RunPhase::NotRunning;
             self.run.exit_code = exit_code;
-            self.run.finished_duration = self.run.started_at.map(|started_at| started_at.elapsed());
             let counts = self.tree.status_counts_for_scope(&self.run.scope);
             self.run.outcome = run_outcome(exit_code, counts);
             self.status = run_summary_status(self.run.outcome, counts, exit_code);
@@ -713,10 +738,10 @@ impl App {
     }
 
     pub fn run_status_label(&self) -> &'static str {
-        if self.run.active {
-            "running"
-        } else {
-            "not running"
+        match self.run.phase {
+            RunPhase::Building => "building",
+            RunPhase::RunningTests => "running tests",
+            RunPhase::NotRunning => "not running",
         }
     }
 
@@ -735,6 +760,23 @@ impl App {
             self.run.started_at.map(|started_at| started_at.elapsed())
         } else {
             self.run.finished_duration
+        }
+    }
+
+    pub fn build_duration(&self) -> Option<Duration> {
+        match self.run.phase {
+            RunPhase::Building => self.run.started_at.map(|started_at| started_at.elapsed()),
+            RunPhase::RunningTests | RunPhase::NotRunning => self.run.build_duration,
+        }
+    }
+
+    pub fn test_duration(&self) -> Option<Duration> {
+        match self.run.phase {
+            RunPhase::RunningTests => self
+                .run
+                .tests_started_at
+                .map(|tests_started_at| tests_started_at.elapsed()),
+            RunPhase::Building | RunPhase::NotRunning => self.run.test_duration,
         }
     }
 
@@ -828,18 +870,69 @@ impl App {
 
     fn reset_for_run(&mut self, request: &RunRequest) {
         self.tree.prepare_for_run(&request.scope);
-        self.status = format!("Running {}", request.scope.label());
+        self.status = format!("Building {}", request.scope.label());
         self.running = true;
         self.run.active = true;
+        self.run.phase = RunPhase::Building;
         self.run.run_id = None;
         self.run.scope = request.scope.clone();
         self.run.outcome = RunOutcome::Running;
         self.run.exit_code = None;
         self.run.started_at = Some(Instant::now());
+        self.run.tests_started_at = None;
+        self.run.build_duration = None;
+        self.run.test_duration = None;
         self.run.finished_duration = None;
         self.output_scroll = 0;
         self.output_follow = true;
         self.output_search.current_line = None;
+    }
+
+    fn mark_tests_running(&mut self) {
+        if !self.run.active {
+            return;
+        }
+
+        if self.run.phase == RunPhase::RunningTests {
+            return;
+        }
+
+        let now = Instant::now();
+        self.run.build_duration = self
+            .run
+            .started_at
+            .map(|started_at| now.duration_since(started_at));
+        self.run.tests_started_at = Some(now);
+        self.run.phase = RunPhase::RunningTests;
+        self.status = format!("Running tests for {}", self.run.scope.label());
+    }
+
+    fn finish_run_timers(&mut self) {
+        let Some(started_at) = self.run.started_at else {
+            return;
+        };
+
+        let total = started_at.elapsed();
+        self.run.finished_duration = Some(total);
+        match self.run.phase {
+            RunPhase::Building => {
+                self.run.build_duration = Some(total);
+                self.run.test_duration = None;
+            }
+            RunPhase::RunningTests => {
+                if self.run.build_duration.is_none() {
+                    self.run.build_duration = self
+                        .run
+                        .tests_started_at
+                        .map(|tests_started_at| tests_started_at.duration_since(started_at));
+                }
+                self.run.test_duration = self
+                    .run
+                    .tests_started_at
+                    .map(|tests_started_at| tests_started_at.elapsed());
+            }
+            RunPhase::NotRunning => {}
+        }
     }
 
     fn start_output_search(&mut self) {
@@ -1146,6 +1239,40 @@ mod tests {
     }
 
     #[test]
+    fn run_phase_starts_as_building_then_switches_to_running_tests() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+        assert!(app.begin_run(&RunRequest::default()));
+
+        assert_eq!(app.run.phase, RunPhase::Building);
+        assert_eq!(app.run_status_label(), "building");
+        assert_eq!(app.status, "Building workspace");
+        assert!(app.build_duration().is_some());
+        assert_eq!(app.test_duration(), None);
+
+        app.apply_run_event(RunEvent::SuiteStarted { test_count: 1 });
+
+        assert_eq!(app.run.phase, RunPhase::RunningTests);
+        assert_eq!(app.run_status_label(), "running tests");
+        assert_eq!(app.status, "Running tests for workspace");
+        assert!(app.build_duration().is_some());
+        assert!(app.test_duration().is_some());
+    }
+
+    #[test]
+    fn command_failure_before_test_start_records_build_time_only() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+        assert!(app.begin_run(&RunRequest::default()));
+
+        app.apply_run_event(RunEvent::RunnerFinished { exit_code: Some(101) });
+
+        assert_eq!(app.run.phase, RunPhase::NotRunning);
+        assert_eq!(app.run_status_label(), "not running");
+        assert!(app.run_duration().is_some());
+        assert!(app.build_duration().is_some());
+        assert_eq!(app.test_duration(), None);
+    }
+
+    #[test]
     fn failing_test_run_reports_failed_result() {
         let mut app = App::new(Tree::from_tests(test_rows(1)));
         assert!(app.begin_run(&RunRequest::default()));
@@ -1235,7 +1362,10 @@ mod tests {
         assert_eq!(app.run.outcome, RunOutcome::Running);
         assert_eq!(app.run.exit_code, None);
         assert_eq!(app.run_result_label(), "running");
-        assert_eq!(app.run_status_label(), "running");
+        assert_eq!(app.run.phase, RunPhase::Building);
+        assert_eq!(app.run_status_label(), "building");
+        assert!(app.build_duration().is_some());
+        assert_eq!(app.test_duration(), None);
         assert_eq!(app.run_progress(), (0, 1));
         assert_eq!(app.output_scroll, 0);
         assert!(app.output_follow);
