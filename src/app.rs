@@ -652,18 +652,7 @@ impl App {
             return false;
         }
 
-        self.tree.clear_runner_output();
-        self.tree.mark_scope_pending(&request.scope);
-        self.status = format!("Running {}", request.scope.label());
-        self.running = true;
-        self.run.active = true;
-        self.run.run_id = None;
-        self.run.scope = request.scope.clone();
-        self.run.outcome = RunOutcome::Running;
-        self.run.exit_code = None;
-        self.run.started_at = Some(Instant::now());
-        self.run.finished_duration = None;
-        self.output_follow = true;
+        self.reset_for_run(request);
         true
     }
 
@@ -795,6 +784,22 @@ impl App {
         line_count
             .saturating_sub(self.output_page_size as usize)
             .min(u16::MAX as usize) as u16
+    }
+
+    fn reset_for_run(&mut self, request: &RunRequest) {
+        self.tree.prepare_for_run(&request.scope);
+        self.status = format!("Running {}", request.scope.label());
+        self.running = true;
+        self.run.active = true;
+        self.run.run_id = None;
+        self.run.scope = request.scope.clone();
+        self.run.outcome = RunOutcome::Running;
+        self.run.exit_code = None;
+        self.run.started_at = Some(Instant::now());
+        self.run.finished_duration = None;
+        self.output_scroll = 0;
+        self.output_follow = true;
+        self.output_search.current_line = None;
     }
 
     fn start_output_search(&mut self) {
@@ -1137,14 +1142,33 @@ mod tests {
 
     #[test]
     fn new_run_resets_previous_run_metadata_and_result() {
-        let mut app = App::new(Tree::from_tests(test_rows(1)));
+        let mut app = App::new(Tree::from_tests(test_rows(2)));
         assert!(app.begin_run(&RunRequest::default()));
         app.apply_run_event(RunEvent::RunMetadata {
             run_id: Some("old-run".to_owned()),
             profile: Some("default".to_owned()),
         });
-        app.apply_run_event(RunEvent::RunnerFinished { exit_code: Some(0) });
-        assert_eq!(app.run.outcome, RunOutcome::Passed);
+        app.apply_run_event(RunEvent::TestFinished {
+            key: test_key(0),
+            status: TestStatus::Passed,
+            stdout: "stale stdout".to_owned(),
+            stderr: String::new(),
+            duration: Some(Duration::from_millis(9)),
+        });
+        app.apply_run_event(RunEvent::TestFinished {
+            key: test_key(1),
+            status: TestStatus::Failed,
+            stdout: String::new(),
+            stderr: "stale stderr".to_owned(),
+            duration: Some(Duration::from_millis(11)),
+        });
+        app.apply_run_event(RunEvent::RunnerFinished {
+            exit_code: Some(101),
+        });
+        assert_eq!(app.run.outcome, RunOutcome::Failed);
+        app.output_scroll = 10;
+        app.output_follow = false;
+        app.output_search.current_line = Some(3);
 
         assert!(app.begin_run(&RunRequest {
             scope: RunScope::Test {
@@ -1157,6 +1181,12 @@ mod tests {
         assert_eq!(app.run.exit_code, None);
         assert_eq!(app.run_result_label(), "running");
         assert_eq!(app.run_status_label(), "running");
+        assert_eq!(app.run_progress(), (0, 1));
+        assert_eq!(app.output_scroll, 0);
+        assert!(app.output_follow);
+        assert_eq!(app.output_search.current_line, None);
+        assert!(!app.tree.selected_output().contains("stale stdout"));
+        assert!(!app.tree.selected_output().contains("stale stderr"));
     }
 
     #[test]

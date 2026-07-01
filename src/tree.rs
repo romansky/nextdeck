@@ -210,14 +210,15 @@ impl Tree {
         self.clamp_selection();
     }
 
-    pub fn mark_scope_pending(&mut self, scope: &crate::nextest::RunScope) {
+    pub fn prepare_for_run(&mut self, scope: &crate::nextest::RunScope) {
+        self.clear_runner_output();
         visit_mut(&mut self.root, &mut |node| {
             if let NodeKind::Test(test) = &node.kind {
+                node.output = TestOutput::default();
                 if test.ignored {
                     node.status = TestStatus::Ignored;
                 } else if scope.matches_test(test) {
                     node.status = TestStatus::Pending;
-                    node.output = TestOutput::default();
                 } else {
                     node.status = TestStatus::Skipped;
                 }
@@ -263,7 +264,7 @@ impl Tree {
         }
     }
 
-    pub fn clear_runner_output(&mut self) {
+    fn clear_runner_output(&mut self) {
         self.runner_output.clear();
     }
 
@@ -849,7 +850,7 @@ mod tests {
             discovered_test("demo::demo", "demo", "tests", "selected"),
             discovered_test("demo::demo", "demo", "tests", "outside_scope"),
         ]);
-        tree.mark_scope_pending(&crate::nextest::RunScope::Test {
+        tree.prepare_for_run(&crate::nextest::RunScope::Test {
             name: "tests::selected".to_owned(),
         });
 
@@ -863,6 +864,52 @@ mod tests {
         let labels = visible_labels(&tree);
         assert!(labels.contains(&"selected".to_owned()));
         assert!(!labels.contains(&"outside_scope".to_owned()));
+    }
+
+    #[test]
+    fn prepare_for_run_clears_previous_results_and_outputs() {
+        let mut tree = Tree::from_tests(vec![
+            discovered_test("demo::demo", "demo", "tests", "selected"),
+            discovered_test("demo::demo", "demo", "tests", "outside_scope"),
+        ]);
+        tree.finish_test(
+            &TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: "tests::selected".to_owned(),
+            },
+            TestStatus::Passed,
+            "old selected stdout".to_owned(),
+            String::new(),
+            Some(std::time::Duration::from_millis(12)),
+        );
+        tree.finish_test(
+            &TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: "tests::outside_scope".to_owned(),
+            },
+            TestStatus::Failed,
+            String::new(),
+            "old outside stderr".to_owned(),
+            Some(std::time::Duration::from_millis(20)),
+        );
+
+        tree.prepare_for_run(&crate::nextest::RunScope::Test {
+            name: "tests::selected".to_owned(),
+        });
+
+        let output = tree.selected_output();
+        assert!(!output.contains("old selected stdout"));
+        assert!(!output.contains("old outside stderr"));
+        assert_eq!(
+            tree.status_counts_for_scope(&crate::nextest::RunScope::Workspace),
+            StatusCounts {
+                pending: 1,
+                skipped: 1,
+                ..StatusCounts::default()
+            }
+        );
     }
 
     #[test]
