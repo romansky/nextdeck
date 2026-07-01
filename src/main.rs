@@ -6,6 +6,7 @@ mod git_status;
 mod input;
 mod nextest;
 mod output;
+mod output_pane;
 mod queue;
 mod source;
 mod runner;

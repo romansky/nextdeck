@@ -1,13 +1,12 @@
 use std::time::{Duration, Instant};
 
-use regex::{Regex, RegexBuilder};
-
 use crate::{
     command::{AppCommand, CommandContext, CommandFocus},
     config::{self, AppSettings, TREE_WIDTH_STEP_PERCENT},
     editor::SourceLocation,
     git_status::GitStatus,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
+    output_pane::{OutputSearchState, SearchDirection},
     source,
     state::StatusCounts,
     tree::{DiscoveredTest, NodeKind, TestNode, TestStatus, Tree},
@@ -50,16 +49,6 @@ pub struct DiscoveryState {
     pub running: bool,
     pub ticks: usize,
     pub error: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct OutputSearchState {
-    pub input_active: bool,
-    pub query: String,
-    pub filter: bool,
-    pub regex: bool,
-    pub case_sensitive: bool,
-    pub current_line: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -611,44 +600,16 @@ impl App {
 
     pub fn output_text(&self) -> String {
         let text = self.tree.selected_output();
-        if !self.output_search.filter || self.output_search.query.is_empty() {
-            return text;
-        }
-
-        let matcher = match output_matcher(&self.output_search) {
-            Ok(Some(matcher)) => matcher,
-            Ok(None) => return text,
-            Err(error) => return format!("Invalid output search regex: {error}"),
-        };
-
-        let filtered = text
-            .lines()
-            .filter(|line| matcher.is_match(line))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if filtered.is_empty() {
-            format!("No output lines match '{}'", self.output_search.query)
-        } else {
-            filtered
-        }
+        self.output_search.filtered_text(&text)
     }
 
     pub fn output_search_match_summary(&self) -> Option<(usize, usize)> {
-        let matches = self.output_search_match_lines().ok()?;
-        if matches.is_empty() {
-            return Some((0, 0));
-        }
-        let current = self
-            .output_search
-            .current_line
-            .and_then(|line| matches.iter().position(|match_line| *match_line == line))
-            .map(|index| index + 1)
-            .unwrap_or(0);
-        Some((current, matches.len()))
+        let text = self.output_text();
+        self.output_search.match_summary(&text)
     }
 
     pub fn output_search_error(&self) -> Option<String> {
-        output_matcher(&self.output_search).err()
+        self.output_search.error()
     }
 
     pub fn selected_scope(&self) -> RunScope {
@@ -1024,39 +985,26 @@ impl App {
             return;
         }
 
-        let current = self.output_search.current_line;
-        let next_index = match direction {
-            SearchDirection::Next => matches
-                .iter()
-                .position(|line| current.is_none_or(|current| *line > current))
-                .unwrap_or(0),
-            SearchDirection::Previous => matches
-                .iter()
-                .rposition(|line| current.is_none_or(|current| *line < current))
-                .unwrap_or(matches.len() - 1),
-        };
-        let line = matches[next_index];
-        self.output_search.current_line = Some(line);
-        self.output_scroll = line.min(u16::MAX as usize) as u16;
+        let text = self.output_text();
+        let output_match = self
+            .output_search
+            .next_match(&text, direction)
+            .expect("matches already validated")
+            .expect("matches already non-empty");
+        self.output_search.current_line = Some(output_match.line);
+        self.output_scroll = output_match.line.min(u16::MAX as usize) as u16;
         self.output_follow = false;
         self.status = format!(
             "Output match {}/{} for '{}'",
-            next_index + 1,
-            matches.len(),
+            output_match.index + 1,
+            output_match.total,
             self.output_search.query
         );
     }
 
     fn output_search_match_lines(&self) -> Result<Vec<usize>, String> {
-        let Some(matcher) = output_matcher(&self.output_search)? else {
-            return Ok(Vec::new());
-        };
         let text = self.output_text();
-        Ok(text
-            .lines()
-            .enumerate()
-            .filter_map(|(index, line)| matcher.is_match(line).then_some(index))
-            .collect())
+        self.output_search.match_lines(&text)
     }
 }
 
@@ -1075,60 +1023,8 @@ fn source_location_for_test(test: &DiscoveredTest, include_line: bool) -> Option
     Some(SourceLocation { path, line })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SearchDirection {
-    Next,
-    Previous,
-}
-
-enum OutputMatcher {
-    Literal {
-        needle: String,
-        case_sensitive: bool,
-    },
-    Regex(Regex),
-}
-
-impl OutputMatcher {
-    fn is_match(&self, line: &str) -> bool {
-        match self {
-            Self::Literal {
-                needle,
-                case_sensitive,
-            } if *case_sensitive => line.contains(needle),
-            Self::Literal { needle, .. } => line.to_lowercase().contains(needle),
-            Self::Regex(regex) => regex.is_match(line),
-        }
-    }
-}
-
-fn output_matcher(search: &OutputSearchState) -> Result<Option<OutputMatcher>, String> {
-    if search.query.is_empty() {
-        return Ok(None);
-    }
-
-    if search.regex {
-        RegexBuilder::new(&search.query)
-            .case_insensitive(!search.case_sensitive)
-            .build()
-            .map(OutputMatcher::Regex)
-            .map(Some)
-            .map_err(|error| error.to_string())
-    } else {
-        let needle = if search.case_sensitive {
-            search.query.clone()
-        } else {
-            search.query.to_lowercase()
-        };
-        Ok(Some(OutputMatcher::Literal {
-            needle,
-            case_sensitive: search.case_sensitive,
-        }))
-    }
-}
-
 fn output_search_prompt(search: &OutputSearchState) -> String {
-    format!("Output search: {}", search.query)
+    search.prompt()
 }
 
 fn run_outcome(exit_code: Option<i32>, counts: StatusCounts) -> RunOutcome {
