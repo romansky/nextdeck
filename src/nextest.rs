@@ -35,6 +35,11 @@ pub enum RunScope {
     Package {
         name: String,
     },
+    Binary {
+        package: String,
+        name: String,
+        kind: String,
+    },
     Module {
         path: String,
     },
@@ -51,6 +56,7 @@ impl RunScope {
         match self {
             Self::Workspace => "workspace".to_owned(),
             Self::Package { name } => format!("package {name}"),
+            Self::Binary { name, kind, .. } => format!("{kind} target {name}"),
             Self::Module { path } => format!("module {path}"),
             Self::Test { name } => format!("test {name}"),
             Self::Failed { names } => format!("{} failed test(s)", names.len()),
@@ -61,6 +67,11 @@ impl RunScope {
         match self {
             Self::Workspace => true,
             Self::Package { name } => test.package == *name,
+            Self::Binary {
+                package,
+                name,
+                kind,
+            } => test.package == *package && test.binary == *name && test.binary_kind == *kind,
             Self::Module { path } => test.full_name.starts_with(path),
             Self::Test { name } => test.full_name == *name,
             Self::Failed { names } => names.contains(&test.full_name),
@@ -71,11 +82,29 @@ impl RunScope {
         match self {
             Self::Workspace => Vec::new(),
             Self::Package { name } => vec!["-p".to_owned(), name.clone()],
+            Self::Binary {
+                package,
+                name,
+                kind,
+            } => binary_nextest_args(package, name, kind),
             Self::Module { path } => vec![path.clone()],
             Self::Test { name } => vec![name.clone()],
             Self::Failed { names } => names.clone(),
         }
     }
+}
+
+fn binary_nextest_args(package: &str, name: &str, kind: &str) -> Vec<String> {
+    let mut args = vec!["-p".to_owned(), package.to_owned()];
+    match kind {
+        "lib" => args.push("--lib".to_owned()),
+        "test" => args.extend(["--test".to_owned(), name.to_owned()]),
+        "bin" => args.extend(["--bin".to_owned(), name.to_owned()]),
+        "example" => args.extend(["--example".to_owned(), name.to_owned()]),
+        "bench" => args.extend(["--bench".to_owned(), name.to_owned()]),
+        _ => {}
+    }
+    args
 }
 
 #[derive(Debug, Clone)]
@@ -272,6 +301,7 @@ fn summary_to_tests(summary: TestListSummary) -> Vec<DiscoveredTest> {
                 },
                 package: suite.package_name.clone(),
                 binary: suite.binary.binary_name.clone(),
+                binary_kind: suite.binary.kind.as_str().to_owned(),
                 module: module.map(ToOwned::to_owned),
                 name: name.to_owned(),
                 full_name,
@@ -486,6 +516,15 @@ mod tests {
             }
             .nextest_args(),
             vec!["-p", "demo"]
+        );
+        assert_eq!(
+            RunScope::Binary {
+                package: "demo".to_owned(),
+                name: "scenario".to_owned(),
+                kind: "test".to_owned(),
+            }
+            .nextest_args(),
+            vec!["-p", "demo", "--test", "scenario"]
         );
         assert_eq!(
             RunScope::Module {

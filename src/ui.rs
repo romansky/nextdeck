@@ -192,7 +192,9 @@ fn node_label(node: &TestNode) -> String {
     match &node.kind {
         NodeKind::Workspace => node.label.clone(),
         NodeKind::Package { name } => name.clone(),
-        NodeKind::Module { .. } | NodeKind::Test(_) => node.label.clone(),
+        NodeKind::Binary { .. } | NodeKind::Module { .. } | NodeKind::Test(_) => {
+            node.label.clone()
+        }
     }
 }
 
@@ -227,6 +229,20 @@ fn selected_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
             lines.extend([
                 detail_line("kind", "package", theme.text(), theme),
                 detail_line("pkg", name.clone(), theme.accent(), theme),
+                detail_status_line(node.status, theme),
+                detail_line("duration", duration_label(node), theme.text(), theme),
+            ]);
+        }
+        NodeKind::Binary {
+            package,
+            name,
+            kind,
+        } => {
+            lines.extend([
+                detail_line("kind", "target", theme.text(), theme),
+                detail_line("pkg", package.clone(), theme.accent(), theme),
+                detail_line("target", name.clone(), theme.accent(), theme),
+                detail_line("type", kind.clone(), theme.text(), theme),
                 detail_status_line(node.status, theme),
                 detail_line("duration", duration_label(node), theme.text(), theme),
             ]);

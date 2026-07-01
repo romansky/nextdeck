@@ -16,6 +16,7 @@ pub struct DiscoveredTest {
     pub key: TestKey,
     pub package: String,
     pub binary: String,
+    pub binary_kind: String,
     pub module: Option<String>,
     pub name: String,
     pub full_name: String,
@@ -69,6 +70,11 @@ impl TestViewFilter {
 pub enum NodeKind {
     Workspace,
     Package { name: String },
+    Binary {
+        package: String,
+        name: String,
+        kind: String,
+    },
     Module { path: String },
     Test(DiscoveredTest),
 }
@@ -338,6 +344,7 @@ impl Tree {
         match &node.kind {
             NodeKind::Workspace => "workspace".to_owned(),
             NodeKind::Package { name } => name.clone(),
+            NodeKind::Binary { package, name, .. } => format!("{package}::{name}"),
             NodeKind::Module { path } => path.clone(),
             NodeKind::Test(test) => format!("{}::{}", test.package, test.full_name),
         }
@@ -387,6 +394,21 @@ impl Tree {
         });
 
         let mut parent = &mut self.root.children[package_index];
+        if test.binary_kind == "test" {
+            let index = child_position(parent, &test.binary).unwrap_or_else(|| {
+                parent.children.push(TestNode::new(
+                    &test.binary,
+                    NodeKind::Binary {
+                        package: test.package.clone(),
+                        name: test.binary.clone(),
+                        kind: test.binary_kind.clone(),
+                    },
+                ));
+                parent.children.len() - 1
+            });
+            parent = &mut parent.children[index];
+        }
+
         let mut module_path = String::new();
         if let Some(module) = &test.module {
             for part in module.split("::") {
@@ -468,7 +490,10 @@ fn collect_visible<'a>(
 fn node_has_visible_tests(node: &TestNode, filter: TestViewFilter) -> bool {
     match &node.kind {
         NodeKind::Test(_) => filter.allows(node.status),
-        NodeKind::Workspace | NodeKind::Package { .. } | NodeKind::Module { .. } => node
+        NodeKind::Workspace
+        | NodeKind::Package { .. }
+        | NodeKind::Binary { .. }
+        | NodeKind::Module { .. } => node
             .children
             .iter()
             .any(|child| node_has_visible_tests(child, filter)),
@@ -624,6 +649,7 @@ mod tests {
             },
             package: "demo".to_owned(),
             binary: "demo".to_owned(),
+            binary_kind: "lib".to_owned(),
             module: Some("a::b".to_owned()),
             name: "works".to_owned(),
             full_name: "a::b::works".to_owned(),
@@ -638,6 +664,29 @@ mod tests {
             tree.root.children[0].children[0].children[0].children[0].label,
             "works"
         );
+    }
+
+    #[test]
+    fn integration_test_targets_are_grouped_under_binary_name() {
+        let tree = Tree::from_tests(vec![DiscoveredTest {
+            key: TestKey {
+                binary_id: Some("demo::scenario".to_owned()),
+                event_prefix: Some("demo::scenario".to_owned()),
+                name: "top_level_test".to_owned(),
+            },
+            package: "demo".to_owned(),
+            binary: "scenario".to_owned(),
+            binary_kind: "test".to_owned(),
+            module: None,
+            name: "top_level_test".to_owned(),
+            full_name: "top_level_test".to_owned(),
+            status: TestStatus::Pending,
+            ignored: false,
+        }]);
+
+        assert_eq!(tree.root.children[0].label, "demo");
+        assert_eq!(tree.root.children[0].children[0].label, "scenario");
+        assert_eq!(tree.root.children[0].children[0].children[0].label, "top_level_test");
     }
 
     #[test]
@@ -863,6 +912,7 @@ mod tests {
             },
             package: package.to_owned(),
             binary: package.to_owned(),
+            binary_kind: "lib".to_owned(),
             module: Some(module.to_owned()),
             name: name.to_owned(),
             full_name: format!("{module}::{name}"),

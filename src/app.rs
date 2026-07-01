@@ -630,6 +630,15 @@ impl App {
         match &node.kind {
             NodeKind::Workspace => RunScope::Workspace,
             NodeKind::Package { name } => RunScope::Package { name: name.clone() },
+            NodeKind::Binary {
+                package,
+                name,
+                kind,
+            } => RunScope::Binary {
+                package: package.clone(),
+                name: name.clone(),
+                kind: kind.clone(),
+            },
             NodeKind::Module { path } => RunScope::Module { path: path.clone() },
             NodeKind::Test(test) => RunScope::Test {
                 name: test.full_name.clone(),
@@ -1249,6 +1258,7 @@ mod tests {
                 key: test_key(index),
                 package: "demo".to_owned(),
                 binary: "demo".to_owned(),
+                binary_kind: "lib".to_owned(),
                 module: Some("tests".to_owned()),
                 name: format!("case_{index:02}"),
                 full_name: format!("tests::case_{index:02}"),
