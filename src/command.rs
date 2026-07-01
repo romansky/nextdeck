@@ -45,48 +45,333 @@ pub enum AppCommand {
     ReportStatus(String),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandGroup {
+    Navigation,
+    Runs,
+    View,
+    Output,
+    Global,
+}
+
+impl CommandGroup {
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Navigation => "Navigation",
+            Self::Runs => "Runs",
+            Self::View => "View",
+            Self::Output => "Output",
+            Self::Global => "Global",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandKind {
+    Quit,
+    ToggleHelp,
+    CloseHelp,
+    ToggleFocus,
+    MoveUpDown,
+    MoveLeftRight,
+    ToggleSelected,
+    MoveHomeEnd,
+    PageUpDown,
+    NarrowTestsPane,
+    WidenTestsPane,
+    RefreshTests,
+    RunSelected,
+    RunFailed,
+    OpenSource,
+    OpenOutput,
+    ToggleShowSuccess,
+    ToggleShowFailed,
+    ToggleShowIgnored,
+    ToggleShowSkipped,
+    SelectFailed,
+    FollowOutputBottom,
+    StartOutputSearch,
+    FindOutputMatch,
+    ToggleOutputFilter,
+    ToggleOutputRegex,
+    ToggleOutputCaseSensitive,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommandInfo {
+    pub kind: CommandKind,
+    pub group: CommandGroup,
+    pub keys: &'static str,
+    pub label: &'static str,
+    pub ticker: &'static str,
+}
+
+const COMMANDS: &[CommandInfo] = &[
+    CommandInfo {
+        kind: CommandKind::MoveUpDown,
+        group: CommandGroup::Navigation,
+        keys: "Up/Down",
+        label: "move selection",
+        ticker: "move",
+    },
+    CommandInfo {
+        kind: CommandKind::PageUpDown,
+        group: CommandGroup::Navigation,
+        keys: "PageUp/PageDown",
+        label: "page active pane",
+        ticker: "page",
+    },
+    CommandInfo {
+        kind: CommandKind::MoveHomeEnd,
+        group: CommandGroup::Navigation,
+        keys: "Home/End",
+        label: "first or last row",
+        ticker: "jump",
+    },
+    CommandInfo {
+        kind: CommandKind::MoveLeftRight,
+        group: CommandGroup::Navigation,
+        keys: "Left/Right",
+        label: "collapse or expand",
+        ticker: "fold",
+    },
+    CommandInfo {
+        kind: CommandKind::ToggleSelected,
+        group: CommandGroup::Navigation,
+        keys: "Enter/Space",
+        label: "toggle selected branch",
+        ticker: "toggle",
+    },
+    CommandInfo {
+        kind: CommandKind::ToggleFocus,
+        group: CommandGroup::Navigation,
+        keys: "Tab",
+        label: "switch tree/output focus",
+        ticker: "focus",
+    },
+    CommandInfo {
+        kind: CommandKind::NarrowTestsPane,
+        group: CommandGroup::Navigation,
+        keys: "Shift+Left/[",
+        label: "narrow tests pane",
+        ticker: "narrow tests",
+    },
+    CommandInfo {
+        kind: CommandKind::WidenTestsPane,
+        group: CommandGroup::Navigation,
+        keys: "Shift+Right/]",
+        label: "widen tests pane",
+        ticker: "widen tests",
+    },
+    CommandInfo {
+        kind: CommandKind::RefreshTests,
+        group: CommandGroup::Runs,
+        keys: "u",
+        label: "refresh test list",
+        ticker: "refresh tests",
+    },
+    CommandInfo {
+        kind: CommandKind::RunSelected,
+        group: CommandGroup::Runs,
+        keys: "r",
+        label: "run selected scope",
+        ticker: "run",
+    },
+    CommandInfo {
+        kind: CommandKind::RunFailed,
+        group: CommandGroup::Runs,
+        keys: "R",
+        label: "rerun failures",
+        ticker: "rerun failed",
+    },
+    CommandInfo {
+        kind: CommandKind::OpenSource,
+        group: CommandGroup::Runs,
+        keys: "o",
+        label: "open selected test source",
+        ticker: "open source",
+    },
+    CommandInfo {
+        kind: CommandKind::SelectFailed,
+        group: CommandGroup::Runs,
+        keys: "f/F",
+        label: "next or previous failure",
+        ticker: "failed",
+    },
+    CommandInfo {
+        kind: CommandKind::ToggleShowSuccess,
+        group: CommandGroup::View,
+        keys: "s",
+        label: "toggle successful tests",
+        ticker: "toggle success",
+    },
+    CommandInfo {
+        kind: CommandKind::ToggleShowFailed,
+        group: CommandGroup::View,
+        keys: "x",
+        label: "toggle failed tests",
+        ticker: "toggle failed",
+    },
+    CommandInfo {
+        kind: CommandKind::ToggleShowIgnored,
+        group: CommandGroup::View,
+        keys: "i",
+        label: "toggle ignored tests",
+        ticker: "toggle ignored",
+    },
+    CommandInfo {
+        kind: CommandKind::ToggleShowSkipped,
+        group: CommandGroup::View,
+        keys: "k",
+        label: "toggle skipped tests",
+        ticker: "toggle skipped",
+    },
+    CommandInfo {
+        kind: CommandKind::FollowOutputBottom,
+        group: CommandGroup::Output,
+        keys: "End",
+        label: "follow output bottom",
+        ticker: "bottom",
+    },
+    CommandInfo {
+        kind: CommandKind::StartOutputSearch,
+        group: CommandGroup::Output,
+        keys: "/",
+        label: "search output",
+        ticker: "search output",
+    },
+    CommandInfo {
+        kind: CommandKind::FindOutputMatch,
+        group: CommandGroup::Output,
+        keys: "n/N",
+        label: "next or previous output match",
+        ticker: "match",
+    },
+    CommandInfo {
+        kind: CommandKind::ToggleOutputFilter,
+        group: CommandGroup::Output,
+        keys: "f",
+        label: "toggle output match filter",
+        ticker: "output filter",
+    },
+    CommandInfo {
+        kind: CommandKind::ToggleOutputRegex,
+        group: CommandGroup::Output,
+        keys: "r",
+        label: "toggle output regex",
+        ticker: "regex",
+    },
+    CommandInfo {
+        kind: CommandKind::ToggleOutputCaseSensitive,
+        group: CommandGroup::Output,
+        keys: "c",
+        label: "toggle output case sensitivity",
+        ticker: "case",
+    },
+    CommandInfo {
+        kind: CommandKind::OpenOutput,
+        group: CommandGroup::Output,
+        keys: "o",
+        label: "open output as text file",
+        ticker: "open output",
+    },
+    CommandInfo {
+        kind: CommandKind::ToggleHelp,
+        group: CommandGroup::Global,
+        keys: "h/?/F1",
+        label: "open or close help",
+        ticker: "help",
+    },
+    CommandInfo {
+        kind: CommandKind::Quit,
+        group: CommandGroup::Global,
+        keys: "q",
+        label: "quit",
+        ticker: "quit",
+    },
+];
+
+const HELP_GROUPS: &[CommandGroup] = &[
+    CommandGroup::Navigation,
+    CommandGroup::Runs,
+    CommandGroup::View,
+    CommandGroup::Output,
+    CommandGroup::Global,
+];
+
+const CLOSE_HELP_INFO: CommandInfo = CommandInfo {
+    kind: CommandKind::CloseHelp,
+    group: CommandGroup::Global,
+    keys: "h/?/F1",
+    label: "close help",
+    ticker: "close help",
+};
+
+pub const fn help_groups() -> &'static [CommandGroup] {
+    HELP_GROUPS
+}
+
+pub const fn command_infos() -> &'static [CommandInfo] {
+    COMMANDS
+}
+
 impl AppCommand {
+    pub fn kind(&self) -> Option<CommandKind> {
+        match self {
+            Self::Noop | Self::Resize | Self::ReportStatus(_) => None,
+            Self::Quit => Some(CommandKind::Quit),
+            Self::ToggleHelp => Some(CommandKind::ToggleHelp),
+            Self::CloseHelp => Some(CommandKind::CloseHelp),
+            Self::ToggleFocus => Some(CommandKind::ToggleFocus),
+            Self::MoveUp | Self::MoveDown => Some(CommandKind::MoveUpDown),
+            Self::MoveLeft | Self::MoveRight => Some(CommandKind::MoveLeftRight),
+            Self::ToggleSelected => Some(CommandKind::ToggleSelected),
+            Self::MoveHome | Self::MoveEnd => Some(CommandKind::MoveHomeEnd),
+            Self::PageUp | Self::PageDown => Some(CommandKind::PageUpDown),
+            Self::NarrowTestsPane => Some(CommandKind::NarrowTestsPane),
+            Self::WidenTestsPane => Some(CommandKind::WidenTestsPane),
+            Self::RefreshTests => Some(CommandKind::RefreshTests),
+            Self::RunSelected => Some(CommandKind::RunSelected),
+            Self::RunFailed => Some(CommandKind::RunFailed),
+            Self::OpenSource => Some(CommandKind::OpenSource),
+            Self::OpenOutput => Some(CommandKind::OpenOutput),
+            Self::ToggleShowSuccess => Some(CommandKind::ToggleShowSuccess),
+            Self::ToggleShowFailed => Some(CommandKind::ToggleShowFailed),
+            Self::ToggleShowIgnored => Some(CommandKind::ToggleShowIgnored),
+            Self::ToggleShowSkipped => Some(CommandKind::ToggleShowSkipped),
+            Self::SelectNextFailed | Self::SelectPreviousFailed => Some(CommandKind::SelectFailed),
+            Self::StartOutputSearch => Some(CommandKind::StartOutputSearch),
+            Self::OutputSearchInput(_)
+            | Self::OutputSearchBackspace
+            | Self::AcceptOutputSearch
+            | Self::CancelOutputSearch => None,
+            Self::FindNextOutputMatch | Self::FindPreviousOutputMatch => {
+                Some(CommandKind::FindOutputMatch)
+            }
+            Self::ToggleOutputFilter => Some(CommandKind::ToggleOutputFilter),
+            Self::ToggleOutputRegex => Some(CommandKind::ToggleOutputRegex),
+            Self::ToggleOutputCaseSensitive => Some(CommandKind::ToggleOutputCaseSensitive),
+        }
+    }
+
+    pub fn info(&self) -> Option<&'static CommandInfo> {
+        let kind = match self {
+            Self::CloseHelp => return Some(&CLOSE_HELP_INFO),
+            _ => self.kind()?,
+        };
+        COMMANDS.iter().find(|info| info.kind == kind)
+    }
+
     pub fn ticker_label(&self) -> Option<&'static str> {
         match self {
             Self::Noop => None,
-            Self::Quit => Some("quit"),
             Self::Resize => Some("resize"),
-            Self::ToggleHelp => Some("help"),
-            Self::CloseHelp => Some("close help"),
-            Self::ToggleFocus => Some("focus"),
-            Self::MoveUp => Some("up"),
-            Self::MoveDown => Some("down"),
-            Self::MoveLeft => Some("collapse"),
-            Self::MoveRight => Some("expand"),
-            Self::ToggleSelected => Some("toggle"),
-            Self::MoveHome => Some("home"),
-            Self::MoveEnd => Some("end"),
-            Self::PageUp => Some("page up"),
-            Self::PageDown => Some("page down"),
-            Self::NarrowTestsPane => Some("narrow tests"),
-            Self::WidenTestsPane => Some("widen tests"),
-            Self::RefreshTests => Some("refresh tests"),
-            Self::RunSelected => Some("run"),
-            Self::RunFailed => Some("rerun failed"),
-            Self::OpenSource => Some("open source"),
-            Self::OpenOutput => Some("open output"),
-            Self::ToggleShowSuccess => Some("toggle success"),
-            Self::ToggleShowFailed => Some("toggle failed"),
-            Self::ToggleShowIgnored => Some("toggle ignored"),
-            Self::ToggleShowSkipped => Some("toggle skipped"),
-            Self::SelectNextFailed => Some("next failed"),
-            Self::SelectPreviousFailed => Some("previous failed"),
-            Self::StartOutputSearch => Some("search output"),
             Self::OutputSearchInput(_) => Some("search text"),
             Self::OutputSearchBackspace => Some("search erase"),
             Self::AcceptOutputSearch => Some("search accept"),
             Self::CancelOutputSearch => Some("search cancel"),
-            Self::FindNextOutputMatch => Some("next match"),
-            Self::FindPreviousOutputMatch => Some("previous match"),
-            Self::ToggleOutputFilter => Some("output filter"),
-            Self::ToggleOutputRegex => Some("regex"),
-            Self::ToggleOutputCaseSensitive => Some("case"),
             Self::ReportStatus(_) => Some("status"),
+            _ => self.info().map(|info| info.ticker),
         }
     }
 }
@@ -339,6 +624,29 @@ mod tests {
             command_for_key(KeyCode::Char('o'), KeyModifiers::NONE, CommandFocus::Output),
             AppCommand::OpenOutput
         );
+    }
+
+    #[test]
+    fn command_metadata_drives_ticker_labels() {
+        assert_eq!(AppCommand::RunSelected.ticker_label(), Some("run"));
+        assert_eq!(
+            AppCommand::ToggleOutputRegex.ticker_label(),
+            Some("regex")
+        );
+        assert_eq!(AppCommand::CloseHelp.ticker_label(), Some("close help"));
+    }
+
+    #[test]
+    fn command_metadata_contains_help_groups() {
+        assert!(help_groups().contains(&CommandGroup::Navigation));
+        assert!(command_infos().iter().any(|info| {
+            info.group == CommandGroup::Runs
+                && info.keys == "r"
+                && info.label == "run selected scope"
+        }));
+        assert!(command_infos().iter().any(|info| {
+            info.group == CommandGroup::Output && info.keys == "/" && info.label == "search output"
+        }));
     }
 
     #[test]

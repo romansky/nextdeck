@@ -9,6 +9,7 @@ use ratatui::{
 
 use crate::{
     app::{App, FocusPane},
+    command::{CommandGroup, command_infos, help_groups},
     config,
     theme::Theme,
     tree::{NodeKind, TestNode, TestStatus},
@@ -513,46 +514,31 @@ fn status_spans<'a>(app: &'a App, theme: &'a Theme) -> Vec<Span<'a>> {
 
 fn draw_help(frame: &mut Frame<'_>, theme: &Theme) {
     let area = centered_rect(72, 96, frame.area());
-    let text = vec![
-        Line::styled("Navigation", theme.title(true)),
-        help_line("Up/Down", "move selection", theme),
-        help_line("PageUp/PageDown", "page active pane", theme),
-        help_line("Home/End", "first or last tree row", theme),
-        help_line("Left/Right", "collapse or expand", theme),
-        help_line("Tab", "switch tree/output focus", theme),
-        help_line("Shift+Left/[", "narrow tests pane", theme),
-        help_line("Shift+Right/]", "widen tests pane", theme),
-        Line::from(""),
-        Line::styled("Runs", theme.title(true)),
-        help_line("u", "refresh test list", theme),
-        help_line("r", "run selected scope", theme),
-        help_line("R", "rerun failures", theme),
-        help_line("o", "open selected test source", theme),
-        help_line("f/F", "next or previous failure", theme),
-        Line::from(""),
-        Line::styled("View", theme.title(true)),
-        help_line("s", "toggle successful tests", theme),
-        help_line("x", "toggle failed tests", theme),
-        help_line("i", "toggle ignored tests", theme),
-        help_line("k", "toggle skipped tests", theme),
-        Line::from(""),
-        Line::styled("Output", theme.title(true)),
-        help_line("End", "follow output bottom", theme),
-        help_line("/", "search output", theme),
-        help_line("n/N", "next or previous output match", theme),
-        help_line("f", "toggle output match filter", theme),
-        help_line("r", "toggle output regex", theme),
-        help_line("c", "toggle output case sensitivity", theme),
-        help_line("o", "open output as text file", theme),
-        help_line("h/?/F1", "close help", theme),
-        help_line("q", "quit", theme),
-    ];
+    let text = help_text(theme);
     let help = Paragraph::new(text)
         .alignment(Alignment::Left)
         .style(theme.text())
         .block(theme.modal_block("Help"));
     frame.render_widget(Clear, area);
     frame.render_widget(help, area);
+}
+
+fn help_text(theme: &Theme) -> Vec<Line<'static>> {
+    let mut text = Vec::new();
+    for group in help_groups() {
+        append_help_group(&mut text, *group, theme);
+    }
+    text
+}
+
+fn append_help_group(text: &mut Vec<Line<'static>>, group: CommandGroup, theme: &Theme) {
+    if !text.is_empty() {
+        text.push(Line::from(""));
+    }
+    text.push(Line::styled(group.title(), theme.title(true)));
+    for info in command_infos().iter().filter(|info| info.group == group) {
+        text.push(help_line(info.keys, info.label, theme));
+    }
 }
 
 fn help_line(key: &'static str, label: &'static str, theme: &Theme) -> Line<'static> {
