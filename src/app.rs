@@ -510,7 +510,7 @@ impl App {
     }
 
     pub fn collapse_selected(&mut self) {
-        self.with_selection_reset(|tree| tree.collapse_selected());
+        self.with_selection_reset(|tree| tree.collapse_selected_or_parent());
     }
 
     pub fn select_next_failed(&mut self) {

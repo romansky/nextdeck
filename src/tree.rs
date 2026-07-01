@@ -207,8 +207,31 @@ impl Tree {
         self.clamp_selection();
     }
 
-    pub fn collapse_selected(&mut self) {
-        self.with_selected_mut(|node| node.expanded = false);
+    pub fn collapse_selected_or_parent(&mut self) {
+        let target = {
+            let rows = self.visible_rows();
+            let selected = self.selected_index();
+            let Some((selected_depth, selected_node)) = rows.get(selected) else {
+                return;
+            };
+
+            if !selected_node.children.is_empty() && selected_node.expanded {
+                Some(selected)
+            } else {
+                rows[..selected]
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find_map(|(index, (depth, _))| (*depth < *selected_depth).then_some(index))
+            }
+        };
+
+        let Some(target) = target else {
+            return;
+        };
+
+        self.with_visible_index_mut(target, |node| node.expanded = false);
+        self.selected = target;
         self.clamp_selection();
     }
 
@@ -446,8 +469,12 @@ impl Tree {
         self.selected = self.selected_index();
     }
 
-    fn with_selected_mut(&mut self, mut f: impl FnMut(&mut TestNode)) {
+    fn with_selected_mut(&mut self, f: impl FnMut(&mut TestNode)) {
         let target = self.selected_index();
+        self.with_visible_index_mut(target, f);
+    }
+
+    fn with_visible_index_mut(&mut self, target: usize, mut f: impl FnMut(&mut TestNode)) {
         let mut current = 0;
         let _ = with_visible_mut(&mut self.root, target, &mut current, &mut f);
     }
@@ -811,6 +838,38 @@ mod tests {
     }
 
     #[test]
+    fn collapse_selected_or_parent_collapses_parent_when_test_is_selected() {
+        let mut tree = Tree::from_tests(vec![
+            discovered_test("demo::demo", "demo", "tests", "one"),
+            discovered_test("demo::demo", "demo", "tests", "two"),
+        ]);
+        select_label(&mut tree, "one");
+
+        tree.collapse_selected_or_parent();
+
+        assert_eq!(tree.selected_node().map(|node| node.label.as_str()), Some("tests"));
+        let labels = visible_labels(&tree);
+        assert!(!labels.contains(&"one".to_owned()));
+        assert!(!labels.contains(&"two".to_owned()));
+    }
+
+    #[test]
+    fn collapse_selected_or_parent_collapses_selected_branch_first() {
+        let mut tree = Tree::from_tests(vec![
+            discovered_test("demo::demo", "demo", "tests", "one"),
+            discovered_test("demo::demo", "demo", "tests", "two"),
+        ]);
+        select_label(&mut tree, "tests");
+
+        tree.collapse_selected_or_parent();
+
+        assert_eq!(tree.selected_node().map(|node| node.label.as_str()), Some("tests"));
+        let labels = visible_labels(&tree);
+        assert!(!labels.contains(&"one".to_owned()));
+        assert!(!labels.contains(&"two".to_owned()));
+    }
+
+    #[test]
     fn view_filter_hides_ignored_test_rows() {
         let mut tree = Tree::from_tests(vec![
             discovered_test("demo::demo", "demo", "tests", "ignored"),
@@ -954,6 +1013,14 @@ mod tests {
             .iter()
             .map(|(_, node)| node.label.clone())
             .collect()
+    }
+
+    fn select_label(tree: &mut Tree, label: &str) {
+        tree.selected = tree
+            .visible_rows()
+            .iter()
+            .position(|(_, node)| node.label == label)
+            .expect("visible label");
     }
 
     fn discovered_test(binary_id: &str, package: &str, module: &str, name: &str) -> DiscoveredTest {
