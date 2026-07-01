@@ -1,4 +1,7 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use serde::Serialize;
 
@@ -87,6 +90,7 @@ pub struct TestNode {
     pub kind: NodeKind,
     pub status: TestStatus,
     pub output: TestOutput,
+    pub started_at: Option<Instant>,
     pub expanded: bool,
     pub children: Vec<TestNode>,
 }
@@ -98,7 +102,8 @@ impl TestNode {
             kind,
             status: TestStatus::Pending,
             output: TestOutput::default(),
-            expanded: true,
+            started_at: None,
+            expanded: false,
             children: Vec::new(),
         }
     }
@@ -118,6 +123,18 @@ impl TestNode {
         }
         has_duration.then_some(total)
     }
+
+    pub fn display_duration(&self) -> Option<Duration> {
+        if matches!(self.kind, NodeKind::Test(_)) {
+            return self.output.duration.or_else(|| {
+                (self.status == TestStatus::Running)
+                    .then(|| self.started_at.map(|started_at| started_at.elapsed()))
+                    .flatten()
+            });
+        }
+
+        self.duration()
+    }
 }
 
 pub struct Tree {
@@ -129,8 +146,10 @@ pub struct Tree {
 
 impl Tree {
     pub fn from_tests(tests: Vec<DiscoveredTest>) -> Self {
+        let mut root = TestNode::new("workspace", NodeKind::Workspace);
+        root.expanded = true;
         let mut tree = Self {
-            root: TestNode::new("workspace", NodeKind::Workspace),
+            root,
             view_filter: TestViewFilter::default(),
             selected: 0,
             runner_output: Vec::new(),
@@ -240,6 +259,7 @@ impl Tree {
         visit_mut(&mut self.root, &mut |node| {
             if let NodeKind::Test(test) = &node.kind {
                 node.output = TestOutput::default();
+                node.started_at = None;
                 if test.ignored {
                     node.status = TestStatus::Ignored;
                 } else if scope.matches_test(test) {
@@ -256,6 +276,7 @@ impl Tree {
         visit_mut(&mut self.root, &mut |node| {
             if node_matches(node, key) {
                 node.status = status;
+                node.started_at = (status == TestStatus::Running).then(Instant::now);
             }
         });
         self.recompute_statuses();
@@ -272,6 +293,7 @@ impl Tree {
         visit_mut(&mut self.root, &mut |node| {
             if node_matches(node, key) {
                 node.status = status;
+                node.started_at = None;
                 node.output = TestOutput {
                     stdout: stdout.clone(),
                     stderr: stderr.clone(),
@@ -699,6 +721,48 @@ mod tests {
     }
 
     #[test]
+    fn initial_tree_shows_only_one_nested_level() {
+        let mut tree = Tree::from_tests(vec![discovered_test(
+            "demo::demo",
+            "demo",
+            "outer::inner",
+            "works",
+        )]);
+
+        assert_eq!(visible_labels(&tree), vec!["workspace", "demo"]);
+
+        tree.select_next();
+        tree.expand_selected();
+        assert_eq!(visible_labels(&tree), vec!["workspace", "demo", "outer"]);
+
+        tree.select_next();
+        tree.expand_selected();
+        assert_eq!(
+            visible_labels(&tree),
+            vec!["workspace", "demo", "outer", "inner"]
+        );
+    }
+
+    #[test]
+    fn running_duration_stays_on_test_leaf() {
+        let mut tree = Tree::from_tests(vec![discovered_test(
+            "demo::demo",
+            "demo",
+            "tests",
+            "works",
+        )]);
+
+        set_test_status(&mut tree, "tests::works", TestStatus::Running);
+
+        let package = &tree.root.children[0];
+        let module = &package.children[0];
+        let test = &module.children[0];
+        assert_eq!(package.display_duration(), None);
+        assert_eq!(module.display_duration(), None);
+        assert!(test.display_duration().is_some());
+    }
+
+    #[test]
     fn integration_test_targets_are_grouped_under_binary_name() {
         let tree = Tree::from_tests(vec![DiscoveredTest {
             key: TestKey {
@@ -794,6 +858,7 @@ mod tests {
         ]);
         set_test_status(&mut tree, "tests::passed", TestStatus::Passed);
         set_test_status(&mut tree, "tests::failed", TestStatus::Failed);
+        expand_all(&mut tree);
 
         tree.set_view_filter(TestViewFilter {
             show_success: false,
@@ -827,6 +892,7 @@ mod tests {
 
         set_test_status(&mut tree, "tests::one", TestStatus::Passed);
         set_test_status(&mut tree, "tests::two", TestStatus::Passed);
+        expand_all(&mut tree);
 
         assert_eq!(tree.root.status, TestStatus::Passed);
         let labels = tree
@@ -843,6 +909,7 @@ mod tests {
             discovered_test("demo::demo", "demo", "tests", "one"),
             discovered_test("demo::demo", "demo", "tests", "two"),
         ]);
+        expand_all(&mut tree);
         select_label(&mut tree, "one");
 
         tree.collapse_selected_or_parent();
@@ -859,6 +926,7 @@ mod tests {
             discovered_test("demo::demo", "demo", "tests", "one"),
             discovered_test("demo::demo", "demo", "tests", "two"),
         ]);
+        expand_all(&mut tree);
         select_label(&mut tree, "tests");
 
         tree.collapse_selected_or_parent();
@@ -876,6 +944,7 @@ mod tests {
             discovered_test("demo::demo", "demo", "tests", "pending"),
         ]);
         set_test_status(&mut tree, "tests::ignored", TestStatus::Ignored);
+        expand_all(&mut tree);
 
         tree.set_view_filter(TestViewFilter {
             show_success: true,
@@ -896,6 +965,7 @@ mod tests {
             discovered_test("demo::demo", "demo", "tests", "pending"),
         ]);
         set_test_status(&mut tree, "tests::skipped", TestStatus::Skipped);
+        expand_all(&mut tree);
 
         tree.set_view_filter(TestViewFilter {
             show_success: true,
@@ -918,6 +988,7 @@ mod tests {
         tree.prepare_for_run(&crate::nextest::RunScope::Test {
             name: "tests::selected".to_owned(),
         });
+        expand_all(&mut tree);
 
         tree.set_view_filter(TestViewFilter {
             show_success: true,
@@ -989,6 +1060,7 @@ mod tests {
         });
 
         tree.refresh_from_tests(vec![discovered_test("demo::demo", "demo", "tests", "new")]);
+        expand_all(&mut tree);
 
         assert!(!tree.view_filter.show_success);
         assert!(tree.view_filter.show_failed);
@@ -1021,6 +1093,10 @@ mod tests {
             .iter()
             .position(|(_, node)| node.label == label)
             .expect("visible label");
+    }
+
+    fn expand_all(tree: &mut Tree) {
+        visit_mut(&mut tree.root, &mut |node| node.expanded = true);
     }
 
     fn discovered_test(binary_id: &str, package: &str, module: &str, name: &str) -> DiscoveredTest {

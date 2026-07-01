@@ -110,16 +110,13 @@ fn on_off(value: bool) -> &'static str {
 
 fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let area = centered_rect(62, 58, frame.area());
-    let lines = if let Some(error) = &app.discovery.error {
-        vec![
-            Line::styled("Discovery failed", theme.danger()),
-            Line::from(""),
-            Line::styled(error.clone(), theme.text()),
-            Line::from(""),
-            Line::styled("Press q to quit.", theme.muted()),
-        ]
+    if app.discovery.error.is_some() {
+        let text = app.output_text();
+        let page_size = area.height.saturating_sub(2).max(1);
+        let title = output_title_for("Discovery", app, &text, page_size, app.output_scroll);
+        draw_output_panel(frame, theme, area, &title, text, true, app.output_scroll);
     } else {
-        vec![
+        let lines = vec![
             Line::styled(
                 format!("{} Discovering tests", app.discovery_spinner()),
                 theme.accent(),
@@ -138,14 +135,14 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
                 theme.text(),
             ),
             Line::styled("Press q to quit.", theme.muted()),
-        ]
-    };
-    let paragraph = Paragraph::new(lines)
-        .alignment(Alignment::Left)
-        .block(theme.modal_block("Discovery"))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(Clear, area);
-    frame.render_widget(paragraph, area);
+        ];
+        let paragraph = Paragraph::new(lines)
+            .alignment(Alignment::Left)
+            .block(theme.modal_block("Discovery"))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(Clear, area);
+        frame.render_widget(paragraph, area);
+    }
 }
 
 fn tree_item<'a>(depth: usize, node: &TestNode, selected: bool, theme: &Theme) -> ListItem<'a> {
@@ -169,7 +166,7 @@ fn tree_leading_fields(depth: usize, node: &TestNode) -> String {
         "{}{} {} ",
         "  ".repeat(depth),
         fold_marker(node),
-        duration_field(node.duration())
+        duration_field(node.display_duration())
     )
 }
 
@@ -359,7 +356,7 @@ fn detail_status_line(status: TestStatus, theme: &Theme) -> Line<'static> {
 }
 
 fn duration_label(node: &TestNode) -> String {
-    node.duration()
+    node.display_duration()
         .map(format_duration)
         .unwrap_or_else(|| "-".to_owned())
 }
@@ -407,24 +404,42 @@ fn draw_output(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     let text = app.output_text();
     let focused = app.focus == FocusPane::Output;
     let title = output_title(app, &text);
+    draw_output_panel(frame, theme, area, &title, text, focused, app.output_scroll);
+}
+
+fn draw_output_panel(
+    frame: &mut Frame<'_>,
+    theme: &Theme,
+    area: Rect,
+    title: &str,
+    text: String,
+    focused: bool,
+    scroll: u16,
+) {
+    let page_size = area.height.saturating_sub(2).max(1);
+    let scroll = output_render_scroll(&text, page_size, scroll);
     let output = Paragraph::new(text)
         .style(theme.text())
-        .block(theme.panel_block(&title, focused))
+        .block(theme.panel_block(title, focused))
         .wrap(Wrap { trim: false })
-        .scroll((app.output_scroll, 0));
+        .scroll((scroll, 0));
     frame.render_widget(Clear, area);
     frame.render_widget(output, area);
 }
 
 fn output_title(app: &App, text: &str) -> String {
+    output_title_for("Output", app, text, app.output_page_size, app.output_scroll)
+}
+
+fn output_title_for(label: &str, app: &App, text: &str, page_size: u16, scroll: u16) -> String {
     let total = text.lines().count().max(1);
-    let visible = app.output_page_size.max(1) as usize;
-    let search = output_search_title(app);
+    let visible = page_size.max(1) as usize;
+    let search = output_search_title(app, text);
     if total <= visible {
-        return format!("Output All {total}/{total}{search}");
+        return format!("{label} All {total}/{total}{search}");
     }
 
-    let top = (app.output_scroll as usize).min(total.saturating_sub(1));
+    let top = output_render_scroll(text, page_size, scroll) as usize;
     let bottom = top.saturating_add(visible).min(total);
     let position = if top == 0 {
         "Top"
@@ -435,14 +450,21 @@ fn output_title(app: &App, text: &str) -> String {
     };
 
     if position.is_empty() {
-        format!("Output {}-{bottom}/{total}{search}", top + 1)
+        format!("{label} {}-{bottom}/{total}{search}", top + 1)
     } else {
-        format!("Output {position} {}-{bottom}/{total}{search}", top + 1)
+        format!("{label} {position} {}-{bottom}/{total}{search}", top + 1)
     }
 }
 
-fn output_search_title(app: &App) -> String {
-    app.output_search.view(&app.output_text()).title_fragment()
+fn output_search_title(app: &App, text: &str) -> String {
+    app.output_search.view(text).title_fragment()
+}
+
+fn output_render_scroll(text: &str, page_size: u16, scroll: u16) -> u16 {
+    let total = text.lines().count().max(1);
+    let visible = page_size.max(1) as usize;
+    let max_scroll = total.saturating_sub(visible).min(u16::MAX as usize) as u16;
+    scroll.min(max_scroll)
 }
 
 fn draw_status(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: ratatui::layout::Rect) {
@@ -615,6 +637,42 @@ mod tests {
         }]);
 
         assert_eq!(tree_leading_fields(0, &tree.root), "v [        ] ");
+    }
+
+    #[test]
+    fn running_duration_field_is_only_populated_for_test_leaf() {
+        let mut tree = Tree::from_tests(vec![DiscoveredTest {
+            key: TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: "tests::case".to_owned(),
+            },
+            package: "demo".to_owned(),
+            binary: "demo".to_owned(),
+            binary_kind: "lib".to_owned(),
+            cwd: PathBuf::from("."),
+            source_path: None,
+            module: Some("tests".to_owned()),
+            name: "case".to_owned(),
+            full_name: "tests::case".to_owned(),
+            status: TestStatus::Pending,
+            ignored: false,
+        }]);
+        tree.update_status(
+            &TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: "tests::case".to_owned(),
+            },
+            TestStatus::Running,
+        );
+
+        let package = &tree.root.children[0];
+        let module = &package.children[0];
+        let test = &module.children[0];
+        assert_eq!(tree_leading_fields(1, package), "  > [        ] ");
+        assert_eq!(tree_leading_fields(2, module), "    > [        ] ");
+        assert_ne!(tree_leading_fields(3, test), "        [        ] ");
     }
 
     #[test]

@@ -196,7 +196,7 @@ impl App {
     pub fn command_context(&self) -> CommandContext {
         CommandContext {
             help_visible: self.show_help,
-            focus: match self.focus {
+            focus: match self.command_focus() {
                 FocusPane::Tree => CommandFocus::Tests,
                 FocusPane::Output => CommandFocus::Output,
             },
@@ -248,6 +248,10 @@ impl App {
             DiscoveryEvent::Finished(Err(error)) => {
                 self.discovery.running = false;
                 self.discovery.error = Some(error);
+                self.focus = FocusPane::Output;
+                self.output_scroll = 0;
+                self.output_follow = false;
+                self.output_search.current_line = None;
                 self.status = "Discovery failed".to_owned();
                 false
             }
@@ -301,14 +305,14 @@ impl App {
                 AppEffect::None
             }
             AppCommand::MoveUp => {
-                match self.focus {
+                match self.command_focus() {
                     FocusPane::Tree => self.select_previous(),
                     FocusPane::Output => self.scroll_output_up(1),
                 }
                 AppEffect::None
             }
             AppCommand::MoveDown => {
-                match self.focus {
+                match self.command_focus() {
                     FocusPane::Tree => self.select_next(),
                     FocusPane::Output => self.scroll_output_down(1),
                 }
@@ -327,28 +331,28 @@ impl App {
                 AppEffect::None
             }
             AppCommand::MoveHome => {
-                match self.focus {
+                match self.command_focus() {
                     FocusPane::Tree => self.select_first(),
                     FocusPane::Output => self.scroll_output_up(u16::MAX),
                 }
                 AppEffect::None
             }
             AppCommand::MoveEnd => {
-                match self.focus {
+                match self.command_focus() {
                     FocusPane::Tree => self.select_last(),
                     FocusPane::Output => self.scroll_output_bottom(),
                 }
                 AppEffect::None
             }
             AppCommand::PageUp => {
-                match self.focus {
+                match self.command_focus() {
                     FocusPane::Tree => self.select_previous_page(),
                     FocusPane::Output => self.scroll_output_up(self.output_page_size),
                 }
                 AppEffect::None
             }
             AppCommand::PageDown => {
-                match self.focus {
+                match self.command_focus() {
                     FocusPane::Tree => self.select_next_page(),
                     FocusPane::Output => self.scroll_output_down(self.output_page_size),
                 }
@@ -602,6 +606,7 @@ impl App {
             usize::from(u16::MAX) + 1,
             1,
         ) as u16;
+        self.output_follow = false;
     }
 
     pub fn scroll_output_bottom(&mut self) {
@@ -609,7 +614,7 @@ impl App {
     }
 
     pub fn output_text(&self) -> String {
-        let text = self.tree.selected_output();
+        let text = self.output_source_text();
         self.output_search.filtered_text(&text)
     }
 
@@ -769,10 +774,30 @@ impl App {
     }
 
     fn open_output_effect(&mut self) -> AppEffect {
-        let title = self.tree.selected_path();
+        let title = if self.discovery.error.is_some() {
+            "Discovery failed".to_owned()
+        } else {
+            self.tree.selected_path()
+        };
         let text = self.output_text();
         self.status = "Opening output".to_owned();
         AppEffect::OpenOutput(OutputOpenRequest { title, text })
+    }
+
+    fn command_focus(&self) -> FocusPane {
+        if self.discovery.error.is_some() {
+            FocusPane::Output
+        } else {
+            self.focus
+        }
+    }
+
+    fn output_source_text(&self) -> String {
+        if let Some(error) = &self.discovery.error {
+            discovery_error_output(error)
+        } else {
+            self.tree.selected_output()
+        }
     }
 
     fn selected_source_location(&self) -> Option<SourceLocation> {
@@ -1029,6 +1054,10 @@ fn output_search_prompt(search: &OutputSearchState) -> String {
     search.prompt()
 }
 
+fn discovery_error_output(error: &str) -> String {
+    format!("Discovery failed\n\n{error}")
+}
+
 fn run_outcome(exit_code: Option<i32>, counts: StatusCounts) -> RunOutcome {
     match exit_code {
         Some(0) if counts.failed == 0 => RunOutcome::Passed,
@@ -1064,6 +1093,7 @@ mod tests {
     #[test]
     fn tree_scroll_follows_selection_past_viewport() {
         let mut app = App::new(Tree::from_tests(test_rows(30)));
+        expand_all(&mut app.tree.root);
         app.set_viewport_sizes(7, 7);
 
         for _ in 0..20 {
@@ -1077,6 +1107,7 @@ mod tests {
     #[test]
     fn tree_scroll_reclamps_when_viewport_height_changes() {
         let mut app = App::new(Tree::from_tests(test_rows(30)));
+        expand_all(&mut app.tree.root);
         app.set_viewport_sizes(16, 7);
         app.select_last();
         assert_selection_visible(&app);
@@ -1369,6 +1400,29 @@ mod tests {
         assert_eq!(app.status, "Output search cleared");
     }
 
+    #[test]
+    fn discovery_error_uses_output_scroll_and_search() {
+        let mut app = App::new(Tree::from_tests(test_rows(3)));
+        app.set_viewport_sizes(5, 5);
+
+        app.apply_discovery_event(DiscoveryEvent::Finished(Err(
+            "first\nsecond\nneedle\nfourth".to_owned(),
+        )));
+
+        assert_eq!(app.command_context().focus, CommandFocus::Output);
+        app.apply_command(AppCommand::MoveDown);
+        assert_eq!(app.output_scroll, 1);
+
+        app.apply_command(AppCommand::StartOutputSearch);
+        for char in "needle".chars() {
+            app.apply_command(AppCommand::OutputSearchInput(char));
+        }
+        app.apply_command(AppCommand::AcceptOutputSearch);
+
+        assert_eq!(app.output_search.current_line, Some(4));
+        assert_eq!(app.status, "Output match 1/1 for 'needle'");
+    }
+
     fn assert_selection_visible(app: &App) {
         let selected = app.tree.selected_index();
         assert!(
@@ -1412,6 +1466,7 @@ mod tests {
 
     fn app_with_finished_output(stdout: &str, stderr: &str) -> App {
         let mut app = App::new(Tree::from_tests(test_rows(1)));
+        expand_all(&mut app.tree.root);
         app.tree.finish_test(
             &test_key(0),
             TestStatus::Passed,
@@ -1423,5 +1478,12 @@ mod tests {
         app.tree.select_next();
         app.tree.select_next();
         app
+    }
+
+    fn expand_all(node: &mut TestNode) {
+        node.expanded = true;
+        for child in &mut node.children {
+            expand_all(child);
+        }
     }
 }
