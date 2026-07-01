@@ -177,15 +177,8 @@ fn tree_item<'a>(depth: usize, node: &TestNode, selected: bool, theme: &Theme) -
     ]))
 }
 
-fn status_code(status: TestStatus) -> &'static str {
-    match status {
-        TestStatus::Pending => "WAIT",
-        TestStatus::Running => "    ",
-        TestStatus::Passed => "PASS",
-        TestStatus::Failed => "FAIL",
-        TestStatus::Ignored => "IGNR",
-        TestStatus::Skipped => "    ",
-    }
+fn status_code(_status: TestStatus) -> &'static str {
+    "    "
 }
 
 fn node_label(node: &TestNode) -> String {
@@ -626,8 +619,12 @@ mod tests {
     }
 
     #[test]
-    fn running_and_skipped_tree_prefixes_are_blank() {
+    fn tree_status_prefixes_are_blank() {
+        assert_eq!(status_code(TestStatus::Pending), "    ");
         assert_eq!(status_code(TestStatus::Running), "    ");
+        assert_eq!(status_code(TestStatus::Passed), "    ");
+        assert_eq!(status_code(TestStatus::Failed), "    ");
+        assert_eq!(status_code(TestStatus::Ignored), "    ");
         assert_eq!(status_code(TestStatus::Skipped), "    ");
     }
 
