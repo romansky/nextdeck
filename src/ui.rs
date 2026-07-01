@@ -180,11 +180,11 @@ fn tree_item<'a>(depth: usize, node: &TestNode, selected: bool, theme: &Theme) -
 fn status_code(status: TestStatus) -> &'static str {
     match status {
         TestStatus::Pending => "WAIT",
-        TestStatus::Running => "RUN ",
+        TestStatus::Running => "    ",
         TestStatus::Passed => "PASS",
         TestStatus::Failed => "FAIL",
         TestStatus::Ignored => "IGNR",
-        TestStatus::Skipped => "SKIP",
+        TestStatus::Skipped => "    ",
     }
 }
 
@@ -609,6 +609,12 @@ mod tests {
     fn filter_hint_includes_toggle_key() {
         assert_eq!(filter_hint("pass", "s", true), "pass[s]:on");
         assert_eq!(filter_hint("fail", "x", false), "fail[x]:off");
+    }
+
+    #[test]
+    fn running_and_skipped_tree_prefixes_are_blank() {
+        assert_eq!(status_code(TestStatus::Running), "    ");
+        assert_eq!(status_code(TestStatus::Skipped), "    ");
     }
 
     #[test]
