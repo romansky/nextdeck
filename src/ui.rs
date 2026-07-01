@@ -149,14 +149,6 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
 }
 
 fn tree_item<'a>(depth: usize, node: &TestNode, selected: bool, theme: &Theme) -> ListItem<'a> {
-    let indent = "  ".repeat(depth);
-    let fold = if node.children.is_empty() {
-        " "
-    } else if node.expanded {
-        "v"
-    } else {
-        ">"
-    };
     let row_style = if selected {
         theme.selected()
     } else {
@@ -164,13 +156,7 @@ fn tree_item<'a>(depth: usize, node: &TestNode, selected: bool, theme: &Theme) -
     };
     let status_style = theme.status(node.status, selected);
     ListItem::new(Line::from(vec![
-        Span::styled(indent, row_style),
-        Span::styled(fold, row_style),
-        Span::styled(" ", row_style),
-        Span::styled(status_code(node.status), status_style),
-        Span::styled(" ", row_style),
-        Span::styled(duration_field(node.duration()), row_style),
-        Span::styled(" ", row_style),
+        Span::styled(tree_leading_fields(depth, node), row_style),
         Span::styled(
             node_label(node),
             if selected { row_style } else { status_style },
@@ -178,8 +164,23 @@ fn tree_item<'a>(depth: usize, node: &TestNode, selected: bool, theme: &Theme) -
     ]))
 }
 
-fn status_code(_status: TestStatus) -> &'static str {
-    "    "
+fn tree_leading_fields(depth: usize, node: &TestNode) -> String {
+    format!(
+        "{}{} {} ",
+        "  ".repeat(depth),
+        fold_marker(node),
+        duration_field(node.duration())
+    )
+}
+
+fn fold_marker(node: &TestNode) -> &'static str {
+    if node.children.is_empty() {
+        " "
+    } else if node.expanded {
+        "v"
+    } else {
+        ">"
+    }
 }
 
 fn node_label(node: &TestNode) -> String {
@@ -572,7 +573,8 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tree::Tree;
+    use crate::tree::{DiscoveredTest, TestKey, Tree};
+    use std::path::PathBuf;
 
     #[test]
     fn output_title_shows_all_when_text_fits() {
@@ -605,13 +607,26 @@ mod tests {
     }
 
     #[test]
-    fn tree_status_prefixes_are_blank() {
-        assert_eq!(status_code(TestStatus::Pending), "    ");
-        assert_eq!(status_code(TestStatus::Running), "    ");
-        assert_eq!(status_code(TestStatus::Passed), "    ");
-        assert_eq!(status_code(TestStatus::Failed), "    ");
-        assert_eq!(status_code(TestStatus::Ignored), "    ");
-        assert_eq!(status_code(TestStatus::Skipped), "    ");
+    fn tree_leading_fields_have_no_status_gap() {
+        let tree = Tree::from_tests(vec![DiscoveredTest {
+            key: TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: "tests::case".to_owned(),
+            },
+            package: "demo".to_owned(),
+            binary: "demo".to_owned(),
+            binary_kind: "lib".to_owned(),
+            cwd: PathBuf::from("."),
+            source_path: None,
+            module: Some("tests".to_owned()),
+            name: "case".to_owned(),
+            full_name: "tests::case".to_owned(),
+            status: TestStatus::Pending,
+            ignored: false,
+        }]);
+
+        assert_eq!(tree_leading_fields(0, &tree.root), "v [        ] ");
     }
 
     #[test]
