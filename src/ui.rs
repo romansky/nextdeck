@@ -442,31 +442,42 @@ fn output_title(app: &App, text: &str) -> String {
 }
 
 fn output_search_title(app: &App) -> String {
-    if app.output_search.query.is_empty()
-        && !app.output_search.filter
-        && !app.output_search.regex
-        && !app.output_search.case_sensitive
-    {
-        return String::new();
-    }
-
-    let query = if app.output_search.input_active {
-        format!("/{query}_", query = app.output_search.query)
-    } else if app.output_search.query.is_empty() {
-        "/-".to_owned()
+    let query = output_search_box(app);
+    let summary = if app.output_search.query.is_empty() {
+        String::new()
     } else {
-        format!("/{query}", query = app.output_search.query)
+        app.output_search_match_summary()
+            .map(|(current, total)| format!(" {current}/{total}"))
+            .unwrap_or_default()
     };
-    let summary = app
-        .output_search_match_summary()
-        .map(|(current, total)| format!(" {current}/{total}"))
-        .unwrap_or_default();
     format!(
-        " {query}{summary} f:{} r:{} c:{}",
+        " search{query}{summary} f:{} r:{} c:{}",
         on_off(app.output_search.filter),
         on_off(app.output_search.regex),
         on_off(app.output_search.case_sensitive)
     )
+}
+
+const OUTPUT_SEARCH_FIELD_WIDTH: usize = 18;
+
+fn output_search_box(app: &App) -> String {
+    let mut content = format!("/{}", app.output_search.query);
+    if app.output_search.input_active {
+        content.push('_');
+    }
+    let content = fit_search_content(content, OUTPUT_SEARCH_FIELD_WIDTH);
+    format!("[{content:<OUTPUT_SEARCH_FIELD_WIDTH$}]")
+}
+
+fn fit_search_content(content: String, width: usize) -> String {
+    let char_count = content.chars().count();
+    if char_count <= width {
+        return content;
+    }
+    content
+        .chars()
+        .skip(char_count.saturating_sub(width))
+        .collect()
 }
 
 fn draw_status(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: ratatui::layout::Rect) {
@@ -581,7 +592,10 @@ mod tests {
         let mut app = App::new(Tree::from_tests(Vec::new()));
         app.output_page_size = 5;
 
-        assert_eq!(output_title(&app, "one\ntwo"), "Output All 2/2");
+        assert_eq!(
+            output_title(&app, "one\ntwo"),
+            "Output All 2/2 search[/                 ] f:off r:off c:off"
+        );
     }
 
     #[test]
@@ -591,13 +605,22 @@ mod tests {
         let text = "1\n2\n3\n4\n5\n6";
 
         app.output_scroll = 0;
-        assert_eq!(output_title(&app, text), "Output Top 1-3/6");
+        assert_eq!(
+            output_title(&app, text),
+            "Output Top 1-3/6 search[/                 ] f:off r:off c:off"
+        );
 
         app.output_scroll = 2;
-        assert_eq!(output_title(&app, text), "Output 3-5/6");
+        assert_eq!(
+            output_title(&app, text),
+            "Output 3-5/6 search[/                 ] f:off r:off c:off"
+        );
 
         app.output_scroll = 3;
-        assert_eq!(output_title(&app, text), "Output Bot 4-6/6");
+        assert_eq!(
+            output_title(&app, text),
+            "Output Bot 4-6/6 search[/                 ] f:off r:off c:off"
+        );
     }
 
     #[test]
@@ -638,7 +661,25 @@ mod tests {
 
         assert_eq!(
             output_title(&app, "panic line"),
-            "Output All 1/1 /panic 0/1 f:on r:off c:off"
+            "Output All 1/1 search[/panic            ] 0/1 f:on r:off c:off"
         );
+    }
+
+    #[test]
+    fn output_search_box_marks_active_input() {
+        let mut app = App::new(Tree::from_tests(Vec::new()));
+        app.output_search.query = "panic".to_owned();
+        app.output_search.input_active = true;
+
+        assert_eq!(output_search_box(&app), "[/panic_           ]");
+    }
+
+    #[test]
+    fn output_search_box_keeps_fixed_width_for_long_query() {
+        let mut app = App::new(Tree::from_tests(Vec::new()));
+        app.output_search.query = "abcdefghijklmnopqrstuvwxyz".to_owned();
+
+        assert_eq!(output_search_box(&app).len(), OUTPUT_SEARCH_FIELD_WIDTH + 2);
+        assert_eq!(output_search_box(&app), "[ijklmnopqrstuvwxyz]");
     }
 }
