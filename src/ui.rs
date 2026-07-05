@@ -11,6 +11,7 @@ use crate::{
     app::{App, FocusPane},
     command::{CommandGroup, CommandInfo, command_infos},
     config,
+    output_pane::SearchModalFocus,
     theme::Theme,
     tree::{NodeKind, TestNode, TestStatus},
 };
@@ -68,6 +69,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         draw_discovery_modal(frame, app, theme);
     }
 
+    if app.output_search.modal_open {
+        draw_output_search_modal(frame, app, theme);
+    }
+
     if app.show_help {
         draw_help(frame, app, theme);
     }
@@ -99,7 +104,10 @@ fn pane_focused(app: &App, pane: FocusPane) -> bool {
 }
 
 fn modal_visible(app: &App) -> bool {
-    app.show_help || app.is_discovering() || app.discovery.error.is_some()
+    app.show_help
+        || app.output_search.modal_open
+        || app.is_discovering()
+        || app.discovery.error.is_some()
 }
 
 fn tests_title(app: &App) -> String {
@@ -166,6 +174,90 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         frame.render_widget(Clear, area);
         frame.render_widget(paragraph, area);
     }
+}
+
+fn draw_output_search_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
+    let area = centered_rect(70, 70, frame.area());
+    let search = &app.output_search;
+    let mut lines = vec![Line::styled(
+        "Query",
+        modal_label_style(search.modal_focus == SearchModalFocus::Query, theme),
+    )];
+
+    let query_lines = search
+        .draft_query
+        .lines()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if query_lines.is_empty() {
+        lines.push(Line::styled("[            ]", theme.muted()));
+    } else {
+        for line in query_lines.iter().take(6) {
+            lines.push(Line::styled(format!("[{line}]"), theme.text()));
+        }
+        if query_lines.len() > 6 {
+            lines.push(Line::styled("...", theme.muted()));
+        }
+    }
+
+    lines.extend([
+        Line::from(""),
+        Line::from(vec![
+            modal_button("Clear", search.modal_focus == SearchModalFocus::Clear, theme),
+            Span::raw("  "),
+            modal_button("Apply", search.modal_focus == SearchModalFocus::Apply, theme),
+        ]),
+        Line::from(""),
+        modal_checkbox(
+            "filter matching lines",
+            search.draft_filter,
+            search.modal_focus == SearchModalFocus::Filter,
+            theme,
+        ),
+        modal_checkbox(
+            "regex",
+            search.draft_regex,
+            search.modal_focus == SearchModalFocus::Regex,
+            theme,
+        ),
+        modal_checkbox(
+            "case-sensitive",
+            search.draft_case_sensitive,
+            search.modal_focus == SearchModalFocus::CaseSensitive,
+            theme,
+        ),
+    ]);
+
+    let paragraph = Paragraph::new(lines)
+        .alignment(Alignment::Left)
+        .block(theme.modal_block("Output Search"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, area);
+    frame.render_widget(paragraph, area);
+}
+
+fn modal_label_style(active: bool, theme: &Theme) -> ratatui::style::Style {
+    if active { theme.title(true) } else { theme.muted() }
+}
+
+fn modal_button(label: &'static str, active: bool, theme: &Theme) -> Span<'static> {
+    Span::styled(
+        format!("[ {label} ]"),
+        if active { theme.selected() } else { theme.text() },
+    )
+}
+
+fn modal_checkbox(
+    label: &'static str,
+    checked: bool,
+    active: bool,
+    theme: &Theme,
+) -> Line<'static> {
+    let marker = if checked { "x" } else { " " };
+    Line::styled(
+        format!("[{marker}] {label}"),
+        if active { theme.selected() } else { theme.text() },
+    )
 }
 
 fn tree_item<'a>(depth: usize, node: &TestNode, selected: bool, theme: &Theme) -> ListItem<'a> {
@@ -873,7 +965,7 @@ mod tests {
     #[test]
     fn output_search_box_marks_active_input() {
         let mut app = App::new(Tree::from_tests(Vec::new()));
-        app.output_search.query = "panic".to_owned();
+        app.output_search.draft_query = "panic".to_owned();
         app.output_search.input_active = true;
 
         assert_eq!(app.output_search.box_text(18), "[panic_            ]");

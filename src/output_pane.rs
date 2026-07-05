@@ -3,11 +3,52 @@ use regex::{Regex, RegexBuilder};
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OutputSearchState {
     pub input_active: bool,
+    pub modal_open: bool,
     pub query: String,
+    pub draft_query: String,
     pub filter: bool,
+    pub draft_filter: bool,
     pub regex: bool,
+    pub draft_regex: bool,
     pub case_sensitive: bool,
+    pub draft_case_sensitive: bool,
+    pub modal_focus: SearchModalFocus,
     pub current_line: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SearchModalFocus {
+    #[default]
+    Query,
+    Clear,
+    Apply,
+    Filter,
+    Regex,
+    CaseSensitive,
+}
+
+impl SearchModalFocus {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Query => Self::Clear,
+            Self::Clear => Self::Apply,
+            Self::Apply => Self::Filter,
+            Self::Filter => Self::Regex,
+            Self::Regex => Self::CaseSensitive,
+            Self::CaseSensitive => Self::Query,
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Query => Self::CaseSensitive,
+            Self::Clear => Self::Query,
+            Self::Apply => Self::Clear,
+            Self::Filter => Self::Apply,
+            Self::Regex => Self::Filter,
+            Self::CaseSensitive => Self::Regex,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,7 +105,11 @@ impl OutputSearchState {
     }
 
     pub fn box_text(&self, width: usize) -> String {
-        let mut content = self.query.clone();
+        let mut content = if self.input_active || self.modal_open {
+            self.draft_query.clone()
+        } else {
+            self.query.clone()
+        };
         if self.input_active {
             content.push('_');
         }
@@ -73,7 +118,21 @@ impl OutputSearchState {
     }
 
     pub fn prompt(&self) -> String {
-        format!("Output search: {}", self.query)
+        format!("Output search: {}", self.draft_query)
+    }
+
+    pub fn sync_draft_from_applied(&mut self) {
+        self.draft_query = self.query.clone();
+        self.draft_filter = self.filter;
+        self.draft_regex = self.regex;
+        self.draft_case_sensitive = self.case_sensitive;
+    }
+
+    pub fn apply_draft(&mut self) {
+        self.query.clone_from(&self.draft_query);
+        self.filter = self.draft_filter;
+        self.regex = self.draft_regex;
+        self.case_sensitive = self.draft_case_sensitive;
     }
 
     pub fn error(&self) -> Option<String> {
@@ -295,7 +354,7 @@ mod tests {
     #[test]
     fn search_box_view_is_fixed_width_and_marks_active_input() {
         let search = OutputSearchState {
-            query: "panic".to_owned(),
+            draft_query: "panic".to_owned(),
             input_active: true,
             ..OutputSearchState::default()
         };

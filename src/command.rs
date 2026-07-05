@@ -34,11 +34,15 @@ pub enum AppCommand {
     SelectNextFailed,
     SelectPreviousFailed,
     StartOutputSearch,
+    OpenOutputSearchModal,
     OutputSearchInput(char),
     OutputSearchBackspace,
     ClearOutputSearch,
-    AcceptOutputSearch,
+    ApplyOutputSearch,
     CancelOutputSearch,
+    SearchModalNextControl,
+    SearchModalPreviousControl,
+    SearchModalActivate,
     FindNextOutputMatch,
     FindPreviousOutputMatch,
     ToggleOutputFilter,
@@ -340,10 +344,14 @@ impl AppCommand {
             Self::ToggleShowSkipped => Some(CommandKind::ToggleShowSkipped),
             Self::SelectNextFailed | Self::SelectPreviousFailed => Some(CommandKind::SelectFailed),
             Self::StartOutputSearch => Some(CommandKind::StartOutputSearch),
+            Self::OpenOutputSearchModal
+            | Self::ApplyOutputSearch
+            | Self::SearchModalNextControl
+            | Self::SearchModalPreviousControl
+            | Self::SearchModalActivate => None,
             Self::OutputSearchInput(_)
             | Self::OutputSearchBackspace
             | Self::ClearOutputSearch
-            | Self::AcceptOutputSearch
             | Self::CancelOutputSearch => None,
             Self::FindNextOutputMatch | Self::FindPreviousOutputMatch => {
                 Some(CommandKind::FindOutputMatch)
@@ -369,8 +377,12 @@ impl AppCommand {
             Self::OutputSearchInput(_) => Some("search text"),
             Self::OutputSearchBackspace => Some("search erase"),
             Self::ClearOutputSearch => Some("search clear"),
-            Self::AcceptOutputSearch => Some("search accept"),
+            Self::OpenOutputSearchModal => Some("search modal"),
+            Self::ApplyOutputSearch => Some("search apply"),
             Self::CancelOutputSearch => Some("search cancel"),
+            Self::SearchModalNextControl => Some("search focus"),
+            Self::SearchModalPreviousControl => Some("search focus"),
+            Self::SearchModalActivate => Some("search action"),
             Self::ReportStatus(_) => Some("status"),
             _ => self.info().map(|info| info.ticker),
         }
@@ -389,6 +401,7 @@ pub struct CommandContext {
     pub help_visible: bool,
     pub focus: CommandFocus,
     pub output_search_input: bool,
+    pub output_search_modal: bool,
 }
 
 pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppCommand {
@@ -399,6 +412,9 @@ pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppComm
         }
         InputEvent::Terminal(Event::Key(key)) if is_stop_key(key.code, key.modifiers) => {
             AppCommand::StopRun
+        }
+        InputEvent::Terminal(Event::Key(key)) if context.output_search_modal => {
+            command_for_output_search_modal(key.code, key.modifiers)
         }
         InputEvent::Terminal(Event::Key(key)) if context.output_search_input => {
             command_for_output_search_input(key.code, key.modifiers)
@@ -421,10 +437,36 @@ pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppComm
 fn command_for_output_search_input(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
     match code {
         KeyCode::Esc => AppCommand::CancelOutputSearch,
-        KeyCode::Enter => AppCommand::AcceptOutputSearch,
+        KeyCode::Enter => AppCommand::OpenOutputSearchModal,
         KeyCode::Backspace => AppCommand::OutputSearchBackspace,
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
             AppCommand::ClearOutputSearch
+        }
+        KeyCode::Char(char) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
+            AppCommand::OutputSearchInput(char)
+        }
+        _ => AppCommand::Noop,
+    }
+}
+
+fn command_for_output_search_modal(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+    match code {
+        KeyCode::Esc => AppCommand::CancelOutputSearch,
+        KeyCode::Tab => AppCommand::SearchModalNextControl,
+        KeyCode::BackTab => AppCommand::SearchModalPreviousControl,
+        KeyCode::Enter if modifiers.contains(KeyModifiers::CONTROL) => {
+            AppCommand::ApplyOutputSearch
+        }
+        KeyCode::Enter => AppCommand::SearchModalActivate,
+        KeyCode::Backspace => AppCommand::OutputSearchBackspace,
+        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+            AppCommand::ClearOutputSearch
+        }
+        KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
+            AppCommand::ToggleOutputFilter
+        }
+        KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
+            AppCommand::ToggleOutputRegex
         }
         KeyCode::Char(char) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
             AppCommand::OutputSearchInput(char)
@@ -764,7 +806,40 @@ mod tests {
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         assert_eq!(
             command_for_input(&enter, context),
-            AppCommand::AcceptOutputSearch
+            AppCommand::OpenOutputSearchModal
+        );
+    }
+
+    #[test]
+    fn output_search_modal_accepts_navigation_and_apply_keys() {
+        let context = CommandContext {
+            output_search_modal: true,
+            ..CommandContext::default()
+        };
+
+        let tab = InputEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Tab,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            command_for_input(&tab, context),
+            AppCommand::SearchModalNextControl
+        );
+
+        let enter =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert_eq!(
+            command_for_input(&enter, context),
+            AppCommand::SearchModalActivate
+        );
+
+        let apply = InputEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(
+            command_for_input(&apply, context),
+            AppCommand::ApplyOutputSearch
         );
     }
 

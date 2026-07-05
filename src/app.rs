@@ -6,7 +6,7 @@ use crate::{
     editor::SourceLocation,
     git_status::GitStatus,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
-    output_pane::{OutputSearchState, SearchDirection},
+    output_pane::{OutputSearchState, SearchDirection, SearchModalFocus},
     scroll,
     source,
     state::StatusCounts,
@@ -203,6 +203,7 @@ impl App {
                 FocusPane::Output => CommandFocus::Output,
             },
             output_search_input: self.output_search.input_active,
+            output_search_modal: self.output_search.modal_open,
         }
     }
 
@@ -438,6 +439,10 @@ impl App {
                 self.start_output_search();
                 AppEffect::None
             }
+            AppCommand::OpenOutputSearchModal => {
+                self.open_output_search_modal();
+                AppEffect::None
+            }
             AppCommand::OutputSearchInput(char) => {
                 self.push_output_search_char(char);
                 AppEffect::None
@@ -450,12 +455,24 @@ impl App {
                 self.clear_output_search();
                 AppEffect::None
             }
-            AppCommand::AcceptOutputSearch => {
-                self.accept_output_search();
+            AppCommand::ApplyOutputSearch => {
+                self.apply_output_search();
                 AppEffect::None
             }
             AppCommand::CancelOutputSearch => {
                 self.cancel_output_search();
+                AppEffect::None
+            }
+            AppCommand::SearchModalNextControl => {
+                self.output_search.modal_focus = self.output_search.modal_focus.next();
+                AppEffect::None
+            }
+            AppCommand::SearchModalPreviousControl => {
+                self.output_search.modal_focus = self.output_search.modal_focus.previous();
+                AppEffect::None
+            }
+            AppCommand::SearchModalActivate => {
+                self.activate_output_search_modal_control();
                 AppEffect::None
             }
             AppCommand::FindNextOutputMatch => {
@@ -952,34 +969,69 @@ impl App {
 
     fn start_output_search(&mut self) {
         self.focus = FocusPane::Output;
+        self.output_search.sync_draft_from_applied();
         self.output_search.input_active = true;
+        self.output_search.modal_open = false;
         self.status = output_search_prompt(&self.output_search);
     }
 
     fn push_output_search_char(&mut self, char: char) {
-        self.output_search.query.push(char);
-        self.output_search.current_line = None;
-        self.status = output_search_prompt(&self.output_search);
+        if self.output_search.modal_open
+            && self.output_search.modal_focus != SearchModalFocus::Query
+        {
+            return;
+        }
+        if self.output_search.input_active || self.output_search.modal_open {
+            self.output_search.draft_query.push(char);
+            self.status = output_search_prompt(&self.output_search);
+        }
     }
 
     fn pop_output_search_char(&mut self) {
-        self.output_search.query.pop();
-        self.output_search.current_line = None;
-        self.status = output_search_prompt(&self.output_search);
+        if self.output_search.modal_open
+            && self.output_search.modal_focus != SearchModalFocus::Query
+        {
+            return;
+        }
+        if self.output_search.input_active || self.output_search.modal_open {
+            self.output_search.draft_query.pop();
+            self.status = output_search_prompt(&self.output_search);
+        }
     }
 
     fn clear_output_search(&mut self) {
-        self.output_search.query.clear();
+        if self.output_search.input_active || self.output_search.modal_open {
+            self.output_search.draft_query.clear();
+            self.status = "Output search draft cleared".to_owned();
+            return;
+        }
+        self.output_search.sync_draft_from_applied();
+        self.output_search.draft_query.clear();
+        self.output_search.apply_draft();
         self.output_search.current_line = None;
         self.output_scroll = 0;
         self.output_follow = false;
         self.status = "Output search cleared".to_owned();
     }
 
-    fn accept_output_search(&mut self) {
+    fn open_output_search_modal(&mut self) {
         self.output_search.input_active = false;
+        self.output_search.modal_open = true;
+        self.output_search.modal_focus = SearchModalFocus::Query;
+        if self.output_search.draft_query.is_empty() && !self.output_search.query.is_empty() {
+            self.output_search.sync_draft_from_applied();
+        }
+        self.status = "Output search options".to_owned();
+    }
+
+    fn apply_output_search(&mut self) {
+        self.output_search.apply_draft();
+        self.output_search.input_active = false;
+        self.output_search.modal_open = false;
         if self.output_search.query.is_empty() {
             self.output_search.current_line = None;
+            self.output_scroll = 0;
+            self.output_follow = false;
             self.status = "Output search cleared".to_owned();
         } else {
             self.find_output_match(SearchDirection::Next);
@@ -988,11 +1040,35 @@ impl App {
 
     fn cancel_output_search(&mut self) {
         self.output_search.input_active = false;
+        self.output_search.modal_open = false;
+        self.output_search.sync_draft_from_applied();
         self.status = "Output search cancelled".to_owned();
     }
 
+    fn activate_output_search_modal_control(&mut self) {
+        match self.output_search.modal_focus {
+            SearchModalFocus::Query => self.output_search.draft_query.push('\n'),
+            SearchModalFocus::Clear => self.output_search.draft_query.clear(),
+            SearchModalFocus::Apply => self.apply_output_search(),
+            SearchModalFocus::Filter => {
+                self.output_search.draft_filter = !self.output_search.draft_filter;
+            }
+            SearchModalFocus::Regex => {
+                self.output_search.draft_regex = !self.output_search.draft_regex;
+            }
+            SearchModalFocus::CaseSensitive => {
+                self.output_search.draft_case_sensitive = !self.output_search.draft_case_sensitive;
+            }
+        }
+    }
+
     fn toggle_output_filter(&mut self) {
+        if self.output_search.modal_open {
+            self.output_search.draft_filter = !self.output_search.draft_filter;
+            return;
+        }
         self.output_search.filter = !self.output_search.filter;
+        self.output_search.sync_draft_from_applied();
         self.output_search.current_line = None;
         self.output_scroll = 0;
         self.output_follow = false;
@@ -1003,7 +1079,12 @@ impl App {
     }
 
     fn toggle_output_regex(&mut self) {
+        if self.output_search.modal_open {
+            self.output_search.draft_regex = !self.output_search.draft_regex;
+            return;
+        }
         self.output_search.regex = !self.output_search.regex;
+        self.output_search.sync_draft_from_applied();
         self.output_search.current_line = None;
         self.status = match self.output_search_error() {
             Some(error) => format!("Invalid output search regex: {error}"),
@@ -1015,7 +1096,12 @@ impl App {
     }
 
     fn toggle_output_case_sensitive(&mut self) {
+        if self.output_search.modal_open {
+            self.output_search.draft_case_sensitive = !self.output_search.draft_case_sensitive;
+            return;
+        }
         self.output_search.case_sensitive = !self.output_search.case_sensitive;
+        self.output_search.sync_draft_from_applied();
         self.output_search.current_line = None;
         self.status = format!(
             "Output case sensitive: {}",
@@ -1511,7 +1597,7 @@ mod tests {
     }
 
     #[test]
-    fn output_search_input_edits_query_and_enter_finds_match() {
+    fn output_search_input_opens_modal_then_apply_finds_match() {
         let mut app = app_with_finished_output("zero\npanic\nok", "");
         app.output_page_size = 2;
 
@@ -1523,11 +1609,57 @@ mod tests {
         app.apply_command(AppCommand::OutputSearchInput('n'));
         app.apply_command(AppCommand::OutputSearchInput('i'));
         app.apply_command(AppCommand::OutputSearchInput('c'));
-        app.apply_command(AppCommand::AcceptOutputSearch);
+        assert_eq!(app.output_search.query, "");
+
+        app.apply_command(AppCommand::OpenOutputSearchModal);
+        assert!(app.output_search.modal_open);
+        app.output_search.modal_focus = SearchModalFocus::Apply;
+        app.apply_command(AppCommand::SearchModalActivate);
 
         assert!(!app.output_search.input_active);
+        assert!(!app.output_search.modal_open);
         assert_eq!(app.output_search.query, "panic");
         assert_eq!(app.output_scroll, 2);
+    }
+
+    #[test]
+    fn output_search_draft_does_not_filter_until_applied() {
+        let mut app = app_with_finished_output("alpha\npanic\nomega", "");
+        app.output_search.filter = true;
+
+        app.apply_command(AppCommand::StartOutputSearch);
+        for char in "panic".chars() {
+            app.apply_command(AppCommand::OutputSearchInput(char));
+        }
+
+        assert_eq!(app.output_search.query, "");
+        assert!(app.output_text().contains("alpha"));
+        assert!(app.output_text().contains("omega"));
+
+        app.apply_command(AppCommand::ApplyOutputSearch);
+
+        assert_eq!(app.output_search.query, "panic");
+        assert_eq!(app.output_text(), "panic");
+    }
+
+    #[test]
+    fn output_search_modal_controls_apply_draft_filters() {
+        let mut app = app_with_finished_output("case_01\ncase_aa\ncase_22", "");
+
+        app.apply_command(AppCommand::StartOutputSearch);
+        for char in r"case_\d+".chars() {
+            app.apply_command(AppCommand::OutputSearchInput(char));
+        }
+        app.apply_command(AppCommand::OpenOutputSearchModal);
+        app.output_search.modal_focus = SearchModalFocus::Filter;
+        app.apply_command(AppCommand::SearchModalActivate);
+        app.output_search.modal_focus = SearchModalFocus::Regex;
+        app.apply_command(AppCommand::SearchModalActivate);
+        app.apply_command(AppCommand::ApplyOutputSearch);
+
+        assert!(app.output_search.filter);
+        assert!(app.output_search.regex);
+        assert_eq!(app.output_text(), "case_01\ncase_22");
     }
 
     #[test]
@@ -1537,16 +1669,17 @@ mod tests {
         app.apply_command(AppCommand::StartOutputSearch);
         app.apply_command(AppCommand::OutputSearchInput('p'));
         app.apply_command(AppCommand::OutputSearchInput('a'));
-        app.apply_command(AppCommand::AcceptOutputSearch);
+        app.apply_command(AppCommand::ApplyOutputSearch);
         assert_eq!(app.output_search.current_line, Some(2));
 
         app.apply_command(AppCommand::StartOutputSearch);
         app.apply_command(AppCommand::ClearOutputSearch);
 
         assert!(app.output_search.input_active);
-        assert_eq!(app.output_search.query, "");
-        assert_eq!(app.output_search.current_line, None);
-        assert_eq!(app.status, "Output search cleared");
+        assert_eq!(app.output_search.draft_query, "");
+        assert_eq!(app.output_search.query, "pa");
+        assert_eq!(app.output_search.current_line, Some(2));
+        assert_eq!(app.status, "Output search draft cleared");
     }
 
     #[test]
@@ -1566,7 +1699,7 @@ mod tests {
         for char in "needle".chars() {
             app.apply_command(AppCommand::OutputSearchInput(char));
         }
-        app.apply_command(AppCommand::AcceptOutputSearch);
+        app.apply_command(AppCommand::ApplyOutputSearch);
 
         assert_eq!(app.output_search.current_line, Some(4));
         assert_eq!(app.status, "Output match 1/1 for 'needle'");
