@@ -25,10 +25,10 @@ impl SearchBoxView {
         let summary = self
             .match_summary
             .map(|(current, total)| format!(" {current}/{total}"))
-            .unwrap_or_default();
+            .unwrap_or_else(|| " 0/0".to_owned());
         let invalid = if self.invalid { " !regex" } else { "" };
         format!(
-            " search{}{}{} f:{} r:{} c:{}",
+            "<search: {}{}{} [n]ext> <filters: [f]ilter:{} [r]egex:{} [c]ase:{}>",
             self.box_text,
             summary,
             invalid,
@@ -39,7 +39,7 @@ impl SearchBoxView {
     }
 }
 
-const SEARCH_BOX_WIDTH: usize = 18;
+const SEARCH_BOX_WIDTH: usize = 12;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchDirection {
@@ -64,7 +64,7 @@ impl OutputSearchState {
     }
 
     pub fn box_text(&self, width: usize) -> String {
-        let mut content = format!("/{}", self.query);
+        let mut content = self.query.clone();
         if self.input_active {
             content.push('_');
         }
@@ -111,6 +111,18 @@ impl OutputSearchState {
             .lines()
             .enumerate()
             .filter_map(|(index, line)| matcher.is_match(line).then_some(index))
+            .collect())
+    }
+
+    pub fn match_ranges(&self, line: &str) -> Result<Vec<(usize, usize)>, String> {
+        let Some(regex) = output_regex(self)? else {
+            return Ok(Vec::new());
+        };
+        Ok(regex
+            .find_iter(line)
+            .filter_map(|matched| {
+                (matched.start() < matched.end()).then_some((matched.start(), matched.end()))
+            })
             .collect())
     }
 
@@ -225,6 +237,23 @@ fn output_matcher(search: &OutputSearchState) -> Result<Option<OutputMatcher>, S
     }
 }
 
+fn output_regex(search: &OutputSearchState) -> Result<Option<Regex>, String> {
+    if search.query.is_empty() {
+        return Ok(None);
+    }
+
+    let pattern = if search.regex {
+        search.query.clone()
+    } else {
+        regex::escape(&search.query)
+    };
+    RegexBuilder::new(&pattern)
+        .case_insensitive(!search.case_sensitive)
+        .build()
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,7 +300,7 @@ mod tests {
             ..OutputSearchState::default()
         };
 
-        assert_eq!(search.box_text(18), "[/panic_           ]");
+        assert_eq!(search.box_text(18), "[panic_            ]");
         assert_eq!(search.box_text(18).len(), 20);
     }
 
@@ -295,5 +324,32 @@ mod tests {
 
         assert!(search.view("anything").invalid);
         assert!(search.view("anything").title_fragment().contains("!regex"));
+    }
+
+    #[test]
+    fn match_ranges_find_literal_ranges_case_insensitively() {
+        let search = OutputSearchState {
+            query: "panic".to_owned(),
+            ..OutputSearchState::default()
+        };
+
+        assert_eq!(
+            search.match_ranges("PANIC then panic").expect("ranges"),
+            vec![(0, 5), (11, 16)]
+        );
+    }
+
+    #[test]
+    fn match_ranges_find_regex_ranges() {
+        let search = OutputSearchState {
+            query: r"case_\d+".to_owned(),
+            regex: true,
+            ..OutputSearchState::default()
+        };
+
+        assert_eq!(
+            search.match_ranges("case_01 case_aa case_22").expect("ranges"),
+            vec![(0, 7), (16, 23)]
+        );
     }
 }

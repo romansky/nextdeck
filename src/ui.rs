@@ -86,13 +86,7 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
         .collect::<Vec<_>>();
 
     let focused = app.focus == FocusPane::Tree;
-    let title = format!(
-        "Tests {} {} {} {}",
-        filter_hint("pass", "s", app.tree.view_filter.show_success),
-        filter_hint("fail", "x", app.tree.view_filter.show_failed),
-        filter_hint("ign", "i", app.tree.view_filter.show_ignored),
-        filter_hint("skip", "k", app.tree.view_filter.show_skipped)
-    );
+    let title = tests_title(app);
     let list = List::new(items)
         .block(theme.panel_block(&title, focused))
         .highlight_style(theme.selected());
@@ -100,8 +94,21 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     frame.render_widget(list, area);
 }
 
+fn tests_title(app: &App) -> String {
+    format!(
+        "Tests <filters: {} {} {} {}>",
+        filter_hint("pass", "p", app.tree.view_filter.show_success),
+        filter_hint("fail", "f", app.tree.view_filter.show_failed),
+        filter_hint("ignore", "i", app.tree.view_filter.show_ignored),
+        filter_hint("skip", "s", app.tree.view_filter.show_skipped)
+    )
+}
+
 fn filter_hint(label: &str, key: &str, enabled: bool) -> String {
-    format!("{label}[{key}]:{}", on_off(enabled))
+    let Some((head, tail)) = label.split_once(key) else {
+        return format!("[{key}]{label}:{}", on_off(enabled));
+    };
+    format!("{head}[{key}]{tail}:{}", on_off(enabled))
 }
 
 fn on_off(value: bool) -> &'static str {
@@ -114,7 +121,15 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         let text = app.output_text();
         let page_size = area.height.saturating_sub(2).max(1);
         let title = output_title_for("Discovery", app, &text, page_size, app.output_scroll);
-        draw_output_panel(frame, theme, area, &title, text, true, app.output_scroll);
+        draw_output_panel(
+            frame,
+            theme,
+            area,
+            &title,
+            output_lines(app, theme, &text),
+            true,
+            app.output_scroll,
+        );
     } else {
         let lines = vec![
             Line::styled(
@@ -404,7 +419,15 @@ fn draw_output(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     let text = app.output_text();
     let focused = app.focus == FocusPane::Output;
     let title = output_title(app, &text);
-    draw_output_panel(frame, theme, area, &title, text, focused, app.output_scroll);
+    draw_output_panel(
+        frame,
+        theme,
+        area,
+        &title,
+        output_lines(app, theme, &text),
+        focused,
+        app.output_scroll,
+    );
 }
 
 fn draw_output_panel(
@@ -412,13 +435,14 @@ fn draw_output_panel(
     theme: &Theme,
     area: Rect,
     title: &str,
-    text: String,
+    lines: Vec<Line<'static>>,
     focused: bool,
     scroll: u16,
 ) {
     let page_size = area.height.saturating_sub(2).max(1);
-    let scroll = output_render_scroll(&text, page_size, scroll);
-    let output = Paragraph::new(text)
+    let text_line_count = lines.len().max(1);
+    let scroll = output_render_scroll_for_count(text_line_count, page_size, scroll);
+    let output = Paragraph::new(lines)
         .style(theme.text())
         .block(theme.panel_block(title, focused))
         .wrap(Wrap { trim: false })
@@ -432,16 +456,14 @@ fn output_title(app: &App, text: &str) -> String {
 }
 
 fn output_title_for(label: &str, app: &App, text: &str, page_size: u16, scroll: u16) -> String {
-    let total = text.lines().count().max(1);
-    let visible = page_size.max(1) as usize;
+    let total = output_line_count(text);
     let search = output_search_title(app, text);
-    if total <= visible {
-        return format!("{label} All {total}/{total}{search}");
-    }
-
     let top = output_render_scroll(text, page_size, scroll) as usize;
+    let visible = page_size.max(1) as usize;
     let bottom = top.saturating_add(visible).min(total);
-    let position = if top == 0 {
+    let position = if total <= visible {
+        "All"
+    } else if top == 0 {
         "Top"
     } else if bottom == total {
         "Bot"
@@ -450,9 +472,9 @@ fn output_title_for(label: &str, app: &App, text: &str, page_size: u16, scroll: 
     };
 
     if position.is_empty() {
-        format!("{label} {}-{bottom}/{total}{search}", top + 1)
+        format!("{label} <scroll: {}-{bottom}/{total}> {search}", top + 1)
     } else {
-        format!("{label} {position} {}-{bottom}/{total}{search}", top + 1)
+        format!("{label} <scroll: {position} {}-{bottom}/{total}> {search}", top + 1)
     }
 }
 
@@ -461,10 +483,49 @@ fn output_search_title(app: &App, text: &str) -> String {
 }
 
 fn output_render_scroll(text: &str, page_size: u16, scroll: u16) -> u16 {
-    let total = text.lines().count().max(1);
+    output_render_scroll_for_count(output_line_count(text), page_size, scroll)
+}
+
+fn output_render_scroll_for_count(total: usize, page_size: u16, scroll: u16) -> u16 {
     let visible = page_size.max(1) as usize;
     let max_scroll = total.saturating_sub(visible).min(u16::MAX as usize) as u16;
     scroll.min(max_scroll)
+}
+
+fn output_line_count(text: &str) -> usize {
+    text.lines().count().max(1)
+}
+
+fn output_lines(app: &App, theme: &Theme, text: &str) -> Vec<Line<'static>> {
+    let lines = text
+        .lines()
+        .map(|line| highlighted_output_line(app, theme, line))
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        vec![Line::from("")]
+    } else {
+        lines
+    }
+}
+
+fn highlighted_output_line(app: &App, theme: &Theme, line: &str) -> Line<'static> {
+    let ranges = match app.output_search.match_ranges(line) {
+        Ok(ranges) if !ranges.is_empty() => ranges,
+        _ => return Line::styled(line.to_owned(), theme.text()),
+    };
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        if start > cursor {
+            spans.push(Span::styled(line[cursor..start].to_owned(), theme.text()));
+        }
+        spans.push(Span::styled(line[start..end].to_owned(), theme.search_match()));
+        cursor = end;
+    }
+    if cursor < line.len() {
+        spans.push(Span::styled(line[cursor..].to_owned(), theme.text()));
+    }
+    Line::from(spans)
 }
 
 fn draw_status(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: ratatui::layout::Rect) {
@@ -581,7 +642,7 @@ mod tests {
 
         assert_eq!(
             output_title(&app, "one\ntwo"),
-            "Output All 2/2 search[/                 ] f:off r:off c:off"
+            "Output <scroll: All 1-2/2> <search: [            ] 0/0 [n]ext> <filters: [f]ilter:off [r]egex:off [c]ase:off>"
         );
     }
 
@@ -594,26 +655,38 @@ mod tests {
         app.output_scroll = 0;
         assert_eq!(
             output_title(&app, text),
-            "Output Top 1-3/6 search[/                 ] f:off r:off c:off"
+            "Output <scroll: Top 1-3/6> <search: [            ] 0/0 [n]ext> <filters: [f]ilter:off [r]egex:off [c]ase:off>"
         );
 
         app.output_scroll = 2;
         assert_eq!(
             output_title(&app, text),
-            "Output 3-5/6 search[/                 ] f:off r:off c:off"
+            "Output <scroll: 3-5/6> <search: [            ] 0/0 [n]ext> <filters: [f]ilter:off [r]egex:off [c]ase:off>"
         );
 
         app.output_scroll = 3;
         assert_eq!(
             output_title(&app, text),
-            "Output Bot 4-6/6 search[/                 ] f:off r:off c:off"
+            "Output <scroll: Bot 4-6/6> <search: [            ] 0/0 [n]ext> <filters: [f]ilter:off [r]egex:off [c]ase:off>"
         );
     }
 
     #[test]
     fn filter_hint_includes_toggle_key() {
-        assert_eq!(filter_hint("pass", "s", true), "pass[s]:on");
-        assert_eq!(filter_hint("fail", "x", false), "fail[x]:off");
+        assert_eq!(filter_hint("pass", "p", true), "[p]ass:on");
+        assert_eq!(filter_hint("fail", "f", false), "[f]ail:off");
+        assert_eq!(filter_hint("ignore", "i", false), "[i]gnore:off");
+    }
+
+    #[test]
+    fn tests_title_includes_focus_filter_hints() {
+        let mut app = App::new(Tree::from_tests(Vec::new()));
+        app.tree.view_filter.show_ignored = false;
+
+        assert_eq!(
+            tests_title(&app),
+            "Tests <filters: [p]ass:on [f]ail:on [i]gnore:off [s]kip:on>"
+        );
     }
 
     #[test]
@@ -684,7 +757,7 @@ mod tests {
 
         assert_eq!(
             output_title(&app, "panic line"),
-            "Output All 1/1 search[/panic            ] 0/1 f:on r:off c:off"
+            "Output <scroll: All 1-1/1> <search: [panic       ] 0/1 [n]ext> <filters: [f]ilter:on [r]egex:off [c]ase:off>"
         );
     }
 
@@ -694,7 +767,7 @@ mod tests {
         app.output_search.query = "panic".to_owned();
         app.output_search.input_active = true;
 
-        assert_eq!(app.output_search.box_text(18), "[/panic_           ]");
+        assert_eq!(app.output_search.box_text(18), "[panic_            ]");
     }
 
     #[test]

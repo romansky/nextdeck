@@ -195,36 +195,36 @@ const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         kind: CommandKind::SelectFailed,
         group: CommandGroup::Runs,
-        keys: "f/F",
+        keys: "j/J",
         label: "next or previous failure",
         ticker: "failed",
     },
     CommandInfo {
         kind: CommandKind::ToggleShowSuccess,
         group: CommandGroup::View,
-        keys: "s",
-        label: "toggle successful tests",
+        keys: "p",
+        label: "toggle passed tests (tests focus)",
         ticker: "toggle success",
     },
     CommandInfo {
         kind: CommandKind::ToggleShowFailed,
         group: CommandGroup::View,
-        keys: "x",
-        label: "toggle failed tests",
+        keys: "f",
+        label: "toggle failed tests (tests focus)",
         ticker: "toggle failed",
     },
     CommandInfo {
         kind: CommandKind::ToggleShowIgnored,
         group: CommandGroup::View,
         keys: "i",
-        label: "toggle ignored tests",
+        label: "toggle ignored tests (tests focus)",
         ticker: "toggle ignored",
     },
     CommandInfo {
         kind: CommandKind::ToggleShowSkipped,
         group: CommandGroup::View,
-        keys: "k",
-        label: "toggle skipped tests",
+        keys: "s",
+        label: "toggle skipped tests (tests focus)",
         ticker: "toggle skipped",
     },
     CommandInfo {
@@ -252,21 +252,21 @@ const COMMANDS: &[CommandInfo] = &[
         kind: CommandKind::ToggleOutputFilter,
         group: CommandGroup::Output,
         keys: "f",
-        label: "toggle output match filter",
+        label: "toggle output match filter (output focus)",
         ticker: "output filter",
     },
     CommandInfo {
         kind: CommandKind::ToggleOutputRegex,
         group: CommandGroup::Output,
         keys: "r",
-        label: "toggle output regex",
+        label: "toggle output regex (output focus)",
         ticker: "regex",
     },
     CommandInfo {
         kind: CommandKind::ToggleOutputCaseSensitive,
         group: CommandGroup::Output,
         keys: "c",
-        label: "toggle output case sensitivity",
+        label: "toggle output case sensitivity (output focus)",
         ticker: "case",
     },
     CommandInfo {
@@ -460,15 +460,15 @@ fn command_for_tests_key(code: KeyCode) -> AppCommand {
         KeyCode::Right => AppCommand::MoveRight,
         KeyCode::Enter | KeyCode::Char(' ') => AppCommand::ToggleSelected,
         KeyCode::Char('u') => AppCommand::RefreshTests,
-        KeyCode::Char('s') => AppCommand::ToggleShowSuccess,
-        KeyCode::Char('x') => AppCommand::ToggleShowFailed,
+        KeyCode::Char('p') => AppCommand::ToggleShowSuccess,
+        KeyCode::Char('f') => AppCommand::ToggleShowFailed,
         KeyCode::Char('i') => AppCommand::ToggleShowIgnored,
-        KeyCode::Char('k') => AppCommand::ToggleShowSkipped,
+        KeyCode::Char('s') => AppCommand::ToggleShowSkipped,
         KeyCode::Char('r') => AppCommand::RunSelected,
         KeyCode::Char('R') => AppCommand::RunFailed,
         KeyCode::Char('o') => AppCommand::OpenSource,
-        KeyCode::Char('f') => AppCommand::SelectNextFailed,
-        KeyCode::Char('F') => AppCommand::SelectPreviousFailed,
+        KeyCode::Char('j') => AppCommand::SelectNextFailed,
+        KeyCode::Char('J') => AppCommand::SelectPreviousFailed,
         _ => AppCommand::Noop,
     }
 }
@@ -563,11 +563,11 @@ mod tests {
             AppCommand::RefreshTests
         );
         assert_eq!(
-            command_for_key(KeyCode::Char('s'), KeyModifiers::NONE, CommandFocus::Tests),
+            command_for_key(KeyCode::Char('p'), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::ToggleShowSuccess
         );
         assert_eq!(
-            command_for_key(KeyCode::Char('x'), KeyModifiers::NONE, CommandFocus::Tests),
+            command_for_key(KeyCode::Char('f'), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::ToggleShowFailed
         );
         assert_eq!(
@@ -575,8 +575,16 @@ mod tests {
             AppCommand::ToggleShowIgnored
         );
         assert_eq!(
-            command_for_key(KeyCode::Char('k'), KeyModifiers::NONE, CommandFocus::Tests),
+            command_for_key(KeyCode::Char('s'), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::ToggleShowSkipped
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('j'), KeyModifiers::NONE, CommandFocus::Tests),
+            AppCommand::SelectNextFailed
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('J'), KeyModifiers::SHIFT, CommandFocus::Tests),
+            AppCommand::SelectPreviousFailed
         );
         assert_eq!(
             command_for_key(KeyCode::Char('o'), KeyModifiers::NONE, CommandFocus::Tests),
@@ -652,6 +660,11 @@ mod tests {
         }));
         assert!(command_infos().iter().any(|info| {
             info.group == CommandGroup::Output && info.keys == "/" && info.label == "search output"
+        }));
+        assert!(command_infos().iter().any(|info| {
+            info.group == CommandGroup::View
+                && info.keys == "f"
+                && info.label == "toggle failed tests (tests focus)"
         }));
     }
 
