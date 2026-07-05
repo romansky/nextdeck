@@ -203,28 +203,28 @@ const COMMANDS: &[CommandInfo] = &[
         kind: CommandKind::ToggleShowSuccess,
         group: CommandGroup::View,
         keys: "p",
-        label: "toggle passed tests (tests focus)",
+        label: "toggle passed tests",
         ticker: "toggle success",
     },
     CommandInfo {
         kind: CommandKind::ToggleShowFailed,
         group: CommandGroup::View,
         keys: "f",
-        label: "toggle failed tests (tests focus)",
+        label: "toggle failed tests",
         ticker: "toggle failed",
     },
     CommandInfo {
         kind: CommandKind::ToggleShowIgnored,
         group: CommandGroup::View,
         keys: "i",
-        label: "toggle ignored tests (tests focus)",
+        label: "toggle ignored tests",
         ticker: "toggle ignored",
     },
     CommandInfo {
         kind: CommandKind::ToggleShowSkipped,
         group: CommandGroup::View,
         keys: "s",
-        label: "toggle skipped tests (tests focus)",
+        label: "toggle skipped tests",
         ticker: "toggle skipped",
     },
     CommandInfo {
@@ -252,21 +252,21 @@ const COMMANDS: &[CommandInfo] = &[
         kind: CommandKind::ToggleOutputFilter,
         group: CommandGroup::Output,
         keys: "f",
-        label: "toggle output match filter (output focus)",
+        label: "toggle output match filter",
         ticker: "output filter",
     },
     CommandInfo {
         kind: CommandKind::ToggleOutputRegex,
         group: CommandGroup::Output,
         keys: "r",
-        label: "toggle output regex (output focus)",
+        label: "toggle output regex",
         ticker: "regex",
     },
     CommandInfo {
         kind: CommandKind::ToggleOutputCaseSensitive,
         group: CommandGroup::Output,
         keys: "c",
-        label: "toggle output case sensitivity (output focus)",
+        label: "toggle output case sensitivity",
         ticker: "case",
     },
     CommandInfo {
@@ -292,14 +292,6 @@ const COMMANDS: &[CommandInfo] = &[
     },
 ];
 
-const HELP_GROUPS: &[CommandGroup] = &[
-    CommandGroup::Navigation,
-    CommandGroup::Runs,
-    CommandGroup::View,
-    CommandGroup::Output,
-    CommandGroup::Global,
-];
-
 const CLOSE_HELP_INFO: CommandInfo = CommandInfo {
     kind: CommandKind::CloseHelp,
     group: CommandGroup::Global,
@@ -307,10 +299,6 @@ const CLOSE_HELP_INFO: CommandInfo = CommandInfo {
     label: "close help",
     ticker: "close help",
 };
-
-pub const fn help_groups() -> &'static [CommandGroup] {
-    HELP_GROUPS
-}
 
 pub const fn command_infos() -> &'static [CommandInfo] {
     COMMANDS
@@ -651,8 +639,17 @@ mod tests {
     }
 
     #[test]
-    fn command_metadata_contains_help_groups() {
-        assert!(help_groups().contains(&CommandGroup::Navigation));
+    fn command_metadata_contains_help_entries() {
+        assert!(command_infos().iter().any(|info| {
+            info.group == CommandGroup::Navigation
+                && info.keys == "Tab"
+                && info.label == "switch tree/output focus"
+        }));
+        assert!(command_infos().iter().any(|info| {
+            info.group == CommandGroup::Global
+                && info.keys == "h/?/F1"
+                && info.label == "open or close help"
+        }));
         assert!(command_infos().iter().any(|info| {
             info.group == CommandGroup::Runs
                 && info.keys == "r"
@@ -664,7 +661,7 @@ mod tests {
         assert!(command_infos().iter().any(|info| {
             info.group == CommandGroup::View
                 && info.keys == "f"
-                && info.label == "toggle failed tests (tests focus)"
+                && info.label == "toggle failed tests"
         }));
     }
 

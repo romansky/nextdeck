@@ -9,7 +9,7 @@ use ratatui::{
 
 use crate::{
     app::{App, FocusPane},
-    command::{CommandGroup, command_infos, help_groups},
+    command::{CommandGroup, CommandInfo, command_infos},
     config,
     theme::Theme,
     tree::{NodeKind, TestNode, TestStatus},
@@ -69,7 +69,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     }
 
     if app.show_help {
-        draw_help(frame, theme);
+        draw_help(frame, app, theme);
     }
 }
 
@@ -558,9 +558,9 @@ fn status_spans<'a>(app: &'a App, theme: &'a Theme) -> Vec<Span<'a>> {
     ]
 }
 
-fn draw_help(frame: &mut Frame<'_>, theme: &Theme) {
+fn draw_help(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let area = centered_rect(72, 96, frame.area());
-    let text = help_text(theme);
+    let text = help_text(theme, app.focus);
     let help = Paragraph::new(text)
         .alignment(Alignment::Left)
         .style(theme.text())
@@ -569,30 +569,61 @@ fn draw_help(frame: &mut Frame<'_>, theme: &Theme) {
     frame.render_widget(help, area);
 }
 
-fn help_text(theme: &Theme) -> Vec<Line<'static>> {
+fn help_text(theme: &Theme, focus: FocusPane) -> Vec<Line<'static>> {
     let mut text = Vec::new();
-    for group in help_groups() {
-        append_help_group(&mut text, *group, theme);
-    }
+    append_help_section(&mut text, "Global", true, theme);
+    append_help_group(&mut text, CommandGroup::Navigation, true, theme);
+    append_help_commands(&mut text, CommandGroup::Global, true, theme);
+
+    let tests_active = focus == FocusPane::Tree;
+    append_help_section(&mut text, "Tests", tests_active, theme);
+    append_help_group(&mut text, CommandGroup::Runs, tests_active, theme);
+    append_help_group(&mut text, CommandGroup::View, tests_active, theme);
+
+    let output_active = focus == FocusPane::Output;
+    append_help_section(&mut text, "Output", output_active, theme);
+    append_help_commands(&mut text, CommandGroup::Output, output_active, theme);
+
     text
 }
 
-fn append_help_group(text: &mut Vec<Line<'static>>, group: CommandGroup, theme: &Theme) {
+fn append_help_section(text: &mut Vec<Line<'static>>, title: &'static str, active: bool, theme: &Theme) {
     if !text.is_empty() {
         text.push(Line::from(""));
     }
-    text.push(Line::styled(group.title(), theme.title(true)));
+    text.push(Line::styled(
+        title,
+        if active { theme.title(true) } else { theme.muted() },
+    ));
+}
+
+fn append_help_group(text: &mut Vec<Line<'static>>, group: CommandGroup, active: bool, theme: &Theme) {
+    text.push(Line::styled(
+        format!("  {}", group.title()),
+        if active { theme.accent() } else { theme.muted() },
+    ));
+    append_help_commands(text, group, active, theme);
+}
+
+fn append_help_commands(
+    text: &mut Vec<Line<'static>>,
+    group: CommandGroup,
+    active: bool,
+    theme: &Theme,
+) {
     for info in command_infos().iter().filter(|info| info.group == group) {
-        text.push(help_line(info.keys, info.label, theme));
+        text.push(help_line(info, active, theme));
     }
 }
 
-fn help_line(key: &'static str, label: &'static str, theme: &Theme) -> Line<'static> {
+fn help_line(info: &CommandInfo, active: bool, theme: &Theme) -> Line<'static> {
+    let key_style = if active { theme.accent() } else { theme.muted() };
+    let label_style = if active { theme.text() } else { theme.muted() };
     Line::from(vec![
-        Span::raw("  "),
-        Span::styled(format!("{key:<15}"), theme.accent()),
+        Span::raw("    "),
+        Span::styled(format!("{:<15}", info.keys), key_style),
         Span::raw(" "),
-        Span::styled(label, theme.text()),
+        Span::styled(info.label, label_style),
     ])
 }
 
@@ -672,6 +703,46 @@ mod tests {
         assert_eq!(
             tests_title(&app),
             "Tests <filters: [p]ass:on [f]ail:on [i]gnore:off [s]kip:on>"
+        );
+    }
+
+    #[test]
+    fn help_text_uses_contextual_sections() {
+        let theme = Theme::dark();
+        let text = help_text(&theme, FocusPane::Tree);
+        let lines = text.iter().map(line_text).collect::<Vec<_>>();
+
+        assert!(lines.contains(&"Global".to_owned()));
+        assert!(lines.contains(&"  Navigation".to_owned()));
+        assert!(lines.contains(&"Tests".to_owned()));
+        assert!(lines.contains(&"  Runs".to_owned()));
+        assert!(lines.contains(&"  View".to_owned()));
+        assert!(lines.contains(&"Output".to_owned()));
+        assert!(lines.iter().any(|line| line.contains("h/?/F1")));
+        assert!(lines.iter().any(|line| line.contains("q")));
+    }
+
+    #[test]
+    fn help_text_dims_inactive_pane_commands() {
+        let theme = Theme::dark();
+        let tests_help = help_text(&theme, FocusPane::Tree);
+        let output_help = help_text(&theme, FocusPane::Output);
+
+        assert_eq!(
+            help_line_with_label(&tests_help, "search output").spans[1].style,
+            theme.muted()
+        );
+        assert_eq!(
+            help_line_with_label(&tests_help, "run selected scope").spans[1].style,
+            theme.accent()
+        );
+        assert_eq!(
+            help_line_with_label(&output_help, "run selected scope").spans[1].style,
+            theme.muted()
+        );
+        assert_eq!(
+            help_line_with_label(&output_help, "search output").spans[1].style,
+            theme.accent()
         );
     }
 
@@ -763,5 +834,19 @@ mod tests {
 
         assert_eq!(app.output_search.box_text(18).len(), 20);
         assert_eq!(app.output_search.box_text(18), "[ijklmnopqrstuvwxyz]");
+    }
+
+    fn help_line_with_label<'a>(lines: &'a [Line<'a>], label: &str) -> &'a Line<'a> {
+        lines
+            .iter()
+            .find(|line| line_text(line).contains(label))
+            .expect("help line")
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
     }
 }
