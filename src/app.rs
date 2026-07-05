@@ -10,7 +10,7 @@ use crate::{
     scroll,
     source,
     state::StatusCounts,
-    tree::{DiscoveredTest, NodeKind, TestNode, TestStatus, Tree},
+    tree::{DiscoveredTest, NodeKind, SelectionChange, TestNode, TestStatus, TestViewFilter, Tree},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -238,8 +238,7 @@ impl App {
                 let count = tests.len();
                 self.tree.refresh_from_tests(tests);
                 self.tree_scroll = 0;
-                self.output_scroll = 0;
-                self.output_follow = true;
+                self.reset_output_for_source_change();
                 self.discovery.running = false;
                 self.discovery.error = None;
                 self.status = format!("Discovered {count} test(s)");
@@ -249,9 +248,7 @@ impl App {
                 self.discovery.running = false;
                 self.discovery.error = Some(error);
                 self.focus = FocusPane::Output;
-                self.output_scroll = 0;
-                self.output_follow = false;
-                self.output_search.current_line = None;
+                self.reset_output_for_modal();
                 self.status = "Discovery failed".to_owned();
                 false
             }
@@ -530,52 +527,44 @@ impl App {
     pub fn toggle_show_success(&mut self) {
         let mut filter = self.tree.view_filter;
         filter.show_success = !filter.show_success;
-        self.tree.set_view_filter(filter);
-        self.ensure_tree_selection_visible();
-        self.output_scroll = 0;
-        self.output_follow = true;
+        let enabled = filter.show_success;
+        self.apply_tree_filter_change(filter);
         self.status = format!(
             "Show successful tests: {}",
-            if filter.show_success { "on" } else { "off" }
+            if enabled { "on" } else { "off" }
         );
     }
 
     pub fn toggle_show_failed(&mut self) {
         let mut filter = self.tree.view_filter;
         filter.show_failed = !filter.show_failed;
-        self.tree.set_view_filter(filter);
-        self.ensure_tree_selection_visible();
-        self.output_scroll = 0;
-        self.output_follow = true;
+        let enabled = filter.show_failed;
+        self.apply_tree_filter_change(filter);
         self.status = format!(
             "Show failed tests: {}",
-            if filter.show_failed { "on" } else { "off" }
+            if enabled { "on" } else { "off" }
         );
     }
 
     pub fn toggle_show_ignored(&mut self) {
         let mut filter = self.tree.view_filter;
         filter.show_ignored = !filter.show_ignored;
-        self.tree.set_view_filter(filter);
-        self.ensure_tree_selection_visible();
-        self.output_scroll = 0;
-        self.output_follow = true;
+        let enabled = filter.show_ignored;
+        self.apply_tree_filter_change(filter);
         self.status = format!(
             "Show ignored tests: {}",
-            if filter.show_ignored { "on" } else { "off" }
+            if enabled { "on" } else { "off" }
         );
     }
 
     pub fn toggle_show_skipped(&mut self) {
         let mut filter = self.tree.view_filter;
         filter.show_skipped = !filter.show_skipped;
-        self.tree.set_view_filter(filter);
-        self.ensure_tree_selection_visible();
-        self.output_scroll = 0;
-        self.output_follow = true;
+        let enabled = filter.show_skipped;
+        self.apply_tree_filter_change(filter);
         self.status = format!(
             "Show skipped tests: {}",
-            if filter.show_skipped { "on" } else { "off" }
+            if enabled { "on" } else { "off" }
         );
     }
 
@@ -822,9 +811,21 @@ impl App {
         let after = self.tree.selected_index();
         self.ensure_tree_selection_visible();
         if before != after {
-            self.output_scroll = 0;
-            self.output_follow = true;
-            self.output_search.current_line = None;
+            self.reset_output_for_source_change();
+        }
+    }
+
+    fn apply_tree_filter_change(&mut self, filter: TestViewFilter) {
+        let selection_change = self.tree.set_view_filter_preserving_selection(filter);
+        self.ensure_tree_selection_visible();
+        self.after_tree_view_changed(selection_change);
+    }
+
+    fn after_tree_view_changed(&mut self, selection_change: SelectionChange) {
+        if selection_change.changed() {
+            self.reset_output_for_source_change();
+        } else {
+            self.clamp_output_scroll();
         }
     }
 
@@ -863,8 +864,18 @@ impl App {
         self.run.build_duration = None;
         self.run.test_duration = None;
         self.run.finished_duration = None;
+        self.reset_output_for_source_change();
+    }
+
+    fn reset_output_for_source_change(&mut self) {
         self.output_scroll = 0;
         self.output_follow = true;
+        self.output_search.current_line = None;
+    }
+
+    fn reset_output_for_modal(&mut self) {
+        self.output_scroll = 0;
+        self.output_follow = false;
         self.output_search.current_line = None;
     }
 
@@ -1304,6 +1315,58 @@ mod tests {
     }
 
     #[test]
+    fn filter_toggle_during_run_preserves_visible_selection_and_output_state() {
+        let mut app = App::new(Tree::from_tests(test_rows(3)));
+        expand_all(&mut app.tree.root);
+        assert!(app.begin_run(&RunRequest::default()));
+        app.apply_run_event(RunEvent::TestFinished {
+            key: test_key(0),
+            status: TestStatus::Passed,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration: Some(Duration::from_millis(5)),
+        });
+        app.apply_run_event(RunEvent::TestStarted { key: test_key(1) });
+        select_visible_path(&mut app, "demo::tests::case_01");
+        app.output_scroll = 7;
+        app.output_follow = false;
+        app.output_search.current_line = Some(2);
+
+        app.apply_command(AppCommand::ToggleShowSuccess);
+
+        assert_eq!(app.tree.selected_path(), "demo::tests::case_01");
+        assert_eq!(app.output_scroll, 7);
+        assert!(!app.output_follow);
+        assert_eq!(app.output_search.current_line, Some(2));
+        assert!(app.running);
+        assert_eq!(app.run.outcome, RunOutcome::Running);
+    }
+
+    #[test]
+    fn filter_toggle_resets_output_when_selected_source_is_hidden() {
+        let mut app = App::new(Tree::from_tests(test_rows(3)));
+        expand_all(&mut app.tree.root);
+        app.tree.finish_test(
+            &test_key(0),
+            TestStatus::Passed,
+            "old output".to_owned(),
+            String::new(),
+            Some(Duration::from_millis(5)),
+        );
+        select_visible_path(&mut app, "demo::tests::case_00");
+        app.output_scroll = 7;
+        app.output_follow = false;
+        app.output_search.current_line = Some(2);
+
+        app.apply_command(AppCommand::ToggleShowSuccess);
+
+        assert_ne!(app.tree.selected_path(), "demo::tests::case_00");
+        assert_eq!(app.output_scroll, 0);
+        assert!(app.output_follow);
+        assert_eq!(app.output_search.current_line, None);
+    }
+
+    #[test]
     fn output_search_filter_keeps_matching_lines() {
         let mut app = app_with_finished_output("alpha\npanic here\nomega", "");
         app.output_search.query = "panic".to_owned();
@@ -1478,6 +1541,15 @@ mod tests {
         app.tree.select_next();
         app.tree.select_next();
         app
+    }
+
+    fn select_visible_path(app: &mut App, path: &str) {
+        app.tree.select_first();
+        while app.tree.selected_path() != path {
+            let before = app.tree.selected_index();
+            app.tree.select_next();
+            assert_ne!(app.tree.selected_index(), before, "visible path {path}");
+        }
     }
 
     fn expand_all(node: &mut TestNode) {

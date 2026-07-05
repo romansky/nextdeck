@@ -48,6 +48,18 @@ pub struct TestViewFilter {
     pub show_skipped: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectionChange {
+    Unchanged,
+    Changed,
+}
+
+impl SelectionChange {
+    pub fn changed(self) -> bool {
+        self == Self::Changed
+    }
+}
+
 impl Default for TestViewFilter {
     fn default() -> Self {
         Self {
@@ -168,8 +180,30 @@ impl Tree {
     }
 
     pub fn set_view_filter(&mut self, filter: TestViewFilter) {
+        self.set_view_filter_preserving_selection(filter);
+    }
+
+    pub fn set_view_filter_preserving_selection(
+        &mut self,
+        filter: TestViewFilter,
+    ) -> SelectionChange {
+        let before = self.selected_identity();
         self.view_filter = filter;
-        self.clamp_selection();
+        if let Some(identity) = before.clone()
+            && let Some(index) = self
+                .visible_rows()
+                .iter()
+                .position(|(_, node)| node_identity(node) == identity)
+        {
+            self.selected = index;
+        } else {
+            self.clamp_selection();
+        }
+        if self.selected_identity() == before {
+            SelectionChange::Unchanged
+        } else {
+            SelectionChange::Changed
+        }
     }
 
     pub fn selected_index(&self) -> usize {
@@ -491,6 +525,10 @@ impl Tree {
         self.selected = self.selected_index();
     }
 
+    fn selected_identity(&self) -> Option<NodeIdentity> {
+        self.selected_node().map(node_identity)
+    }
+
     fn with_selected_mut(&mut self, f: impl FnMut(&mut TestNode)) {
         let target = self.selected_index();
         self.with_visible_index_mut(target, f);
@@ -499,6 +537,37 @@ impl Tree {
     fn with_visible_index_mut(&mut self, target: usize, mut f: impl FnMut(&mut TestNode)) {
         let mut current = 0;
         let _ = with_visible_mut(&mut self.root, target, &mut current, &mut f);
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum NodeIdentity {
+    Workspace,
+    Package(String),
+    Binary {
+        package: String,
+        name: String,
+        kind: String,
+    },
+    Module(String),
+    Test(TestKey),
+}
+
+fn node_identity(node: &TestNode) -> NodeIdentity {
+    match &node.kind {
+        NodeKind::Workspace => NodeIdentity::Workspace,
+        NodeKind::Package { name } => NodeIdentity::Package(name.clone()),
+        NodeKind::Binary {
+            package,
+            name,
+            kind,
+        } => NodeIdentity::Binary {
+            package: package.clone(),
+            name: name.clone(),
+            kind: kind.clone(),
+        },
+        NodeKind::Module { path } => NodeIdentity::Module(path.clone()),
+        NodeKind::Test(test) => NodeIdentity::Test(test.key.clone()),
     }
 }
 
