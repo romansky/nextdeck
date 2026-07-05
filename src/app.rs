@@ -10,7 +10,7 @@ use crate::{
     scroll,
     source,
     state::StatusCounts,
-    tree::{DiscoveredTest, NodeKind, SelectionChange, TestNode, TestViewFilter, Tree},
+    tree::{DiscoveredTest, NodeId, NodeKind, SelectionChange, TestNode, TestViewFilter, Tree},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -316,11 +316,15 @@ impl App {
                 AppEffect::None
             }
             AppCommand::MoveLeft => {
-                self.collapse_selected();
+                if self.command_focus() == FocusPane::Tree {
+                    self.collapse_selected();
+                }
                 AppEffect::None
             }
             AppCommand::MoveRight => {
-                self.expand_selected();
+                if self.command_focus() == FocusPane::Tree {
+                    self.expand_selected();
+                }
                 AppEffect::None
             }
             AppCommand::ToggleSelected => {
@@ -509,7 +513,7 @@ impl App {
     }
 
     pub fn select_next_failed(&mut self) {
-        let before = self.tree.selected_index();
+        let before = self.tree.selected_id().clone();
         if !self.tree.select_next_failed() {
             self.status = "No failed test visible".to_owned();
         }
@@ -517,7 +521,7 @@ impl App {
     }
 
     pub fn select_previous_failed(&mut self) {
-        let before = self.tree.selected_index();
+        let before = self.tree.selected_id().clone();
         if !self.tree.select_previous_failed() {
             self.status = "No failed test visible".to_owned();
         }
@@ -802,13 +806,13 @@ impl App {
     }
 
     fn with_selection_reset(&mut self, action: impl FnOnce(&mut Tree)) {
-        let before = self.tree.selected_index();
+        let before = self.tree.selected_id().clone();
         action(&mut self.tree);
         self.after_selection_action(before);
     }
 
-    fn after_selection_action(&mut self, before: usize) {
-        let after = self.tree.selected_index();
+    fn after_selection_action(&mut self, before: NodeId) {
+        let after = self.tree.selected_id().clone();
         self.ensure_tree_selection_visible();
         if before != after {
             self.reset_output_for_source_change();
@@ -1383,6 +1387,20 @@ mod tests {
     }
 
     #[test]
+    fn left_and_right_do_not_mutate_tree_when_output_is_focused() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+        app.tree.select_next();
+        app.focus = FocusPane::Output;
+        let before = visible_labels(&app);
+
+        app.apply_command(AppCommand::MoveRight);
+        app.apply_command(AppCommand::MoveLeft);
+
+        assert_eq!(visible_labels(&app), before);
+        assert_eq!(app.tree.selected_path(), "demo");
+    }
+
+    #[test]
     fn output_search_filter_keeps_matching_lines() {
         let mut app = app_with_finished_output("alpha\npanic here\nomega", "");
         app.output_search.query = "panic".to_owned();
@@ -1566,6 +1584,14 @@ mod tests {
             app.tree.select_next();
             assert_ne!(app.tree.selected_index(), before, "visible path {path}");
         }
+    }
+
+    fn visible_labels(app: &App) -> Vec<String> {
+        app.tree
+            .visible_rows()
+            .iter()
+            .map(|row| row.node.label.clone())
+            .collect()
     }
 
     fn expand_all(node: &mut TestNode) {

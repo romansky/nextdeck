@@ -82,7 +82,7 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
         .enumerate()
         .skip(app.tree_scroll)
         .take(visible_height)
-        .map(|(index, (depth, node))| tree_item(*depth, node, index == selected, theme))
+        .map(|(index, row)| tree_item(row.depth, row.node, index == selected, theme))
         .collect::<Vec<_>>();
 
     let focused = app.focus == FocusPane::Tree;

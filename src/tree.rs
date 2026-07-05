@@ -97,7 +97,30 @@ pub enum NodeKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NodeId {
+    Workspace,
+    Package {
+        name: String,
+    },
+    Binary {
+        package: String,
+        name: String,
+        kind: String,
+    },
+    Module {
+        package: String,
+        binary: String,
+        kind: String,
+        path: String,
+    },
+    Test {
+        key: TestKey,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TestNode {
+    pub id: NodeId,
     pub label: String,
     pub kind: NodeKind,
     pub status: TestStatus,
@@ -108,8 +131,9 @@ pub struct TestNode {
 }
 
 impl TestNode {
-    fn new(label: impl Into<String>, kind: NodeKind) -> Self {
+    fn new(id: NodeId, label: impl Into<String>, kind: NodeKind) -> Self {
         Self {
+            id,
             label: label.into(),
             kind,
             status: TestStatus::Pending,
@@ -149,21 +173,27 @@ impl TestNode {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct TreeRow<'a> {
+    pub depth: usize,
+    pub node: &'a TestNode,
+}
+
 pub struct Tree {
     pub root: TestNode,
     pub view_filter: TestViewFilter,
-    selected: usize,
+    selected: NodeId,
     runner_output: Vec<String>,
 }
 
 impl Tree {
     pub fn from_tests(tests: Vec<DiscoveredTest>) -> Self {
-        let mut root = TestNode::new("workspace", NodeKind::Workspace);
+        let mut root = TestNode::new(NodeId::Workspace, "workspace", NodeKind::Workspace);
         root.expanded = true;
         let mut tree = Self {
             root,
             view_filter: TestViewFilter::default(),
-            selected: 0,
+            selected: NodeId::Workspace,
             runner_output: Vec::new(),
         };
         for test in tests {
@@ -173,7 +203,7 @@ impl Tree {
         tree
     }
 
-    pub fn visible_rows(&self) -> Vec<(usize, &TestNode)> {
+    pub fn visible_rows(&self) -> Vec<TreeRow<'_>> {
         let mut rows = Vec::new();
         collect_visible(&self.root, 0, self.view_filter, true, &mut rows);
         rows
@@ -187,19 +217,12 @@ impl Tree {
         &mut self,
         filter: TestViewFilter,
     ) -> SelectionChange {
-        let before = self.selected_identity();
+        let before = self.selected.clone();
         self.view_filter = filter;
-        if let Some(identity) = before.clone()
-            && let Some(index) = self
-                .visible_rows()
-                .iter()
-                .position(|(_, node)| node_identity(node) == identity)
-        {
-            self.selected = index;
-        } else {
+        if !self.is_selected_visible() {
             self.clamp_selection();
         }
-        if self.selected_identity() == before {
+        if self.selected == before {
             SelectionChange::Unchanged
         } else {
             SelectionChange::Changed
@@ -207,56 +230,82 @@ impl Tree {
     }
 
     pub fn selected_index(&self) -> usize {
-        self.selected
-            .min(self.visible_rows().len().saturating_sub(1))
+        self.visible_rows()
+            .iter()
+            .position(|row| row.node.id == self.selected)
+            .unwrap_or(0)
     }
 
     pub fn selected_node(&self) -> Option<&TestNode> {
-        let rows = self.visible_rows();
-        rows.get(self.selected_index()).map(|(_, node)| *node)
+        self.node(&self.selected)
+    }
+
+    pub fn selected_id(&self) -> &NodeId {
+        &self.selected
     }
 
     pub fn select_next(&mut self) {
-        let len = self.visible_rows().len();
-        if len > 0 {
-            self.selected = (self.selected + 1).min(len - 1);
+        let rows = self.visible_rows();
+        if !rows.is_empty() {
+            let index = self.selected_index().saturating_add(1).min(rows.len() - 1);
+            self.selected = rows[index].node.id.clone();
         }
     }
 
     pub fn select_previous(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        let rows = self.visible_rows();
+        if !rows.is_empty() {
+            let index = self.selected_index().saturating_sub(1);
+            self.selected = rows[index].node.id.clone();
+        }
     }
 
     pub fn select_first(&mut self) {
-        self.selected = 0;
+        if let Some(row) = self.visible_rows().first() {
+            self.selected = row.node.id.clone();
+        }
     }
 
     pub fn select_last(&mut self) {
-        let len = self.visible_rows().len();
-        self.selected = len.saturating_sub(1);
+        if let Some(row) = self.visible_rows().last() {
+            self.selected = row.node.id.clone();
+        }
     }
 
     pub fn select_next_page(&mut self, page_size: usize) {
-        let len = self.visible_rows().len();
-        if len > 0 {
-            self.selected = self
-                .selected
+        let rows = self.visible_rows();
+        if !rows.is_empty() {
+            let index = self
+                .selected_index()
                 .saturating_add(page_size.max(1))
-                .min(len.saturating_sub(1));
+                .min(rows.len().saturating_sub(1));
+            self.selected = rows[index].node.id.clone();
         }
     }
 
     pub fn select_previous_page(&mut self, page_size: usize) {
-        self.selected = self.selected.saturating_sub(page_size.max(1));
+        let rows = self.visible_rows();
+        if !rows.is_empty() {
+            let index = self.selected_index().saturating_sub(page_size.max(1));
+            self.selected = rows[index].node.id.clone();
+        }
     }
 
     pub fn toggle_selected(&mut self) {
-        self.with_selected_mut(|node| node.expanded = !node.expanded);
+        self.with_selected_mut(|node| {
+            if !node.children.is_empty() {
+                node.expanded = !node.expanded;
+            }
+        });
         self.clamp_selection();
     }
 
     pub fn expand_selected(&mut self) {
-        self.with_selected_mut(|node| node.expanded = true);
+        self.with_selected_mut(|node| {
+            if !node.children.is_empty() {
+                node.expanded = true;
+            }
+        });
         self.clamp_selection();
     }
 
@@ -264,18 +313,19 @@ impl Tree {
         let target = {
             let rows = self.visible_rows();
             let selected = self.selected_index();
-            let Some((selected_depth, selected_node)) = rows.get(selected) else {
+            let Some(selected_row) = rows.get(selected) else {
                 return;
             };
+            let selected_depth = selected_row.depth;
+            let selected_node = selected_row.node;
 
             if !selected_node.children.is_empty() && selected_node.expanded {
-                Some(selected)
+                Some(selected_node.id.clone())
             } else {
                 rows[..selected]
                     .iter()
-                    .enumerate()
                     .rev()
-                    .find_map(|(index, (depth, _))| (*depth < *selected_depth).then_some(index))
+                    .find_map(|row| (row.depth < selected_depth).then_some(row.node.id.clone()))
             }
         };
 
@@ -283,7 +333,7 @@ impl Tree {
             return;
         };
 
-        self.with_visible_index_mut(target, |node| node.expanded = false);
+        self.with_id_mut(&target, |node| node.expanded = false);
         self.selected = target;
         self.clamp_selection();
     }
@@ -408,9 +458,9 @@ impl Tree {
             .enumerate()
             .skip(start)
             .chain(rows.iter().enumerate().take(start))
-            .find_map(|(index, (_, node))| (node.status == TestStatus::Failed).then_some(index))
+            .find_map(|(index, row)| (row.node.status == TestStatus::Failed).then_some(index))
         {
-            self.selected = index;
+            self.selected = rows[index].node.id.clone();
             true
         } else {
             false
@@ -424,8 +474,8 @@ impl Tree {
         }
         let start = self.selected_index();
         let mut indices = (0..start).rev().chain((start + 1..rows.len()).rev());
-        if let Some(index) = indices.find(|index| rows[*index].1.status == TestStatus::Failed) {
-            self.selected = index;
+        if let Some(index) = indices.find(|index| rows[*index].node.status == TestStatus::Failed) {
+            self.selected = rows[index].node.id.clone();
             true
         } else {
             false
@@ -481,6 +531,9 @@ impl Tree {
     fn insert_test(&mut self, test: DiscoveredTest) {
         let package_index = child_position(&self.root, &test.package).unwrap_or_else(|| {
             self.root.children.push(TestNode::new(
+                NodeId::Package {
+                    name: test.package.clone(),
+                },
                 &test.package,
                 NodeKind::Package {
                     name: test.package.clone(),
@@ -493,6 +546,11 @@ impl Tree {
         if test.binary_kind == "test" {
             let index = child_position(parent, &test.binary).unwrap_or_else(|| {
                 parent.children.push(TestNode::new(
+                    NodeId::Binary {
+                        package: test.package.clone(),
+                        name: test.binary.clone(),
+                        kind: test.binary_kind.clone(),
+                    },
                     &test.binary,
                     NodeKind::Binary {
                         package: test.package.clone(),
@@ -514,6 +572,12 @@ impl Tree {
                 module_path.push_str(part);
                 let index = child_position(parent, part).unwrap_or_else(|| {
                     parent.children.push(TestNode::new(
+                        NodeId::Module {
+                            package: test.package.clone(),
+                            binary: test.binary.clone(),
+                            kind: test.binary_kind.clone(),
+                            path: module_path.clone(),
+                        },
                         part,
                         NodeKind::Module {
                             path: module_path.clone(),
@@ -525,7 +589,13 @@ impl Tree {
             }
         }
 
-        let mut node = TestNode::new(test.name.clone(), NodeKind::Test(test.clone()));
+        let mut node = TestNode::new(
+            NodeId::Test {
+                key: test.key.clone(),
+            },
+            test.name.clone(),
+            NodeKind::Test(test.clone()),
+        );
         node.status = test.status;
         node.expanded = false;
         parent.children.push(node);
@@ -536,52 +606,32 @@ impl Tree {
     }
 
     fn clamp_selection(&mut self) {
-        self.selected = self.selected_index();
-    }
-
-    fn selected_identity(&self) -> Option<NodeIdentity> {
-        self.selected_node().map(node_identity)
+        if !self.is_selected_visible() {
+            self.selected = self
+                .visible_rows()
+                .first()
+                .map(|row| row.node.id.clone())
+                .unwrap_or(NodeId::Workspace);
+        }
     }
 
     fn with_selected_mut(&mut self, f: impl FnMut(&mut TestNode)) {
-        let target = self.selected_index();
-        self.with_visible_index_mut(target, f);
+        let target = self.selected.clone();
+        self.with_id_mut(&target, f);
     }
 
-    fn with_visible_index_mut(&mut self, target: usize, mut f: impl FnMut(&mut TestNode)) {
-        let mut current = 0;
-        let _ = with_visible_mut(&mut self.root, target, &mut current, &mut f);
+    fn with_id_mut(&mut self, target: &NodeId, mut f: impl FnMut(&mut TestNode)) {
+        let _ = with_id_mut(&mut self.root, target, &mut f);
     }
-}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum NodeIdentity {
-    Workspace,
-    Package(String),
-    Binary {
-        package: String,
-        name: String,
-        kind: String,
-    },
-    Module(String),
-    Test(TestKey),
-}
+    fn node(&self, id: &NodeId) -> Option<&TestNode> {
+        node(&self.root, id)
+    }
 
-fn node_identity(node: &TestNode) -> NodeIdentity {
-    match &node.kind {
-        NodeKind::Workspace => NodeIdentity::Workspace,
-        NodeKind::Package { name } => NodeIdentity::Package(name.clone()),
-        NodeKind::Binary {
-            package,
-            name,
-            kind,
-        } => NodeIdentity::Binary {
-            package: package.clone(),
-            name: name.clone(),
-            kind: kind.clone(),
-        },
-        NodeKind::Module { path } => NodeIdentity::Module(path.clone()),
-        NodeKind::Test(test) => NodeIdentity::Test(test.key.clone()),
+    fn is_selected_visible(&self) -> bool {
+        self.visible_rows()
+            .iter()
+            .any(|row| row.node.id == self.selected)
     }
 }
 
@@ -608,13 +658,13 @@ fn collect_visible<'a>(
     depth: usize,
     filter: TestViewFilter,
     force_include: bool,
-    rows: &mut Vec<(usize, &'a TestNode)>,
+    rows: &mut Vec<TreeRow<'a>>,
 ) {
     if !force_include && !node_has_visible_tests(node, filter) {
         return;
     }
 
-    rows.push((depth, node));
+    rows.push(TreeRow { depth, node });
     if node.expanded {
         for child in &node.children {
             collect_visible(child, depth + 1, filter, false, rows);
@@ -628,30 +678,31 @@ fn node_has_visible_tests(node: &TestNode, filter: TestViewFilter) -> bool {
         NodeKind::Workspace
         | NodeKind::Package { .. }
         | NodeKind::Binary { .. }
-        | NodeKind::Module { .. } => node
-            .children
-            .iter()
-            .any(|child| node_has_visible_tests(child, filter)),
+        | NodeKind::Module { .. } => descendant_test_count(node) > 0,
     }
 }
 
-fn with_visible_mut(
+fn node<'a>(current: &'a TestNode, target: &NodeId) -> Option<&'a TestNode> {
+    if current.id == *target {
+        return Some(current);
+    }
+
+    current.children.iter().find_map(|child| node(child, target))
+}
+
+fn with_id_mut(
     node: &mut TestNode,
-    target: usize,
-    current: &mut usize,
+    target: &NodeId,
     f: &mut impl FnMut(&mut TestNode),
 ) -> bool {
-    if *current == target {
+    if node.id == *target {
         f(node);
         return true;
     }
-    *current += 1;
 
-    if node.expanded {
-        for child in &mut node.children {
-            if with_visible_mut(child, target, current, f) {
-                return true;
-            }
+    for child in &mut node.children {
+        if with_id_mut(child, target, f) {
+            return true;
         }
     }
     false
@@ -827,6 +878,66 @@ mod tests {
     }
 
     #[test]
+    fn branches_remain_expandable_when_filter_hides_all_child_tests() {
+        let mut test = discovered_test("demo::demo", "demo", "tests", "ignored");
+        test.ignored = true;
+        test.status = TestStatus::Ignored;
+        let mut tree = Tree::from_tests(vec![test]);
+        tree.set_view_filter(TestViewFilter {
+            show_success: true,
+            show_failed: true,
+            show_ignored: false,
+            show_skipped: true,
+        });
+
+        assert_eq!(visible_labels(&tree), vec!["workspace", "demo"]);
+
+        tree.select_next();
+        tree.expand_selected();
+        assert_eq!(visible_labels(&tree), vec!["workspace", "demo", "tests"]);
+
+        tree.select_next();
+        tree.expand_selected();
+        assert_eq!(visible_labels(&tree), vec!["workspace", "demo", "tests"]);
+        assert!(tree.selected_node().is_some_and(|node| node.expanded));
+    }
+
+    #[test]
+    fn expand_selected_expands_only_the_selected_branch() {
+        let mut tree = Tree::from_tests(vec![
+            discovered_test("demo::demo", "demo", "alpha", "one"),
+            discovered_test("demo::demo", "demo", "beta", "two"),
+        ]);
+
+        tree.select_next();
+        tree.expand_selected();
+        select_label(&mut tree, "alpha");
+        tree.expand_selected();
+
+        let labels = visible_labels(&tree);
+        assert!(labels.contains(&"one".to_owned()));
+        assert!(!labels.contains(&"two".to_owned()));
+    }
+
+    #[test]
+    fn expand_selected_on_test_leaf_keeps_tree_unchanged() {
+        let mut tree = Tree::from_tests(vec![discovered_test(
+            "demo::demo",
+            "demo",
+            "tests",
+            "works",
+        )]);
+        expand_all(&mut tree);
+        select_label(&mut tree, "works");
+        let before = visible_labels(&tree);
+
+        tree.expand_selected();
+
+        assert_eq!(visible_labels(&tree), before);
+        assert_eq!(tree.selected_node().map(|node| node.label.as_str()), Some("works"));
+    }
+
+    #[test]
     fn running_duration_stays_on_test_leaf() {
         let mut tree = Tree::from_tests(vec![discovered_test(
             "demo::demo",
@@ -999,7 +1110,7 @@ mod tests {
         let labels = tree
             .visible_rows()
             .into_iter()
-            .map(|(_, node)| (node.label.clone(), node.status))
+            .map(|row| (row.node.label.clone(), row.node.status))
             .collect::<Vec<_>>();
         assert!(labels.contains(&("tests".to_owned(), TestStatus::Passed)));
     }
@@ -1184,7 +1295,7 @@ mod tests {
     fn visible_labels(tree: &Tree) -> Vec<String> {
         tree.visible_rows()
             .iter()
-            .map(|(_, node)| node.label.clone())
+            .map(|row| row.node.label.clone())
             .collect()
     }
 
@@ -1192,7 +1303,7 @@ mod tests {
         tree.selected = tree
             .visible_rows()
             .iter()
-            .position(|(_, node)| node.label == label)
+            .find_map(|row| (row.node.label == label).then(|| row.node.id.clone()))
             .expect("visible label");
     }
 
