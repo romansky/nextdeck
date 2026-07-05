@@ -85,13 +85,21 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
         .map(|(index, row)| tree_item(row.depth, row.node, index == selected, theme))
         .collect::<Vec<_>>();
 
-    let focused = app.focus == FocusPane::Tree;
+    let focused = pane_focused(app, FocusPane::Tree);
     let title = tests_title(app);
     let list = List::new(items)
         .block(theme.panel_block(&title, focused))
         .highlight_style(theme.selected());
     frame.render_widget(Clear, area);
     frame.render_widget(list, area);
+}
+
+fn pane_focused(app: &App, pane: FocusPane) -> bool {
+    app.focus == pane && !modal_visible(app)
+}
+
+fn modal_visible(app: &App) -> bool {
+    app.show_help || app.is_discovering() || app.discovery.error.is_some()
 }
 
 fn tests_title(app: &App) -> String {
@@ -418,7 +426,7 @@ fn status_label(status: TestStatus) -> &'static str {
 
 fn draw_output(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     let text = app.output_text();
-    let focused = app.focus == FocusPane::Output;
+    let focused = pane_focused(app, FocusPane::Output);
     let title = output_title(app, &text);
     draw_output_panel(
         frame,
@@ -716,6 +724,25 @@ mod tests {
             tests_title(&app),
             "Tests <filters: [p]ass:on [f]ail:on [i]gnore:off [s]kip:on>"
         );
+    }
+
+    #[test]
+    fn pane_focus_is_suppressed_while_modal_is_visible() {
+        let mut app = App::new(Tree::from_tests(Vec::new()));
+        app.focus = FocusPane::Tree;
+        assert!(pane_focused(&app, FocusPane::Tree));
+
+        app.discovery.running = true;
+        assert!(!pane_focused(&app, FocusPane::Tree));
+
+        app.discovery.running = false;
+        app.discovery.error = Some("boom".to_owned());
+        assert!(!pane_focused(&app, FocusPane::Tree));
+
+        app.discovery.error = None;
+        app.show_help = true;
+        app.focus = FocusPane::Output;
+        assert!(!pane_focused(&app, FocusPane::Output));
     }
 
     #[test]
