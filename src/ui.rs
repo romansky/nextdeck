@@ -485,7 +485,8 @@ fn output_line_count(text: &str) -> usize {
 fn output_lines(app: &App, theme: &Theme, text: &str) -> Vec<Line<'static>> {
     let lines = text
         .lines()
-        .map(|line| highlighted_output_line(app, theme, line))
+        .enumerate()
+        .map(|(index, line)| highlighted_output_line(app, theme, index, line))
         .collect::<Vec<_>>();
     if lines.is_empty() {
         vec![Line::from("")]
@@ -494,10 +495,20 @@ fn output_lines(app: &App, theme: &Theme, text: &str) -> Vec<Line<'static>> {
     }
 }
 
-fn highlighted_output_line(app: &App, theme: &Theme, line: &str) -> Line<'static> {
+fn highlighted_output_line(
+    app: &App,
+    theme: &Theme,
+    line_index: usize,
+    line: &str,
+) -> Line<'static> {
     let ranges = match app.output_search.match_ranges(line) {
         Ok(ranges) if !ranges.is_empty() => ranges,
         _ => return Line::styled(line.to_owned(), theme.text()),
+    };
+    let match_style = if app.output_search.current_line == Some(line_index) {
+        theme.active_search_match()
+    } else {
+        theme.search_match()
     };
     let mut spans = Vec::new();
     let mut cursor = 0;
@@ -505,7 +516,7 @@ fn highlighted_output_line(app: &App, theme: &Theme, line: &str) -> Line<'static
         if start > cursor {
             spans.push(Span::styled(line[cursor..start].to_owned(), theme.text()));
         }
-        spans.push(Span::styled(line[start..end].to_owned(), theme.search_match()));
+        spans.push(Span::styled(line[start..end].to_owned(), match_style));
         cursor = end;
     }
     if cursor < line.len() {
@@ -816,6 +827,19 @@ mod tests {
             output_title(&app, "panic line"),
             "Output <lines: 1-1/1> <search: [panic       ] 0/1 [n]ext [f]ilter:on [r]egex:off [c]ase-sensitive:off>"
         );
+    }
+
+    #[test]
+    fn output_lines_marks_current_search_result_differently() {
+        let mut app = App::new(Tree::from_tests(Vec::new()));
+        let theme = Theme::dark();
+        app.output_search.query = "panic".to_owned();
+        app.output_search.current_line = Some(1);
+
+        let lines = output_lines(&app, &theme, "panic one\npanic two");
+
+        assert_eq!(lines[0].spans[0].style, theme.search_match());
+        assert_eq!(lines[1].spans[0].style, theme.active_search_match());
     }
 
     #[test]

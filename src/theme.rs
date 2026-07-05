@@ -141,6 +141,13 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
 
+    pub fn active_search_match(&self) -> Style {
+        Style::default()
+            .fg(self.selected_fg)
+            .bg(self.selected_bg)
+            .add_modifier(Modifier::BOLD)
+    }
+
     pub fn selected(&self) -> Style {
         Style::default()
             .fg(self.selected_fg)
