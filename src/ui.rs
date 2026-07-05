@@ -344,6 +344,7 @@ fn run_result_style(app: &App, theme: &Theme) -> ratatui::style::Style {
     match app.run.outcome {
         crate::app::RunOutcome::Passed => theme.success(),
         crate::app::RunOutcome::Failed | crate::app::RunOutcome::CommandFailed => theme.danger(),
+        crate::app::RunOutcome::Stopped => theme.warning(),
         crate::app::RunOutcome::Running => theme.accent(),
         crate::app::RunOutcome::NotStarted => theme.muted(),
     }

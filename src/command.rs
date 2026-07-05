@@ -7,6 +7,7 @@ pub enum AppCommand {
     Noop,
     Quit,
     Resize,
+    StopRun,
     ToggleHelp,
     CloseHelp,
     ToggleFocus,
@@ -70,6 +71,7 @@ impl CommandGroup {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandKind {
     Quit,
+    StopRun,
     ToggleHelp,
     CloseHelp,
     ToggleFocus,
@@ -284,6 +286,13 @@ const COMMANDS: &[CommandInfo] = &[
         ticker: "help",
     },
     CommandInfo {
+        kind: CommandKind::StopRun,
+        group: CommandGroup::Global,
+        keys: "Ctrl+C",
+        label: "stop running tests",
+        ticker: "stop run",
+    },
+    CommandInfo {
         kind: CommandKind::Quit,
         group: CommandGroup::Global,
         keys: "q",
@@ -309,6 +318,7 @@ impl AppCommand {
         match self {
             Self::Noop | Self::Resize | Self::ReportStatus(_) => None,
             Self::Quit => Some(CommandKind::Quit),
+            Self::StopRun => Some(CommandKind::StopRun),
             Self::ToggleHelp => Some(CommandKind::ToggleHelp),
             Self::CloseHelp => Some(CommandKind::CloseHelp),
             Self::ToggleFocus => Some(CommandKind::ToggleFocus),
@@ -387,6 +397,9 @@ pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppComm
         InputEvent::Terminal(Event::Key(key)) if key.kind != KeyEventKind::Press => {
             AppCommand::Noop
         }
+        InputEvent::Terminal(Event::Key(key)) if is_stop_key(key.code, key.modifiers) => {
+            AppCommand::StopRun
+        }
         InputEvent::Terminal(Event::Key(key)) if context.output_search_input => {
             command_for_output_search_input(key.code, key.modifiers)
         }
@@ -423,6 +436,7 @@ fn command_for_output_search_input(code: KeyCode, modifiers: KeyModifiers) -> Ap
 fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) -> AppCommand {
     match code {
         KeyCode::Char('q') => AppCommand::Quit,
+        code if is_stop_key(code, modifiers) => AppCommand::StopRun,
         code if is_help_key(code, modifiers) => AppCommand::ToggleHelp,
         KeyCode::Tab => AppCommand::ToggleFocus,
         KeyCode::Up => AppCommand::MoveUp,
@@ -472,6 +486,10 @@ fn command_for_output_key(code: KeyCode) -> AppCommand {
         KeyCode::Char('o') => AppCommand::OpenOutput,
         _ => AppCommand::Noop,
     }
+}
+
+fn is_stop_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL)
 }
 
 fn is_help_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
@@ -541,6 +559,47 @@ mod tests {
         assert_eq!(
             command_for_key(KeyCode::Char('/'), KeyModifiers::NONE, CommandFocus::Output),
             AppCommand::StartOutputSearch
+        );
+    }
+
+    #[test]
+    fn maps_ctrl_c_to_stop_run() {
+        assert_eq!(
+            command_for_key(KeyCode::Char('c'), KeyModifiers::CONTROL, CommandFocus::Tests),
+            AppCommand::StopRun
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('c'), KeyModifiers::CONTROL, CommandFocus::Output),
+            AppCommand::StopRun
+        );
+    }
+
+    #[test]
+    fn ctrl_c_stops_run_in_search_and_help_contexts() {
+        let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )));
+
+        assert_eq!(
+            command_for_input(
+                &event,
+                CommandContext {
+                    output_search_input: true,
+                    ..CommandContext::default()
+                }
+            ),
+            AppCommand::StopRun
+        );
+        assert_eq!(
+            command_for_input(
+                &event,
+                CommandContext {
+                    help_visible: true,
+                    ..CommandContext::default()
+                }
+            ),
+            AppCommand::StopRun
         );
     }
 
@@ -654,6 +713,11 @@ mod tests {
             info.group == CommandGroup::Runs
                 && info.keys == "r"
                 && info.label == "run selected scope"
+        }));
+        assert!(command_infos().iter().any(|info| {
+            info.group == CommandGroup::Global
+                && info.keys == "Ctrl+C"
+                && info.label == "stop running tests"
         }));
         assert!(command_infos().iter().any(|info| {
             info.group == CommandGroup::Output && info.keys == "/" && info.label == "search output"

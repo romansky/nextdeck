@@ -62,6 +62,7 @@ async fn run_loop(
     context: RunLoopContext<'_>,
     mut queue_rx: queue::QueueReceiver,
 ) -> Result<()> {
+    let mut run_control = None;
     while !app.should_quit {
         let size = terminal.size()?;
         let layout = ui::layout(
@@ -80,6 +81,7 @@ async fn run_loop(
             &mut run_on_start,
             event,
             context.queue_tx.clone(),
+            &mut run_control,
         );
     }
     Ok(())
@@ -99,6 +101,7 @@ fn handle_queue_event(
     run_on_start: &mut bool,
     event: QueueEvent,
     tx: QueueSender,
+    run_control: &mut Option<RunControl>,
 ) {
     match event {
         QueueEvent::Input(input) => {
@@ -107,16 +110,25 @@ fn handle_queue_event(
                 app.record_key(key_echo_text(key, &command));
             }
             let effect = app.apply_command(command);
-            handle_effect(app, client, editor, effect, tx);
+            handle_effect(app, client, editor, effect, tx, run_control);
         }
         QueueEvent::Discovery(event) => {
             if app.apply_discovery_event(event) && *run_on_start {
                 *run_on_start = false;
-                start_run(app, client.clone(), RunRequest::default(), tx);
+                *run_control = start_run(app, client.clone(), RunRequest::default(), tx);
             }
         }
         QueueEvent::GitStatus(git_status) => app.apply_git_status(git_status),
-        QueueEvent::Run(event) => app.apply_run_event(event),
+        QueueEvent::Run(event) => {
+            let finished = matches!(
+                event,
+                RunEvent::RunnerFinished { .. } | RunEvent::RunnerStopped
+            );
+            app.apply_run_event(event);
+            if finished {
+                *run_control = None;
+            }
+        }
         QueueEvent::Tick => app.tick(),
     }
 }
@@ -134,6 +146,7 @@ fn handle_effect(
     editor: &EditorConfig,
     effect: AppEffect,
     tx: QueueSender,
+    run_control: &mut Option<RunControl>,
 ) {
     match effect {
         AppEffect::None => {}
@@ -146,7 +159,16 @@ fn handle_effect(
             start_discovery(client.clone(), tx);
         }
         AppEffect::StartRun(request) => {
-            start_run(app, client.clone(), request, tx);
+            *run_control = start_run(app, client.clone(), request, tx);
+        }
+        AppEffect::StopRun => {
+            if let Some(control) = run_control {
+                if control.stop_tx.send(()).is_err() {
+                    app.status = "Run already stopped".to_owned();
+                }
+            } else {
+                app.status = "No run in progress".to_owned();
+            }
         }
         AppEffect::OpenSource(location) => match editor.open_source(&location) {
             Ok(()) => {
@@ -165,6 +187,10 @@ fn handle_effect(
             }
         },
     }
+}
+
+struct RunControl {
+    stop_tx: mpsc::UnboundedSender<()>,
 }
 
 fn start_discovery(client: NextestClient, tx: QueueSender) -> tokio::task::JoinHandle<()> {
@@ -193,14 +219,20 @@ fn start_git_status(
     })
 }
 
-fn start_run(app: &mut App, client: NextestClient, request: RunRequest, tx: QueueSender) {
+fn start_run(
+    app: &mut App,
+    client: NextestClient,
+    request: RunRequest,
+    tx: QueueSender,
+) -> Option<RunControl> {
     if !app.begin_run(&request) {
-        return;
+        return None;
     }
 
     let (run_tx, mut run_rx) = mpsc::unbounded_channel::<RunEvent>();
+    let (stop_tx, stop_rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
-        if let Err(error) = client.run(request, run_tx.clone()).await {
+        if let Err(error) = client.run(request, run_tx.clone(), stop_rx).await {
             let _ = run_tx.send(RunEvent::RunnerOutput(format!(
                 "nextest failed to start: {error}"
             )));
@@ -215,4 +247,6 @@ fn start_run(app: &mut App, client: NextestClient, request: RunRequest, tx: Queu
             }
         }
     });
+
+    Some(RunControl { stop_tx })
 }

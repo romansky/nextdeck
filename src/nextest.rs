@@ -133,6 +133,7 @@ pub enum RunEvent {
     RunnerFinished {
         exit_code: Option<i32>,
     },
+    RunnerStopped,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -186,9 +187,11 @@ impl NextestClient {
         &self,
         request: RunRequest,
         tx: mpsc::UnboundedSender<RunEvent>,
+        mut stop_rx: mpsc::UnboundedReceiver<()>,
     ) -> Result<()> {
         let mut command = self.run_command(&request);
         let mut child = command
+            .kill_on_drop(true)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -231,12 +234,37 @@ impl NextestClient {
             anyhow::Ok(())
         });
 
-        let status = child.wait().await.context("waiting for nextest")?;
+        let (status, stopped) = tokio::select! {
+            status = child.wait() => {
+                (status.context("waiting for nextest")?, false)
+            }
+            stop = stop_rx.recv() => {
+                if stop.is_some() {
+                    let _ = tx.send(RunEvent::RunnerOutput("Run stopped by user".to_owned()));
+                    if let Err(error) = child.start_kill() {
+                        let _ = tx.send(RunEvent::RunnerOutput(format!(
+                            "Failed to stop nextest: {error}"
+                        )));
+                    }
+                }
+                (
+                    child
+                        .wait()
+                        .await
+                        .context("waiting for stopped nextest")?,
+                    stop.is_some(),
+                )
+            }
+        };
         stdout_task.await.context("joining stdout task")??;
         stderr_task.await.context("joining stderr task")??;
-        let _ = tx.send(RunEvent::RunnerFinished {
-            exit_code: status.code(),
-        });
+        if stopped {
+            let _ = tx.send(RunEvent::RunnerStopped);
+        } else {
+            let _ = tx.send(RunEvent::RunnerFinished {
+                exit_code: status.code(),
+            });
+        }
         Ok(())
     }
 

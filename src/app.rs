@@ -84,6 +84,7 @@ pub enum RunOutcome {
     Passed,
     Failed,
     CommandFailed,
+    Stopped,
 }
 
 impl Default for RunState {
@@ -111,6 +112,7 @@ pub enum AppEffect {
     SaveSettings(AppSettings),
     StartDiscovery,
     StartRun(RunRequest),
+    StopRun,
     OpenSource(SourceLocation),
     OpenOutput(OutputOpenRequest),
 }
@@ -278,6 +280,15 @@ impl App {
             AppCommand::Quit => {
                 self.should_quit = true;
                 AppEffect::None
+            }
+            AppCommand::StopRun => {
+                if self.running {
+                    self.status = "Stopping run...".to_owned();
+                    AppEffect::StopRun
+                } else {
+                    self.status = "No run in progress".to_owned();
+                    AppEffect::None
+                }
             }
             AppCommand::Resize => {
                 self.on_resize();
@@ -649,7 +660,7 @@ impl App {
     }
 
     pub fn apply_run_event(&mut self, event: RunEvent) {
-        let finished_exit_code = match event {
+        let finished = match event {
             RunEvent::RunMetadata { run_id, profile } => {
                 if let Some(run_id) = run_id {
                     self.run.run_id = Some(run_id);
@@ -686,17 +697,25 @@ impl App {
                 self.tree.append_runner_output(line);
                 None
             }
-            RunEvent::RunnerFinished { exit_code } => Some(exit_code),
+            RunEvent::RunnerFinished { exit_code } => Some((exit_code, false)),
+            RunEvent::RunnerStopped => Some((None, true)),
         };
 
-        if let Some(exit_code) = finished_exit_code {
+        if let Some((exit_code, stopped)) = finished {
             self.running = false;
             self.run.active = false;
             self.finish_run_timers();
             self.run.phase = RunPhase::NotRunning;
             self.run.exit_code = exit_code;
+            if stopped {
+                self.tree.stop_running_tests();
+            }
             let counts = self.tree.status_counts_for_scope(&self.run.scope);
-            self.run.outcome = run_outcome(exit_code, counts);
+            self.run.outcome = if stopped {
+                RunOutcome::Stopped
+            } else {
+                run_outcome(exit_code, counts)
+            };
             self.status = run_summary_status(self.run.outcome, counts, exit_code);
         }
     }
@@ -716,6 +735,7 @@ impl App {
             RunOutcome::Passed => "passed",
             RunOutcome::Failed => "failed",
             RunOutcome::CommandFailed => "command failed",
+            RunOutcome::Stopped => "stopped",
         }
     }
 
@@ -1095,6 +1115,10 @@ fn run_summary_status(outcome: RunOutcome, counts: StatusCounts, exit_code: Opti
             Some(code) => format!("Command failed: nextest exited with {code}"),
             None => "Command failed: nextest did not complete".to_owned(),
         },
+        RunOutcome::Stopped => format!(
+            "Stopped: {} passed, {} failed, {} pending, {} skipped, {} ignored",
+            counts.passed, counts.failed, counts.pending, counts.skipped, counts.ignored
+        ),
         RunOutcome::Running => "Running tests".to_owned(),
         RunOutcome::NotStarted => "No run yet".to_owned(),
     }
@@ -1180,6 +1204,34 @@ mod tests {
         assert_eq!(app.run_result_label(), "command failed");
         assert_eq!(app.run_status_label(), "not running");
         assert_eq!(app.status, "Command failed: nextest did not complete");
+    }
+
+    #[test]
+    fn stop_run_command_only_emits_effect_while_running() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+
+        assert_eq!(app.apply_command(AppCommand::StopRun), AppEffect::None);
+        assert_eq!(app.status, "No run in progress");
+
+        assert!(app.begin_run(&RunRequest::default()));
+        assert_eq!(app.apply_command(AppCommand::StopRun), AppEffect::StopRun);
+        assert_eq!(app.status, "Stopping run...");
+    }
+
+    #[test]
+    fn stopped_run_records_stopped_result_and_clears_running_tests() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+        assert!(app.begin_run(&RunRequest::default()));
+        app.apply_run_event(RunEvent::TestStarted { key: test_key(0) });
+
+        app.apply_run_event(RunEvent::RunnerStopped);
+
+        assert!(!app.running);
+        assert_eq!(app.run.outcome, RunOutcome::Stopped);
+        assert_eq!(app.run_result_label(), "stopped");
+        assert_eq!(app.run_status_label(), "not running");
+        assert_eq!(app.tree.status_counts_for_scope(&RunScope::Workspace).running, 0);
+        assert!(app.status.starts_with("Stopped:"));
     }
 
     #[test]

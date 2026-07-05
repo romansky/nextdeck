@@ -402,6 +402,16 @@ impl Tree {
         self.recompute_statuses();
     }
 
+    pub fn stop_running_tests(&mut self) {
+        visit_mut(&mut self.root, &mut |node| {
+            if node.status == TestStatus::Running {
+                node.status = TestStatus::Pending;
+                node.started_at = None;
+            }
+        });
+        self.recompute_statuses();
+    }
+
     pub fn append_runner_output(&mut self, line: String) {
         self.runner_output.push(line);
         if self.runner_output.len() > 500 {
@@ -954,6 +964,24 @@ mod tests {
         assert_eq!(package.display_duration(), None);
         assert_eq!(module.display_duration(), None);
         assert!(test.display_duration().is_some());
+    }
+
+    #[test]
+    fn stop_running_tests_returns_running_leaves_to_pending() {
+        let mut tree = Tree::from_tests(vec![discovered_test(
+            "demo::demo",
+            "demo",
+            "tests",
+            "works",
+        )]);
+        set_test_status(&mut tree, "tests::works", TestStatus::Running);
+
+        tree.stop_running_tests();
+
+        let test = &tree.root.children[0].children[0].children[0];
+        assert_eq!(test.status, TestStatus::Pending);
+        assert_eq!(test.started_at, None);
+        assert_eq!(tree.root.status, TestStatus::Pending);
     }
 
     #[test]

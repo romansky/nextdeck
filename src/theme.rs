@@ -134,6 +134,10 @@ impl Theme {
         Style::default().fg(self.danger)
     }
 
+    pub fn warning(&self) -> Style {
+        Style::default().fg(self.warning)
+    }
+
     pub fn search_match(&self) -> Style {
         Style::default()
             .fg(self.selected_fg)
