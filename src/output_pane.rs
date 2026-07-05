@@ -28,7 +28,7 @@ impl SearchBoxView {
             .unwrap_or_else(|| " 0/0".to_owned());
         let invalid = if self.invalid { " !regex" } else { "" };
         format!(
-            "<search: {}{}{} [n]ext> <filters: [f]ilter:{} [r]egex:{} [c]ase:{}>",
+            "<search: {}{}{} [n]ext [f]ilter:{} [r]egex:{} [c]ase-sensitive:{}>",
             self.box_text,
             summary,
             invalid,

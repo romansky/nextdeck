@@ -461,21 +461,7 @@ fn output_title_for(label: &str, app: &App, text: &str, page_size: u16, scroll: 
     let top = output_render_scroll(text, page_size, scroll) as usize;
     let visible = page_size.max(1) as usize;
     let bottom = top.saturating_add(visible).min(total);
-    let position = if total <= visible {
-        "All"
-    } else if top == 0 {
-        "Top"
-    } else if bottom == total {
-        "Bot"
-    } else {
-        ""
-    };
-
-    if position.is_empty() {
-        format!("{label} <scroll: {}-{bottom}/{total}> {search}", top + 1)
-    } else {
-        format!("{label} <scroll: {position} {}-{bottom}/{total}> {search}", top + 1)
-    }
+    format!("{label} <lines: {}-{bottom}/{total}> {search}", top + 1)
 }
 
 fn output_search_title(app: &App, text: &str) -> String {
@@ -642,12 +628,12 @@ mod tests {
 
         assert_eq!(
             output_title(&app, "one\ntwo"),
-            "Output <scroll: All 1-2/2> <search: [            ] 0/0 [n]ext> <filters: [f]ilter:off [r]egex:off [c]ase:off>"
+            "Output <lines: 1-2/2> <search: [            ] 0/0 [n]ext [f]ilter:off [r]egex:off [c]ase-sensitive:off>"
         );
     }
 
     #[test]
-    fn output_title_shows_top_middle_and_bottom_ranges() {
+    fn output_title_shows_clamped_line_ranges() {
         let mut app = App::new(Tree::from_tests(Vec::new()));
         app.output_page_size = 3;
         let text = "1\n2\n3\n4\n5\n6";
@@ -655,19 +641,19 @@ mod tests {
         app.output_scroll = 0;
         assert_eq!(
             output_title(&app, text),
-            "Output <scroll: Top 1-3/6> <search: [            ] 0/0 [n]ext> <filters: [f]ilter:off [r]egex:off [c]ase:off>"
+            "Output <lines: 1-3/6> <search: [            ] 0/0 [n]ext [f]ilter:off [r]egex:off [c]ase-sensitive:off>"
         );
 
         app.output_scroll = 2;
         assert_eq!(
             output_title(&app, text),
-            "Output <scroll: 3-5/6> <search: [            ] 0/0 [n]ext> <filters: [f]ilter:off [r]egex:off [c]ase:off>"
+            "Output <lines: 3-5/6> <search: [            ] 0/0 [n]ext [f]ilter:off [r]egex:off [c]ase-sensitive:off>"
         );
 
         app.output_scroll = 3;
         assert_eq!(
             output_title(&app, text),
-            "Output <scroll: Bot 4-6/6> <search: [            ] 0/0 [n]ext> <filters: [f]ilter:off [r]egex:off [c]ase:off>"
+            "Output <lines: 4-6/6> <search: [            ] 0/0 [n]ext [f]ilter:off [r]egex:off [c]ase-sensitive:off>"
         );
     }
 
@@ -757,7 +743,7 @@ mod tests {
 
         assert_eq!(
             output_title(&app, "panic line"),
-            "Output <scroll: All 1-1/1> <search: [panic       ] 0/1 [n]ext> <filters: [f]ilter:on [r]egex:off [c]ase:off>"
+            "Output <lines: 1-1/1> <search: [panic       ] 0/1 [n]ext [f]ilter:on [r]egex:off [c]ase-sensitive:off>"
         );
     }
 
