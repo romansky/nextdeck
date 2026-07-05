@@ -753,8 +753,8 @@ fn recompute_node_status(node: &mut TestNode) -> TestStatus {
 fn merge_status(current: TestStatus, next: TestStatus) -> TestStatus {
     use TestStatus::{Failed, Ignored, Passed, Pending, Running, Skipped};
     match (current, next) {
-        (Failed, _) | (_, Failed) => Failed,
         (Running, _) | (_, Running) => Running,
+        (Failed, _) | (_, Failed) => Failed,
         (Pending, _) | (_, Pending) => Pending,
         (Skipped, _) | (_, Skipped) => Skipped,
         (Ignored, Passed) | (Passed, Ignored) | (Ignored, Ignored) => Ignored,
@@ -1141,6 +1141,27 @@ mod tests {
             .map(|row| (row.node.label.clone(), row.node.status))
             .collect::<Vec<_>>();
         assert!(labels.contains(&("tests".to_owned(), TestStatus::Passed)));
+    }
+
+    #[test]
+    fn parent_status_runs_when_any_descendant_is_running() {
+        let mut tree = Tree::from_tests(vec![
+            discovered_test("demo::demo", "demo", "tests", "one"),
+            discovered_test("demo::demo", "demo", "tests", "two"),
+        ]);
+
+        set_test_status(&mut tree, "tests::one", TestStatus::Failed);
+        set_test_status(&mut tree, "tests::two", TestStatus::Running);
+        expand_all(&mut tree);
+
+        assert_eq!(tree.root.status, TestStatus::Running);
+        let labels = tree
+            .visible_rows()
+            .into_iter()
+            .map(|row| (row.node.label.clone(), row.node.status))
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&("demo".to_owned(), TestStatus::Running)));
+        assert!(labels.contains(&("tests".to_owned(), TestStatus::Running)));
     }
 
     #[test]
