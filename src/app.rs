@@ -10,7 +10,7 @@ use crate::{
     scroll,
     source,
     state::StatusCounts,
-    tree::{DiscoveredTest, NodeKind, SelectionChange, TestNode, TestStatus, TestViewFilter, Tree},
+    tree::{DiscoveredTest, NodeKind, SelectionChange, TestNode, TestViewFilter, Tree},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -663,7 +663,7 @@ impl App {
             }
             RunEvent::TestStarted { key } => {
                 self.mark_tests_running();
-                self.tree.update_status(&key, TestStatus::Running);
+                self.tree.start_test(&key);
                 None
             }
             RunEvent::TestFinished {
@@ -1099,7 +1099,7 @@ fn run_summary_status(outcome: RunOutcome, counts: StatusCounts, exit_code: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tree::{DiscoveredTest, TestKey};
+    use crate::tree::{DiscoveredTest, TestKey, TestStatus};
 
     #[test]
     fn tree_scroll_follows_selection_past_viewport() {
@@ -1260,6 +1260,22 @@ mod tests {
         assert_eq!(app.run.outcome, RunOutcome::Passed);
         assert_eq!(app.run_progress(), (1, 1));
         assert_eq!(app.status, "Passed: 1 passed, 0 skipped, 0 ignored");
+    }
+
+    #[test]
+    fn ignored_start_event_during_workspace_run_stays_ignored() {
+        let mut tests = test_rows(2);
+        tests[1].ignored = true;
+        tests[1].status = TestStatus::Ignored;
+        let mut app = App::new(Tree::from_tests(tests));
+        assert!(app.begin_run(&RunRequest::default()));
+
+        app.apply_run_event(RunEvent::TestStarted { key: test_key(1) });
+
+        let counts = app.tree.status_counts_for_scope(&RunScope::Workspace);
+        assert_eq!(counts.running, 0);
+        assert_eq!(counts.ignored, 1);
+        assert_eq!(app.run_progress(), (0, 1));
     }
 
     #[test]

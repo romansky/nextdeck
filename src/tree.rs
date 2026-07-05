@@ -306,11 +306,25 @@ impl Tree {
         self.recompute_statuses();
     }
 
+    #[cfg(test)]
     pub fn update_status(&mut self, key: &TestKey, status: TestStatus) {
         visit_mut(&mut self.root, &mut |node| {
             if node_matches(node, key) {
                 node.status = status;
                 node.started_at = (status == TestStatus::Running).then(Instant::now);
+            }
+        });
+        self.recompute_statuses();
+    }
+
+    pub fn start_test(&mut self, key: &TestKey) {
+        visit_mut(&mut self.root, &mut |node| {
+            if node_matches(node, key)
+                && let NodeKind::Test(test) = &node.kind
+                && !test.ignored
+            {
+                node.status = TestStatus::Running;
+                node.started_at = Some(Instant::now());
             }
         });
         self.recompute_statuses();
@@ -829,6 +843,24 @@ mod tests {
         assert_eq!(package.display_duration(), None);
         assert_eq!(module.display_duration(), None);
         assert!(test.display_duration().is_some());
+    }
+
+    #[test]
+    fn ignored_test_start_event_does_not_mark_running() {
+        let mut test = discovered_test("demo::demo", "demo", "tests", "ignored");
+        test.ignored = true;
+        test.status = TestStatus::Ignored;
+        let mut tree = Tree::from_tests(vec![test]);
+
+        tree.start_test(&TestKey {
+            binary_id: Some("demo::demo".to_owned()),
+            event_prefix: Some("demo::demo".to_owned()),
+            name: "tests::ignored".to_owned(),
+        });
+
+        let ignored = &tree.root.children[0].children[0];
+        assert_eq!(ignored.status, TestStatus::Ignored);
+        assert_eq!(ignored.started_at, None);
     }
 
     #[test]
