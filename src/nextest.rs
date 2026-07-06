@@ -1,4 +1,5 @@
 use std::{
+    env,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -154,8 +155,21 @@ impl NextestClient {
         }
     }
 
-    pub fn current_dir(&self) -> Option<&Path> {
-        self.current_dir.as_deref()
+    pub fn project_dir(&self) -> Option<PathBuf> {
+        self.manifest_dir()
+            .or_else(|| self.current_dir.clone())
+    }
+
+    fn manifest_dir(&self) -> Option<PathBuf> {
+        let manifest_path = self.manifest_path.as_ref()?;
+        let manifest_path = if manifest_path.is_absolute() {
+            manifest_path.clone()
+        } else if let Some(current_dir) = &self.current_dir {
+            current_dir.join(manifest_path)
+        } else {
+            env::current_dir().ok()?.join(manifest_path)
+        };
+        manifest_path.parent().map(Path::to_path_buf)
     }
 
     pub async fn discover(&self) -> Result<Vec<DiscoveredTest>> {
@@ -475,6 +489,28 @@ struct LibtestRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_dir_prefers_manifest_parent_resolved_from_current_dir() {
+        let client = NextestClient::new(
+            Some(PathBuf::from("crates/demo/Cargo.toml")),
+            Some(PathBuf::from("/workspace")),
+            Vec::new(),
+        );
+
+        assert_eq!(client.project_dir(), Some(PathBuf::from("/workspace/crates/demo")));
+    }
+
+    #[test]
+    fn project_dir_uses_current_dir_without_manifest_path() {
+        let client = NextestClient::new(
+            None,
+            Some(PathBuf::from("/workspace")),
+            Vec::new(),
+        );
+
+        assert_eq!(client.project_dir(), Some(PathBuf::from("/workspace")));
+    }
 
     #[test]
     fn parses_libtest_json_plus_started_event() {

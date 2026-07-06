@@ -33,12 +33,12 @@ pub async fn run(
 
     let discovery = start_discovery(client.clone(), queue_tx.clone());
     let git_status = start_git_status(
-        client.current_dir().map(ToOwned::to_owned),
+        client.project_dir(),
         queue_tx.clone(),
     );
     app.begin_disk_usage_scan();
     let disk_usage = start_disk_usage(
-        client.current_dir().map(ToOwned::to_owned),
+        client.project_dir(),
         queue_tx.clone(),
     );
     let input = InputSource::start(queue_tx.clone());
@@ -135,7 +135,7 @@ fn handle_queue_event(
             if app.apply_cargo_clean(result) {
                 app.begin_disk_usage_scan();
                 start_disk_usage(
-                    context.client.current_dir().map(ToOwned::to_owned),
+                    context.client.project_dir(),
                     context.queue_tx.clone(),
                 );
             }
@@ -218,13 +218,13 @@ fn handle_effect(
         },
         AppEffect::RefreshDiskUsage => {
             start_disk_usage(
-                context.client.current_dir().map(ToOwned::to_owned),
+                context.client.project_dir(),
                 context.queue_tx.clone(),
             );
         }
         AppEffect::RunCargoClean => {
             start_cargo_clean(
-                context.client.current_dir().map(ToOwned::to_owned),
+                context.client.project_dir(),
                 context.queue_tx.clone(),
             );
         }
