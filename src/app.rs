@@ -218,7 +218,7 @@ impl App {
             output_search_modal: self.output_search.modal_open,
             disk_cleanup_modal: self.disk_cleanup.modal_open,
             settings_modal: self.global_settings.modal_open,
-            settings_editor_input: self.global_settings.editor_editing,
+            settings_open_with_input: self.global_settings.open_with_editing,
             discovery_running: self.discovery.running,
         }
     }
@@ -320,8 +320,8 @@ impl App {
         self.status = "Settings closed".to_owned();
     }
 
-    fn sync_settings_editor(&mut self) {
-        self.global_settings.sync_editor(&self.settings);
+    fn sync_settings_open_with(&mut self) {
+        self.global_settings.sync_open_with(&self.settings);
     }
 
     fn select_next_setting(&mut self) {
@@ -332,42 +332,42 @@ impl App {
         self.global_settings.select_previous();
     }
 
-    fn begin_edit_editor_setting(&mut self) {
-        self.global_settings.begin_editor_edit(&self.settings);
+    fn begin_edit_open_with_setting(&mut self) {
+        self.global_settings.begin_open_with_edit(&self.settings);
         self.status = "Editing open-with command".to_owned();
     }
 
-    fn edit_editor_setting(&mut self, input: SearchEditorInput) {
-        self.global_settings.edit_editor(input);
+    fn edit_open_with_setting(&mut self, input: SearchEditorInput) {
+        self.global_settings.edit_open_with(input);
     }
 
-    fn commit_editor_setting(&mut self) -> AppEffect {
-        self.global_settings.editor_editing = false;
-        self.settings.editor_command = Some(self.global_settings.editor_text());
+    fn commit_open_with_setting(&mut self) -> AppEffect {
+        self.global_settings.open_with_editing = false;
+        self.settings.open_with_command = Some(self.global_settings.open_with_text());
         self.settings = self.settings.clone().normalized();
-        self.sync_settings_editor();
-        self.status = format!("Open with: {}", self.settings.editor_label());
+        self.sync_settings_open_with();
+        self.status = format!("Open with: {}", self.settings.open_with_label());
         self.save_settings_effect()
     }
 
-    fn cancel_editor_setting(&mut self) {
-        self.global_settings.cancel_editor_edit(&self.settings);
+    fn cancel_open_with_setting(&mut self) {
+        self.global_settings.cancel_open_with_edit(&self.settings);
         self.status = "Open-with edit canceled".to_owned();
     }
 
-    fn clear_editor_setting(&mut self) -> AppEffect {
-        if self.global_settings.editor_editing {
-            self.global_settings.clear_editor_draft();
-            self.status = "Editor draft cleared".to_owned();
+    fn clear_open_with_setting(&mut self) -> AppEffect {
+        if self.global_settings.open_with_editing {
+            self.global_settings.clear_open_with_draft();
+            self.status = "Open-with draft cleared".to_owned();
             return AppEffect::None;
         }
-        self.settings.editor_command = None;
-        self.sync_settings_editor();
+        self.settings.open_with_command = None;
+        self.sync_settings_open_with();
         self.status = "Open with: env/default".to_owned();
         self.save_settings_effect()
     }
 
-    fn cycle_editor_setting(&mut self, direction: i8) -> AppEffect {
+    fn cycle_open_with_setting(&mut self, direction: i8) -> AppEffect {
         const PRESETS: &[Option<&str>] = &[
             None,
             Some("idea"),
@@ -376,7 +376,7 @@ impl App {
             Some("zed"),
             Some("open"),
         ];
-        let current = self.settings.editor_command.as_deref();
+        let current = self.settings.open_with_command.as_deref();
         let index = PRESETS
             .iter()
             .position(|preset| *preset == current)
@@ -386,15 +386,15 @@ impl App {
         } else {
             (index + 1) % PRESETS.len()
         };
-        self.settings.editor_command = PRESETS[next].map(ToOwned::to_owned);
-        self.sync_settings_editor();
-        self.status = format!("Open with: {}", self.settings.editor_label());
+        self.settings.open_with_command = PRESETS[next].map(ToOwned::to_owned);
+        self.sync_settings_open_with();
+        self.status = format!("Open with: {}", self.settings.open_with_label());
         self.save_settings_effect()
     }
 
     fn adjust_selected_setting(&mut self, direction: i8) -> AppEffect {
         match self.global_settings.selected {
-            SettingsField::Editor => self.cycle_editor_setting(direction),
+            SettingsField::OpenWith => self.cycle_open_with_setting(direction),
             SettingsField::TreeWidth => {
                 let delta = if direction < 0 {
                     -(TREE_WIDTH_STEP_PERCENT as i16)
@@ -425,8 +425,8 @@ impl App {
 
     fn activate_selected_setting(&mut self) -> AppEffect {
         match self.global_settings.selected {
-            SettingsField::Editor => {
-                self.begin_edit_editor_setting();
+            SettingsField::OpenWith => {
+                self.begin_edit_open_with_setting();
                 AppEffect::None
             }
             SettingsField::ColorBlindMode => self.adjust_selected_setting(1),
@@ -602,16 +602,16 @@ impl App {
             AppCommand::SettingsAdjustLeft => self.adjust_selected_setting(-1),
             AppCommand::SettingsAdjustRight => self.adjust_selected_setting(1),
             AppCommand::SettingsActivate => self.activate_selected_setting(),
-            AppCommand::SettingsEditorEdit(input) => {
-                self.edit_editor_setting(input);
+            AppCommand::SettingsOpenWithEdit(input) => {
+                self.edit_open_with_setting(input);
                 AppEffect::None
             }
-            AppCommand::CommitEditorSetting => self.commit_editor_setting(),
-            AppCommand::CancelEditorSetting => {
-                self.cancel_editor_setting();
+            AppCommand::CommitOpenWithSetting => self.commit_open_with_setting(),
+            AppCommand::CancelOpenWithSetting => {
+                self.cancel_open_with_setting();
                 AppEffect::None
             }
-            AppCommand::ClearEditorSetting => self.clear_editor_setting(),
+            AppCommand::ClearOpenWithSetting => self.clear_open_with_setting(),
             AppCommand::RefreshDiskUsage => {
                 self.begin_disk_usage_scan();
                 AppEffect::RefreshDiskUsage
@@ -1510,35 +1510,35 @@ mod tests {
     }
 
     #[test]
-    fn settings_modal_edits_editor_command() {
+    fn settings_modal_edits_open_with_command() {
         let mut app = App::new(Tree::from_tests(test_rows(1)));
         app.apply_command(AppCommand::OpenSettings);
         app.apply_command(AppCommand::SettingsActivate);
-        app.apply_command(AppCommand::SettingsEditorEdit(SearchEditorInput::char('i')));
-        app.apply_command(AppCommand::SettingsEditorEdit(SearchEditorInput::char('d')));
+        app.apply_command(AppCommand::SettingsOpenWithEdit(SearchEditorInput::char('i')));
+        app.apply_command(AppCommand::SettingsOpenWithEdit(SearchEditorInput::char('d')));
 
-        let effect = app.apply_command(AppCommand::CommitEditorSetting);
+        let effect = app.apply_command(AppCommand::CommitOpenWithSetting);
 
-        assert_eq!(app.settings.editor_command.as_deref(), Some("id"));
+        assert_eq!(app.settings.open_with_command.as_deref(), Some("id"));
         assert_eq!(effect, AppEffect::SaveSettings(app.settings.clone()));
     }
 
     #[test]
-    fn settings_modal_appends_to_existing_editor_command() {
+    fn settings_modal_appends_to_existing_open_with_command() {
         let mut app = App::with_settings(
             Tree::from_tests(test_rows(1)),
             AppSettings {
-                editor_command: Some("idea".to_owned()),
+                open_with_command: Some("idea".to_owned()),
                 ..AppSettings::default()
             },
         );
         app.apply_command(AppCommand::OpenSettings);
         app.apply_command(AppCommand::SettingsActivate);
-        app.apply_command(AppCommand::SettingsEditorEdit(SearchEditorInput::char('X')));
+        app.apply_command(AppCommand::SettingsOpenWithEdit(SearchEditorInput::char('X')));
 
-        let effect = app.apply_command(AppCommand::CommitEditorSetting);
+        let effect = app.apply_command(AppCommand::CommitOpenWithSetting);
 
-        assert_eq!(app.settings.editor_command.as_deref(), Some("ideaX"));
+        assert_eq!(app.settings.open_with_command.as_deref(), Some("ideaX"));
         assert_eq!(effect, AppEffect::SaveSettings(app.settings.clone()));
     }
 

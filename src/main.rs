@@ -62,10 +62,11 @@ struct Cli {
     theme: Option<ThemeArg>,
 
     #[arg(
-        long,
-        help = "Editor command for opening sources/output. Also reads CARGO_TEST_TUI_EDITOR, VISUAL, EDITOR"
+        long = "open-with",
+        alias = "editor",
+        help = "Command for opening sources/output. Also reads CARGO_TEST_TUI_EDITOR, VISUAL, EDITOR"
     )]
-    editor: Option<String>,
+    open_with: Option<String>,
 
     #[arg(long, help = "Print discovered tests as JSON and exit")]
     list_json: bool,
@@ -86,7 +87,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let run_on_start = cli.run;
     let settings = config::load();
-    let editor = editor::EditorConfig::resolve(cli.editor.clone(), settings.editor_command.clone());
+    let editor = editor::EditorConfig::resolve(cli.open_with.clone(), settings.open_with_command.clone());
     let client = NextestClient::new(cli.manifest_path, cli.current_dir, cli.nextest_args);
     if cli.list_json {
         let tests = client.discover().await?;
@@ -109,7 +110,7 @@ async fn main() -> Result<()> {
         run_on_start,
         theme,
         editor,
-        cli.editor,
+        cli.open_with,
     )
     .await;
     terminal.restore()?;

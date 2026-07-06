@@ -46,7 +46,8 @@ impl ThemePreference {
 #[serde(default)]
 pub struct AppSettings {
     pub tree_width_percent: u16,
-    pub editor_command: Option<String>,
+    #[serde(alias = "editor_command")]
+    pub open_with_command: Option<String>,
     pub theme_mode: ThemePreference,
     pub color_blind_mode: bool,
 }
@@ -55,7 +56,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             tree_width_percent: DEFAULT_TREE_WIDTH_PERCENT,
-            editor_command: None,
+            open_with_command: None,
             theme_mode: ThemePreference::Auto,
             color_blind_mode: false,
         }
@@ -65,12 +66,12 @@ impl Default for AppSettings {
 impl AppSettings {
     pub fn normalized(mut self) -> Self {
         self.tree_width_percent = clamp_tree_width(self.tree_width_percent);
-        self.editor_command = self.editor_command.and_then(non_empty_trimmed);
+        self.open_with_command = self.open_with_command.and_then(non_empty_trimmed);
         self
     }
 
-    pub fn editor_label(&self) -> &str {
-        self.editor_command.as_deref().unwrap_or("env/default")
+    pub fn open_with_label(&self) -> &str {
+        self.open_with_command.as_deref().unwrap_or("env/default")
     }
 }
 
@@ -160,14 +161,22 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_empty_editor_command() {
+    fn normalizes_empty_open_with_command() {
         let settings = AppSettings {
-            editor_command: Some("  ".to_owned()),
+            open_with_command: Some("  ".to_owned()),
             ..AppSettings::default()
         }
         .normalized();
 
-        assert_eq!(settings.editor_command, None);
+        assert_eq!(settings.open_with_command, None);
+    }
+
+    #[test]
+    fn loads_legacy_editor_command_as_open_with_command() {
+        let settings = serde_json::from_str::<AppSettings>(r#"{"editor_command":"idea"}"#)
+            .expect("settings");
+
+        assert_eq!(settings.open_with_command.as_deref(), Some("idea"));
     }
 
     #[test]

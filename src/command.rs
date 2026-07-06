@@ -37,10 +37,10 @@ pub enum AppCommand {
     SettingsAdjustLeft,
     SettingsAdjustRight,
     SettingsActivate,
-    SettingsEditorEdit(SearchEditorInput),
-    CommitEditorSetting,
-    CancelEditorSetting,
-    ClearEditorSetting,
+    SettingsOpenWithEdit(SearchEditorInput),
+    CommitOpenWithSetting,
+    CancelOpenWithSetting,
+    ClearOpenWithSetting,
     RefreshDiskUsage,
     OpenDiskCleanup,
     CloseDiskCleanup,
@@ -395,10 +395,10 @@ impl AppCommand {
             | Self::SettingsAdjustLeft
             | Self::SettingsAdjustRight
             | Self::SettingsActivate
-            | Self::SettingsEditorEdit(_)
-            | Self::CommitEditorSetting
-            | Self::CancelEditorSetting
-            | Self::ClearEditorSetting
+            | Self::SettingsOpenWithEdit(_)
+            | Self::CommitOpenWithSetting
+            | Self::CancelOpenWithSetting
+            | Self::ClearOpenWithSetting
             | Self::CloseDiskCleanup
             | Self::RunCargoClean
             | Self::ApplyOutputSearch
@@ -441,10 +441,10 @@ impl AppCommand {
             Self::SettingsNext | Self::SettingsPrevious => Some("settings select"),
             Self::SettingsAdjustLeft | Self::SettingsAdjustRight => Some("settings adjust"),
             Self::SettingsActivate => Some("settings edit"),
-            Self::SettingsEditorEdit(_) => Some("settings input"),
-            Self::CommitEditorSetting => Some("settings save"),
-            Self::CancelEditorSetting => Some("settings cancel"),
-            Self::ClearEditorSetting => Some("settings clear"),
+            Self::SettingsOpenWithEdit(_) => Some("settings input"),
+            Self::CommitOpenWithSetting => Some("settings save"),
+            Self::CancelOpenWithSetting => Some("settings cancel"),
+            Self::ClearOpenWithSetting => Some("settings clear"),
             Self::RunCargoClean => Some("cargo clean"),
             Self::ReportStatus(_) => Some("status"),
             _ => self.info().map(|info| info.ticker),
@@ -467,7 +467,7 @@ pub struct CommandContext {
     pub output_search_modal: bool,
     pub disk_cleanup_modal: bool,
     pub settings_modal: bool,
-    pub settings_editor_input: bool,
+    pub settings_open_with_input: bool,
     pub discovery_running: bool,
 }
 
@@ -483,8 +483,8 @@ pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppComm
         InputEvent::Terminal(Event::Key(key)) if context.discovery_running => {
             command_for_discovery_running(key.code)
         }
-        InputEvent::Terminal(Event::Key(key)) if context.settings_editor_input => {
-            command_for_settings_editor_input(key.code, key.modifiers)
+        InputEvent::Terminal(Event::Key(key)) if context.settings_open_with_input => {
+            command_for_settings_open_with_input(key.code, key.modifiers)
         }
         InputEvent::Terminal(Event::Key(key)) if context.settings_modal => {
             command_for_settings_modal(key.code)
@@ -540,15 +540,15 @@ fn command_for_discovery_running(code: KeyCode) -> AppCommand {
     }
 }
 
-fn command_for_settings_editor_input(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+fn command_for_settings_open_with_input(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
     match code {
-        KeyCode::Esc => AppCommand::CancelEditorSetting,
-        KeyCode::Enter => AppCommand::CommitEditorSetting,
+        KeyCode::Esc => AppCommand::CancelOpenWithSetting,
+        KeyCode::Enter => AppCommand::CommitOpenWithSetting,
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-            AppCommand::ClearEditorSetting
+            AppCommand::ClearOpenWithSetting
         }
         _ => search_editor_input_for_key(code, modifiers)
-            .map(AppCommand::SettingsEditorEdit)
+            .map(AppCommand::SettingsOpenWithEdit)
             .unwrap_or(AppCommand::Noop),
     }
 }
@@ -562,7 +562,7 @@ fn command_for_settings_modal(code: KeyCode) -> AppCommand {
         KeyCode::Right => AppCommand::SettingsAdjustRight,
         KeyCode::Enter => AppCommand::SettingsActivate,
         KeyCode::Char('e') => AppCommand::SettingsActivate,
-        KeyCode::Char('x') => AppCommand::ClearEditorSetting,
+        KeyCode::Char('x') => AppCommand::ClearOpenWithSetting,
         _ => AppCommand::Noop,
     }
 }
@@ -889,24 +889,24 @@ mod tests {
     }
 
     #[test]
-    fn settings_editor_input_accepts_text_and_commit() {
+    fn settings_open_with_input_accepts_text_and_commit() {
         let context = CommandContext {
             settings_modal: true,
-            settings_editor_input: true,
+            settings_open_with_input: true,
             ..CommandContext::default()
         };
         let char =
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)));
         assert_eq!(
             command_for_input(&char, context),
-            AppCommand::SettingsEditorEdit(SearchEditorInput::char('i'))
+            AppCommand::SettingsOpenWithEdit(SearchEditorInput::char('i'))
         );
 
         let enter =
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         assert_eq!(
             command_for_input(&enter, context),
-            AppCommand::CommitEditorSetting
+            AppCommand::CommitOpenWithSetting
         );
     }
 

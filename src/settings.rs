@@ -8,14 +8,14 @@ use crate::{
 pub struct GlobalSettingsState {
     pub modal_open: bool,
     pub selected: SettingsField,
-    pub editor_editing: bool,
-    pub editor: InputField,
+    pub open_with_editing: bool,
+    pub open_with: InputField,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SettingsField {
     #[default]
-    Editor,
+    OpenWith,
     TreeWidth,
     Theme,
     ColorBlindMode,
@@ -24,7 +24,7 @@ pub enum SettingsField {
 impl SettingsField {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Editor => "open with",
+            Self::OpenWith => "open with",
             Self::TreeWidth => "tests width",
             Self::Theme => "theme",
             Self::ColorBlindMode => "color-blind",
@@ -33,17 +33,17 @@ impl SettingsField {
 
     pub const fn next(self) -> Self {
         match self {
-            Self::Editor => Self::TreeWidth,
+            Self::OpenWith => Self::TreeWidth,
             Self::TreeWidth => Self::Theme,
             Self::Theme => Self::ColorBlindMode,
-            Self::ColorBlindMode => Self::Editor,
+            Self::ColorBlindMode => Self::OpenWith,
         }
     }
 
     pub const fn previous(self) -> Self {
         match self {
-            Self::Editor => Self::ColorBlindMode,
-            Self::TreeWidth => Self::Editor,
+            Self::OpenWith => Self::ColorBlindMode,
+            Self::TreeWidth => Self::OpenWith,
             Self::Theme => Self::TreeWidth,
             Self::ColorBlindMode => Self::Theme,
         }
@@ -53,18 +53,18 @@ impl SettingsField {
 impl GlobalSettingsState {
     pub fn open(&mut self, settings: &AppSettings) {
         self.modal_open = true;
-        self.editor_editing = false;
-        self.sync_editor(settings);
+        self.open_with_editing = false;
+        self.sync_open_with(settings);
     }
 
     pub fn close(&mut self) {
         self.modal_open = false;
-        self.editor_editing = false;
+        self.open_with_editing = false;
     }
 
-    pub fn sync_editor(&mut self, settings: &AppSettings) {
-        let text = settings.editor_command.clone().unwrap_or_default();
-        self.editor.set_text(&text);
+    pub fn sync_open_with(&mut self, settings: &AppSettings) {
+        let text = settings.open_with_command.clone().unwrap_or_default();
+        self.open_with.set_text(&text);
     }
 
     pub fn select_next(&mut self) {
@@ -75,26 +75,26 @@ impl GlobalSettingsState {
         self.selected = self.selected.previous();
     }
 
-    pub fn begin_editor_edit(&mut self, settings: &AppSettings) {
-        self.selected = SettingsField::Editor;
-        self.editor_editing = true;
-        self.sync_editor(settings);
+    pub fn begin_open_with_edit(&mut self, settings: &AppSettings) {
+        self.selected = SettingsField::OpenWith;
+        self.open_with_editing = true;
+        self.sync_open_with(settings);
     }
 
-    pub fn edit_editor(&mut self, input: SearchEditorInput) {
-        self.editor.input(input);
+    pub fn edit_open_with(&mut self, input: SearchEditorInput) {
+        self.open_with.input(input);
     }
 
-    pub fn editor_text(&self) -> String {
-        self.editor.text()
+    pub fn open_with_text(&self) -> String {
+        self.open_with.text()
     }
 
-    pub fn cancel_editor_edit(&mut self, settings: &AppSettings) {
-        self.editor_editing = false;
-        self.sync_editor(settings);
+    pub fn cancel_open_with_edit(&mut self, settings: &AppSettings) {
+        self.open_with_editing = false;
+        self.sync_open_with(settings);
     }
 
-    pub fn clear_editor_draft(&mut self) {
-        self.editor.clear();
+    pub fn clear_open_with_draft(&mut self) {
+        self.open_with.clear();
     }
 }

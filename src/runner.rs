@@ -27,7 +27,7 @@ pub async fn run(
     run_on_start: bool,
     theme: Theme,
     editor: EditorConfig,
-    cli_editor: Option<String>,
+    cli_open_with: Option<String>,
 ) -> Result<()> {
     let (queue_tx, queue_rx) = queue::channel();
 
@@ -51,7 +51,7 @@ pub async fn run(
             client,
             theme,
             editor,
-            cli_editor,
+            cli_open_with,
             queue_tx,
         },
         queue_rx,
@@ -99,7 +99,7 @@ struct RunLoopContext<'a> {
     client: &'a NextestClient,
     theme: Theme,
     editor: EditorConfig,
-    cli_editor: Option<String>,
+    cli_open_with: Option<String>,
     queue_tx: QueueSender,
 }
 
@@ -233,8 +233,8 @@ fn handle_effect(
 
 fn apply_runtime_settings(context: &mut RunLoopContext<'_>, settings: &AppSettings) {
     context.editor = EditorConfig::resolve(
-        context.cli_editor.clone(),
-        settings.editor_command.clone(),
+        context.cli_open_with.clone(),
+        settings.open_with_command.clone(),
     );
     context.theme = Theme::resolve(settings.theme_mode.into(), settings.color_blind_mode);
 }

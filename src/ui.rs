@@ -363,12 +363,12 @@ fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let area = centered_rect(72, 58, frame.area());
     let settings = &app.global_settings;
     let lines = vec![
-        settings_line(app, SettingsField::Editor, theme),
+        settings_line(app, SettingsField::OpenWith, theme),
         settings_line(app, SettingsField::TreeWidth, theme),
         settings_line(app, SettingsField::Theme, theme),
         settings_line(app, SettingsField::ColorBlindMode, theme),
     ];
-    let actions = if settings.editor_editing {
+    let actions = if settings.open_with_editing {
         "actions: [enter]save [esc]cancel [C-u]clear"
     } else {
         "actions: [up/down]select [left/right]change [enter]edit/apply [x]clear-open-with [q]close"
@@ -399,10 +399,10 @@ fn settings_line(app: &App, field: SettingsField, theme: &Theme) -> Line<'static
 
 fn settings_value(app: &App, field: SettingsField) -> String {
     match field {
-        SettingsField::Editor if app.global_settings.editor_editing => {
-            format!("[{}]", app.global_settings.editor.view(42, true))
+        SettingsField::OpenWith if app.global_settings.open_with_editing => {
+            format!("[{}]", app.global_settings.open_with.view(42, true))
         }
-        SettingsField::Editor => format!("[{}]", fit_line_content(app.settings.editor_label(), 42)),
+        SettingsField::OpenWith => format!("[{}]", fit_line_content(app.settings.open_with_label(), 42)),
         SettingsField::TreeWidth => format!("{}%", app.settings.tree_width_percent),
         SettingsField::Theme => app.settings.theme_mode.label().to_owned(),
         SettingsField::ColorBlindMode => on_off(app.settings.color_blind_mode).to_owned(),
