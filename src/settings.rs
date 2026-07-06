@@ -9,7 +9,6 @@ pub struct GlobalSettingsState {
     pub modal_open: bool,
     pub selected: SettingsField,
     pub editor_editing: bool,
-    pub editor_draft: String,
     pub editor: InputField,
 }
 
@@ -65,7 +64,6 @@ impl GlobalSettingsState {
 
     pub fn sync_editor(&mut self, settings: &AppSettings) {
         let text = settings.editor_command.clone().unwrap_or_default();
-        self.editor_draft = text.clone();
         self.editor.set_text(&text);
     }
 
@@ -84,9 +82,11 @@ impl GlobalSettingsState {
     }
 
     pub fn edit_editor(&mut self, input: SearchEditorInput) {
-        if self.editor.input(input) {
-            self.editor_draft = self.editor.text();
-        }
+        self.editor.input(input);
+    }
+
+    pub fn editor_text(&self) -> String {
+        self.editor.text()
     }
 
     pub fn cancel_editor_edit(&mut self, settings: &AppSettings) {
@@ -95,7 +95,6 @@ impl GlobalSettingsState {
     }
 
     pub fn clear_editor_draft(&mut self) {
-        self.editor_draft.clear();
         self.editor.clear();
     }
 }

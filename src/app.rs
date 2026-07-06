@@ -343,7 +343,7 @@ impl App {
 
     fn commit_editor_setting(&mut self) -> AppEffect {
         self.global_settings.editor_editing = false;
-        self.settings.editor_command = Some(self.global_settings.editor_draft.clone());
+        self.settings.editor_command = Some(self.global_settings.editor_text());
         self.settings = self.settings.clone().normalized();
         self.sync_settings_editor();
         self.status = format!("Open with: {}", self.settings.editor_label());
