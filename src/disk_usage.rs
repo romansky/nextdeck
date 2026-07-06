@@ -25,6 +25,29 @@ pub struct DiskUsageState {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageHealth {
+    Scanning,
+    Failed,
+    NotScanned,
+    Unknown,
+    Healthy,
+    Low,
+}
+
+impl StorageHealth {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Scanning => "scanning",
+            Self::Failed => "failed",
+            Self::NotScanned => "not scanned",
+            Self::Unknown => "unknown",
+            Self::Healthy => "healthy",
+            Self::Low => "low",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DiskCleanupState {
     pub modal_open: bool,
@@ -87,6 +110,23 @@ impl DiskUsageState {
             .as_ref()
             .map(DiskUsageSnapshot::summary_label)
             .unwrap_or_else(|| "not scanned".to_owned())
+    }
+
+    pub fn health(&self, low_space_threshold_bytes: u64) -> StorageHealth {
+        if self.loading {
+            return StorageHealth::Scanning;
+        }
+        if self.error.is_some() {
+            return StorageHealth::Failed;
+        }
+        let Some(snapshot) = &self.snapshot else {
+            return StorageHealth::NotScanned;
+        };
+        match snapshot.available_bytes {
+            Some(available) if available < low_space_threshold_bytes => StorageHealth::Low,
+            Some(_) => StorageHealth::Healthy,
+            None => StorageHealth::Unknown,
+        }
     }
 }
 
@@ -292,5 +332,49 @@ mod tests {
             snapshot.summary_label(),
             "total 4.0 KiB, target 1.0 KiB, cargo 3.0 KiB"
         );
+    }
+
+    #[test]
+    fn reports_storage_health_from_available_space() {
+        let state = DiskUsageState {
+            snapshot: Some(DiskUsageSnapshot {
+                entries: Vec::new(),
+                available_bytes: Some(11 * 1024 * 1024 * 1024),
+                updated_at: UNIX_EPOCH,
+            }),
+            ..DiskUsageState::default()
+        };
+        assert_eq!(state.health(10 * 1024 * 1024 * 1024), StorageHealth::Healthy);
+
+        let state = DiskUsageState {
+            snapshot: Some(DiskUsageSnapshot {
+                entries: Vec::new(),
+                available_bytes: Some(9 * 1024 * 1024 * 1024),
+                updated_at: UNIX_EPOCH,
+            }),
+            ..DiskUsageState::default()
+        };
+        assert_eq!(state.health(10 * 1024 * 1024 * 1024), StorageHealth::Low);
+    }
+
+    #[test]
+    fn reports_storage_health_for_transient_states() {
+        assert_eq!(
+            DiskUsageState {
+                loading: true,
+                ..DiskUsageState::default()
+            }
+            .health(10),
+            StorageHealth::Scanning
+        );
+        assert_eq!(
+            DiskUsageState {
+                error: Some("boom".to_owned()),
+                ..DiskUsageState::default()
+            }
+            .health(10),
+            StorageHealth::Failed
+        );
+        assert_eq!(DiskUsageState::default().health(10), StorageHealth::NotScanned);
     }
 }

@@ -2,7 +2,9 @@ use std::time::{Duration, Instant};
 
 use crate::{
     command::{AppCommand, CommandContext, CommandFocus, InputMode, OverlayMode},
-    config::{self, AppSettings, TREE_WIDTH_STEP_PERCENT},
+    config::{
+        self, AppSettings, STORAGE_LOW_SPACE_THRESHOLD_STEP_GB, TREE_WIDTH_STEP_PERCENT,
+    },
     disk_usage::{DiskCleanupState, DiskUsageSnapshot, DiskUsageState},
     editor::SourceLocation,
     git_status::GitStatus,
@@ -428,6 +430,23 @@ impl App {
                 };
                 self.resize_tests_pane(delta)
             }
+            SettingsField::StorageThreshold => {
+                let delta = if direction < 0 {
+                    -(STORAGE_LOW_SPACE_THRESHOLD_STEP_GB as i16)
+                } else {
+                    STORAGE_LOW_SPACE_THRESHOLD_STEP_GB as i16
+                };
+                self.settings.storage_low_space_threshold_gb =
+                    config::resize_storage_low_space_threshold(
+                        self.settings.storage_low_space_threshold_gb,
+                        delta,
+                    );
+                self.status = format!(
+                    "Low disk threshold: {} GiB",
+                    self.settings.storage_low_space_threshold_gb
+                );
+                self.save_settings_effect()
+            }
             SettingsField::Theme => {
                 self.settings.theme_mode = if direction < 0 {
                     self.settings.theme_mode.previous()
@@ -455,7 +474,9 @@ impl App {
                 AppEffect::None
             }
             SettingsField::ColorBlindMode => self.adjust_selected_setting(1),
-            SettingsField::TreeWidth | SettingsField::Theme => self.adjust_selected_setting(1),
+            SettingsField::TreeWidth | SettingsField::StorageThreshold | SettingsField::Theme => {
+                self.adjust_selected_setting(1)
+            }
         }
     }
 
@@ -1603,6 +1624,12 @@ mod tests {
         app.global_settings.selected = SettingsField::ColorBlindMode;
         let effect = app.apply_command(AppCommand::SettingsActivate);
         assert!(app.settings.color_blind_mode);
+        assert_eq!(effect, AppEffect::SaveSettings(app.settings.clone()));
+
+        app.global_settings.selected = SettingsField::StorageThreshold;
+        let effect = app.apply_command(AppCommand::SettingsAdjustRight);
+        assert_eq!(app.settings.storage_low_space_threshold_gb, 11);
+        assert_eq!(app.status, "Low disk threshold: 11 GiB");
         assert_eq!(effect, AppEffect::SaveSettings(app.settings.clone()));
     }
 

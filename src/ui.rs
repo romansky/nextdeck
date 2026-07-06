@@ -3,6 +3,7 @@ use std::time::Duration;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
@@ -11,7 +12,7 @@ use crate::{
     app::{App, FocusPane},
     command::{CommandGroup, CommandInfo, OverlayMode, command_infos},
     config,
-    disk_usage::{format_bytes, format_timestamp_utc},
+    disk_usage::{StorageHealth, format_bytes, format_timestamp_utc},
     output_pane::SearchModalFocus,
     settings::SettingsField,
     theme::Theme,
@@ -347,6 +348,7 @@ fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let lines = vec![
         settings_line(app, SettingsField::OpenWith, theme),
         settings_line(app, SettingsField::TreeWidth, theme),
+        settings_line(app, SettingsField::StorageThreshold, theme),
         settings_line(app, SettingsField::Theme, theme),
         settings_line(app, SettingsField::ColorBlindMode, theme),
     ];
@@ -386,6 +388,9 @@ fn settings_value(app: &App, field: SettingsField) -> String {
         }
         SettingsField::OpenWith => format!("[{}]", fit_line_content(app.settings.open_with_label(), 42)),
         SettingsField::TreeWidth => format!("{}%", app.settings.tree_width_percent),
+        SettingsField::StorageThreshold => {
+            format!("{} GiB", app.settings.storage_low_space_threshold_gb)
+        }
         SettingsField::Theme => app.settings.theme_mode.label().to_owned(),
         SettingsField::ColorBlindMode => on_off(app.settings.color_blind_mode).to_owned(),
     }
@@ -658,24 +663,20 @@ fn storage_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
 }
 
 fn storage_status(app: &App) -> &'static str {
-    if app.disk_usage.loading {
-        "scanning"
-    } else if app.disk_usage.error.is_some() {
-        "failed"
-    } else if app.disk_usage.snapshot.is_some() {
-        "ready"
-    } else {
-        "not scanned"
-    }
+    storage_health(app).label()
 }
 
-fn storage_status_style(app: &App, theme: &Theme) -> ratatui::style::Style {
-    if app.disk_usage.error.is_some() {
-        theme.danger()
-    } else if app.disk_usage.loading {
-        theme.accent()
-    } else {
-        theme.text()
+fn storage_health(app: &App) -> StorageHealth {
+    app.disk_usage
+        .health(app.settings.storage_low_space_threshold_bytes())
+}
+
+fn storage_status_style(app: &App, theme: &Theme) -> Style {
+    match storage_health(app) {
+        StorageHealth::Healthy => theme.success(),
+        StorageHealth::Low | StorageHealth::Failed => theme.danger(),
+        StorageHealth::Scanning => theme.accent(),
+        StorageHealth::Unknown | StorageHealth::NotScanned => theme.muted(),
     }
 }
 
@@ -906,6 +907,7 @@ fn status_spans<'a>(app: &'a App, theme: &'a Theme) -> Vec<Span<'a>> {
         .as_ref()
         .map(|echo| echo.text.as_str())
         .unwrap_or("-");
+    let storage = storage_status(app);
     vec![
         Span::styled(" branch ", theme.footer_label()),
         Span::styled(app.git_status.branch.as_str(), theme.footer_value()),
@@ -929,11 +931,36 @@ fn status_spans<'a>(app: &'a App, theme: &'a Theme) -> Vec<Span<'a>> {
             app.git_status.staged.deleted.to_string(),
             theme.footer_dirty(false),
         ),
+        Span::styled(" | run ", theme.footer_label()),
+        Span::styled(footer_run_status(app), footer_run_status_style(app, theme)),
+        Span::styled(" | storage ", theme.footer_label()),
+        Span::styled(storage, footer_storage_status_style(app, theme)),
         Span::styled(" | key ", theme.footer_label()),
         Span::styled(key, theme.footer_value()),
         Span::styled(" | ", theme.footer_label()),
         Span::styled(app.status.as_str(), theme.footer()),
     ]
+}
+
+fn footer_run_status_style(app: &App, theme: &Theme) -> Style {
+    match app.run.phase {
+        crate::app::RunPhase::Building | crate::app::RunPhase::RunningTests => theme.accent(),
+        crate::app::RunPhase::NotRunning => theme.muted(),
+    }
+    .bg(theme.footer_bg)
+}
+
+fn footer_run_status(app: &App) -> &'static str {
+    match app.run.phase {
+        crate::app::RunPhase::NotRunning => "idle",
+        crate::app::RunPhase::Building | crate::app::RunPhase::RunningTests => {
+            app.run_status_label()
+        }
+    }
+}
+
+fn footer_storage_status_style(app: &App, theme: &Theme) -> Style {
+    storage_status_style(app, theme).bg(theme.footer_bg)
 }
 
 fn draw_help(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
@@ -1104,6 +1131,7 @@ mod tests {
             available_bytes: Some(2048),
             updated_at: std::time::UNIX_EPOCH,
         });
+        app.settings.storage_low_space_threshold_gb = 1;
 
         let run_text = run_details(&app, &Theme::dark())
             .iter()
@@ -1119,12 +1147,51 @@ mod tests {
         assert!(run_text.contains("run id"));
         assert!(!run_text.contains("target"));
         assert!(storage_text.contains("Storage"));
-        assert!(storage_text.contains("ready"));
+        assert!(storage_text.contains("low"));
         assert!(storage_text.contains("available"));
         assert!(storage_text.contains("2.0 KiB"));
         assert!(storage_text.contains("1970-01-01 00:00:00 UTC"));
         assert!(storage_text.contains("target"));
         assert!(storage_text.contains("1.0 KiB"));
+    }
+
+    #[test]
+    fn storage_status_reports_healthy_when_available_space_exceeds_threshold() {
+        let mut app = App::new(Tree::from_tests(Vec::new()));
+        app.disk_usage.snapshot = Some(DiskUsageSnapshot {
+            entries: Vec::new(),
+            available_bytes: Some(11 * 1024 * 1024 * 1024),
+            updated_at: std::time::UNIX_EPOCH,
+        });
+
+        assert_eq!(storage_status(&app), "healthy");
+    }
+
+    #[test]
+    fn settings_modal_includes_storage_threshold() {
+        let app = App::new(Tree::from_tests(Vec::new()));
+
+        assert_eq!(
+            settings_value(&app, SettingsField::StorageThreshold),
+            "10 GiB"
+        );
+    }
+
+    #[test]
+    fn footer_includes_run_and_storage_status_before_key() {
+        let mut app = App::new(Tree::from_tests(Vec::new()));
+        app.disk_usage.snapshot = Some(DiskUsageSnapshot {
+            entries: Vec::new(),
+            available_bytes: Some(11 * 1024 * 1024 * 1024),
+            updated_at: std::time::UNIX_EPOCH,
+        });
+
+        let text = status_spans(&app, &Theme::dark())
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(text.contains(" | run idle | storage healthy | key "));
     }
 
     #[test]

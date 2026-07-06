@@ -6,6 +6,10 @@ pub const DEFAULT_TREE_WIDTH_PERCENT: u16 = 45;
 pub const MIN_TREE_WIDTH_PERCENT: u16 = 25;
 pub const MAX_TREE_WIDTH_PERCENT: u16 = 70;
 pub const TREE_WIDTH_STEP_PERCENT: u16 = 5;
+pub const DEFAULT_STORAGE_LOW_SPACE_THRESHOLD_GB: u16 = 10;
+pub const MIN_STORAGE_LOW_SPACE_THRESHOLD_GB: u16 = 1;
+pub const MAX_STORAGE_LOW_SPACE_THRESHOLD_GB: u16 = 1024;
+pub const STORAGE_LOW_SPACE_THRESHOLD_STEP_GB: u16 = 1;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -50,6 +54,7 @@ pub struct AppSettings {
     pub open_with_command: Option<String>,
     pub theme_mode: ThemePreference,
     pub color_blind_mode: bool,
+    pub storage_low_space_threshold_gb: u16,
 }
 
 impl Default for AppSettings {
@@ -59,6 +64,7 @@ impl Default for AppSettings {
             open_with_command: None,
             theme_mode: ThemePreference::Auto,
             color_blind_mode: false,
+            storage_low_space_threshold_gb: DEFAULT_STORAGE_LOW_SPACE_THRESHOLD_GB,
         }
     }
 }
@@ -66,12 +72,18 @@ impl Default for AppSettings {
 impl AppSettings {
     pub fn normalized(mut self) -> Self {
         self.tree_width_percent = clamp_tree_width(self.tree_width_percent);
+        self.storage_low_space_threshold_gb =
+            clamp_storage_low_space_threshold(self.storage_low_space_threshold_gb);
         self.open_with_command = self.open_with_command.and_then(non_empty_trimmed);
         self
     }
 
     pub fn open_with_label(&self) -> &str {
         self.open_with_command.as_deref().unwrap_or("env/default")
+    }
+
+    pub fn storage_low_space_threshold_bytes(&self) -> u64 {
+        u64::from(self.storage_low_space_threshold_gb) * 1024 * 1024 * 1024
     }
 }
 
@@ -106,6 +118,17 @@ pub fn clamp_tree_width(width: u16) -> u16 {
 
 pub fn resize_tree_width(width: u16, delta: i16) -> u16 {
     clamp_tree_width(width.saturating_add_signed(delta))
+}
+
+pub fn clamp_storage_low_space_threshold(threshold_gb: u16) -> u16 {
+    threshold_gb.clamp(
+        MIN_STORAGE_LOW_SPACE_THRESHOLD_GB,
+        MAX_STORAGE_LOW_SPACE_THRESHOLD_GB,
+    )
+}
+
+pub fn resize_storage_low_space_threshold(threshold_gb: u16, delta: i16) -> u16 {
+    clamp_storage_low_space_threshold(threshold_gb.saturating_add_signed(delta))
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -172,6 +195,23 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_storage_low_space_threshold() {
+        assert_eq!(
+            AppSettings {
+                storage_low_space_threshold_gb: 0,
+                ..AppSettings::default()
+            }
+            .normalized()
+            .storage_low_space_threshold_gb,
+            MIN_STORAGE_LOW_SPACE_THRESHOLD_GB
+        );
+        assert_eq!(
+            AppSettings::default().storage_low_space_threshold_bytes(),
+            u64::from(DEFAULT_STORAGE_LOW_SPACE_THRESHOLD_GB) * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
     fn loads_legacy_editor_command_as_open_with_command() {
         let settings = serde_json::from_str::<AppSettings>(r#"{"editor_command":"idea"}"#)
             .expect("settings");
@@ -189,6 +229,18 @@ mod tests {
         assert_eq!(
             resize_tree_width(MAX_TREE_WIDTH_PERCENT, TREE_WIDTH_STEP_PERCENT as i16),
             MAX_TREE_WIDTH_PERCENT
+        );
+    }
+
+    #[test]
+    fn resizes_storage_low_space_threshold_with_clamping() {
+        assert_eq!(
+            resize_storage_low_space_threshold(DEFAULT_STORAGE_LOW_SPACE_THRESHOLD_GB, 1),
+            DEFAULT_STORAGE_LOW_SPACE_THRESHOLD_GB + 1
+        );
+        assert_eq!(
+            resize_storage_low_space_threshold(MIN_STORAGE_LOW_SPACE_THRESHOLD_GB, -1),
+            MIN_STORAGE_LOW_SPACE_THRESHOLD_GB
         );
     }
 }
