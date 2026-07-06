@@ -485,14 +485,23 @@ fn node_label(node: &TestNode) -> String {
 }
 
 fn draw_details(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
-    let lines = selected_details(app, theme);
     let status = info_status(app);
-    let details = Paragraph::new(lines)
+    let block = theme.panel_block(&status, Some(info_actions()), false);
+    let inner = block.inner(area);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+        .split(inner);
+    let run_details = Paragraph::new(selected_details(app, theme))
         .style(theme.text())
-        .block(theme.panel_block(&status, Some(info_actions()), false))
+        .wrap(Wrap { trim: false });
+    let storage_details = Paragraph::new(storage_details(app, theme))
+        .style(theme.text())
         .wrap(Wrap { trim: false });
     frame.render_widget(Clear, area);
-    frame.render_widget(details, area);
+    frame.render_widget(block, area);
+    frame.render_widget(run_details, columns[0]);
+    frame.render_widget(storage_details, columns[1]);
 }
 
 fn selected_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
@@ -617,8 +626,41 @@ fn run_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
             theme.text(),
             theme,
         ),
-        detail_line("disk", app.disk_usage.summary_label(), theme.text(), theme),
     ]
+}
+
+fn storage_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::styled("Storage", theme.title(false)),
+        detail_line("status", app.disk_usage.summary_label(), theme.text(), theme),
+    ];
+
+    if let Some(snapshot) = &app.disk_usage.snapshot {
+        for entry in &snapshot.entries {
+            lines.push(detail_line(
+                entry.label,
+                format_bytes(entry.bytes),
+                theme.text(),
+                theme,
+            ));
+        }
+    } else if app.disk_usage.loading {
+        lines.push(Line::styled("Scanning disk usage...", theme.muted()));
+    } else if let Some(error) = &app.disk_usage.error {
+        lines.push(Line::styled(error.clone(), theme.danger()));
+    } else {
+        lines.push(Line::styled("No disk usage snapshot.", theme.muted()));
+    }
+
+    if let Some(result) = &app.disk_cleanup.last_result {
+        lines.push(Line::from(""));
+        match result {
+            Ok(()) => lines.push(detail_line("cleanup", "completed", theme.success(), theme)),
+            Err(_) => lines.push(detail_line("cleanup", "failed", theme.danger(), theme)),
+        }
+    }
+
+    lines
 }
 
 fn run_result_style(app: &App, theme: &Theme) -> ratatui::style::Style {
@@ -969,6 +1011,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::disk_usage::{DiskUsageEntry, DiskUsageSnapshot};
     use crate::tree::{DiscoveredTest, TestKey, Tree};
     use std::path::PathBuf;
 
@@ -1031,6 +1074,35 @@ mod tests {
         let app = App::new(Tree::from_tests(Vec::new()));
 
         assert_eq!(info_status(&app), "Info <disk: not scanned>");
+    }
+
+    #[test]
+    fn info_columns_keep_run_and_storage_details_separate() {
+        let mut app = App::new(Tree::from_tests(Vec::new()));
+        app.disk_usage.snapshot = Some(DiskUsageSnapshot {
+            entries: vec![DiskUsageEntry {
+                label: "target",
+                path: PathBuf::from("target"),
+                bytes: 1024,
+            }],
+        });
+
+        let run_text = run_details(&app, &Theme::dark())
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let storage_text = storage_details(&app, &Theme::dark())
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(run_text.contains("run id"));
+        assert!(!run_text.contains("target"));
+        assert!(storage_text.contains("Storage"));
+        assert!(storage_text.contains("target"));
+        assert!(storage_text.contains("1.0 KiB"));
     }
 
     #[test]
