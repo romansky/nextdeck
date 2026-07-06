@@ -213,7 +213,7 @@
 
         assert_eq!(app.run.outcome, RunOutcome::CommandFailed);
         assert_eq!(app.run_result_label(), "command failed");
-        assert_eq!(app.run_status_label(), "not running");
+        assert_eq!(app.run_status_label(), "idle");
         assert_eq!(app.status, "Command failed: nextest did not complete");
     }
 
@@ -250,7 +250,7 @@
         assert!(!app.running);
         assert_eq!(app.run.outcome, RunOutcome::Stopped);
         assert_eq!(app.run_result_label(), "stopped");
-        assert_eq!(app.run_status_label(), "not running");
+        assert_eq!(app.run_status_label(), "idle");
         assert_eq!(app.tree.status_counts_for_scope(&RunScope::Workspace).running, 0);
         assert!(app.status.starts_with("Stopped:"));
     }
@@ -283,7 +283,7 @@
         app.apply_run_event(RunEvent::RunnerFinished { exit_code: Some(101) });
 
         assert_eq!(app.run.phase, RunPhase::NotRunning);
-        assert_eq!(app.run_status_label(), "not running");
+        assert_eq!(app.run_status_label(), "idle");
         assert!(app.run_duration().is_some());
         assert!(app.build_duration().is_some());
         assert_eq!(app.test_duration(), None);
@@ -529,6 +529,46 @@
 
         assert_eq!(app.output_scroll, 1);
         assert_eq!(app.output_search.current_line, Some(1));
+    }
+
+    #[test]
+    fn output_filter_preserves_current_source_match_and_restores_global_scroll() {
+        let mut app = app_with_finished_output("zero\nmatch one\nskip\nmatch two", "");
+        app.output_search.query = "match".to_owned();
+        app.output_search.current_line = Some(3);
+        app.output_scroll = 3;
+
+        app.apply_command(AppCommand::ToggleOutputFilter);
+
+        assert!(app.output_search.filter);
+        assert_eq!(app.output_search.current_line, Some(3));
+        assert_eq!(app.output_text(), "match one\nmatch two");
+        assert_eq!(app.output_scroll, 1);
+
+        app.apply_command(AppCommand::ToggleOutputFilter);
+
+        assert!(!app.output_search.filter);
+        assert_eq!(app.output_search.current_line, Some(3));
+        assert_eq!(app.output_text(), "zero\nmatch one\nskip\nmatch two\n");
+        assert_eq!(app.output_scroll, 3);
+    }
+
+    #[test]
+    fn output_search_apply_filter_preserves_existing_match() {
+        let mut app = app_with_finished_output("zero\nmatch one\nskip\nmatch two", "");
+        app.output_search.query = "match".to_owned();
+        app.output_search.current_line = Some(3);
+
+        app.apply_command(AppCommand::StartOutputSearch);
+        app.apply_command(AppCommand::OpenOutputSearchModal);
+        app.output_search.modal_focus = SearchModalFocus::Filter;
+        app.apply_command(AppCommand::SearchModalActivate);
+        app.apply_command(AppCommand::ApplyOutputSearch);
+
+        assert!(app.output_search.filter);
+        assert_eq!(app.output_search.current_line, Some(3));
+        assert_eq!(app.output_scroll, 1);
+        assert_eq!(app.status, "Output match 2/2 for 'match'");
     }
 
     #[test]

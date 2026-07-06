@@ -8,7 +8,22 @@
             ..OutputSearchState::default()
         };
 
-        assert_eq!(search.filtered_text("ok\nPANIC\nfine"), "PANIC");
+        assert_eq!(search.filtered_view("ok\nPANIC\nfine").text, "PANIC");
+    }
+
+    #[test]
+    fn filtered_view_preserves_source_line_mapping() {
+        let search = OutputSearchState {
+            query: "panic".to_owned(),
+            filter: true,
+            ..OutputSearchState::default()
+        };
+
+        let view = search.filtered_view("ok\nPANIC\nfine\npanic again");
+
+        assert_eq!(view.text, "PANIC\npanic again");
+        assert_eq!(view.source_lines, vec![1, 3]);
+        assert_eq!(view.line_index_for_source_line(3), Some(1));
     }
 
     #[test]

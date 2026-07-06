@@ -1,4 +1,5 @@
     use super::*;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn normalizes_tree_width() {
@@ -56,6 +57,28 @@
             .expect("settings");
 
         assert_eq!(settings.open_with_command.as_deref(), Some("idea"));
+    }
+
+    #[test]
+    fn global_config_path_lives_under_home_nextdeck() {
+        assert_eq!(
+            global_config_path(Path::new("/home/demo")),
+            PathBuf::from("/home/demo/.nextdeck/config.json")
+        );
+    }
+
+    #[test]
+    fn config_read_paths_prefer_global_path_before_legacy_xdg_path() {
+        assert_eq!(
+            config_read_paths_for(
+                Some(PathBuf::from("/home/demo")),
+                Some(PathBuf::from("/xdg"))
+            ),
+            vec![
+                PathBuf::from("/home/demo/.nextdeck/config.json"),
+                PathBuf::from("/xdg/nextdeck/config.json"),
+            ]
+        );
     }
 
     #[test]

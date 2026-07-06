@@ -20,6 +20,20 @@ pub struct OutputSearchState {
     pub current_line: Option<usize>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutputView {
+    pub text: String,
+    pub source_lines: Vec<usize>,
+}
+
+impl OutputView {
+    pub fn line_index_for_source_line(&self, source_line: usize) -> Option<usize> {
+        self.source_lines
+            .iter()
+            .position(|line| *line == source_line)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SearchModalFocus {
     #[default]
@@ -243,26 +257,41 @@ impl OutputSearchState {
         output_matcher(self).err()
     }
 
-    pub fn filtered_text(&self, text: &str) -> String {
+    pub fn filtered_view(&self, text: &str) -> OutputView {
         if !self.filter || self.query.is_empty() {
-            return text.to_owned();
+            return output_view_from_text(text);
         }
 
         let matcher = match output_matcher(self) {
             Ok(Some(matcher)) => matcher,
-            Ok(None) => return text.to_owned(),
-            Err(error) => return format!("Invalid output search regex: {error}"),
+            Ok(None) => return output_view_from_text(text),
+            Err(error) => {
+                return OutputView {
+                    text: format!("Invalid output search regex: {error}"),
+                    source_lines: Vec::new(),
+                };
+            }
         };
 
-        let filtered = text
+        let matches = text
             .lines()
-            .filter(|line| matcher.is_match(line))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if filtered.is_empty() {
-            format!("No output lines match '{}'", self.query)
+            .enumerate()
+            .filter_map(|(index, line)| matcher.is_match(line).then_some((index, line)))
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            OutputView {
+                text: format!("No output lines match '{}'", self.query),
+                source_lines: Vec::new(),
+            }
         } else {
-            filtered
+            OutputView {
+                text: matches
+                    .iter()
+                    .map(|(_, line)| *line)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                source_lines: matches.iter().map(|(index, _)| *index).collect(),
+            }
         }
     }
 
@@ -329,6 +358,13 @@ impl OutputSearchState {
             index,
             total: matches.len(),
         }))
+    }
+}
+
+fn output_view_from_text(text: &str) -> OutputView {
+    OutputView {
+        text: text.to_owned(),
+        source_lines: (0..text.lines().count()).collect(),
     }
 }
 

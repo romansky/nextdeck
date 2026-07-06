@@ -45,6 +45,64 @@
         assert_eq!(client.project_dir(), Some(PathBuf::from("/workspace")));
     }
 
+    #[tokio::test]
+    async fn fixture_run_attaches_success_output_from_lib_test() {
+        let events = run_output_fixture("pass_prints_stdout_and_stderr", Vec::new()).await;
+
+        let output = test_output_event(&events, "pass_prints_stdout_and_stderr");
+        assert!(output.stdout.contains("PASS_STDOUT: lib pass stdout"));
+        assert!(output.stdout.contains("PASS_STDERR: lib pass stderr"));
+        assert!(!output.stdout.contains("running 1 test"));
+        assert!(!output.stdout.contains("test result: ok."));
+        assert!(output.stderr.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fixture_run_attaches_success_output_from_integration_test_binary() {
+        let events = run_output_fixture("integration_pass_prints_output", Vec::new()).await;
+
+        let output = test_output_event(&events, "integration_pass_prints_output");
+        assert!(output
+            .stdout
+            .contains("INTEGRATION_STDOUT: integration pass stdout"));
+        assert!(output
+            .stdout
+            .contains("INTEGRATION_STDERR: integration pass stderr"));
+    }
+
+    #[tokio::test]
+    async fn fixture_run_preserves_child_like_success_output() {
+        let events = run_output_fixture("pass_prints_child_like_output", Vec::new()).await;
+
+        let output = test_output_event(&events, "pass_prints_child_like_output");
+        assert!(output.stdout.contains("CHILD_STDOUT: command started"));
+        assert!(output.stdout.contains("    indented child output"));
+        assert!(output.stdout.contains("CHILD_STDERR: command warning"));
+    }
+
+    #[tokio::test]
+    async fn fixture_run_captures_failed_output_from_json_event() {
+        let events = run_output_fixture("fail_prints_stdout_and_stderr", Vec::new()).await;
+
+        let finished = finished_test_event(&events, "fail_prints_stdout_and_stderr");
+        assert_eq!(finished.status, TestStatus::Failed);
+        assert!(finished.stdout.contains("FAIL_STDOUT: lib fail stdout"));
+        assert!(finished.stdout.contains("FAIL_STDERR: lib fail stderr"));
+        assert!(finished.stdout.contains("FAIL_PANIC: expected fixture failure"));
+    }
+
+    #[tokio::test]
+    async fn fixture_run_can_capture_ignored_test_when_requested() {
+        let events = run_output_fixture(
+            "ignored_prints_when_explicitly_run",
+            vec!["--run-ignored".to_owned(), "only".to_owned()],
+        )
+        .await;
+
+        let output = test_output_event(&events, "ignored_prints_when_explicitly_run");
+        assert!(output.stdout.contains("IGNORED_STDOUT: ignored stdout"));
+    }
+
     #[test]
     fn parses_libtest_json_plus_started_event() {
         let line = r#"{"type":"test","event":"started","name":"tests::it_works","nextest":{"binary-id":"demo"}}"#;
@@ -112,6 +170,108 @@
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn successful_output_collector_attaches_nextest_output_block_to_last_success() {
+        let key = TestKey {
+            binary_id: Some("demo".to_owned()),
+            event_prefix: Some("demo::demo".to_owned()),
+            name: "tests::passes".to_owned(),
+        };
+        let mut collector = SuccessfulOutputCollector::default();
+        collector.observe_event(&RunEvent::TestFinished {
+            key: key.clone(),
+            status: TestStatus::Passed,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration: Some(Duration::from_millis(5)),
+        });
+
+        assert!(collector.try_start("  output ───"));
+        collector.push_line(String::new());
+        collector.push_line("    running 1 test".to_owned());
+        collector.push_line("    stdout from passing test".to_owned());
+        collector.push_line("    stderr from passing test".to_owned());
+        collector.push_line("    test tests::passes ... ok".to_owned());
+        collector.push_line(String::new());
+        collector.push_line(
+            "    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s"
+                .to_owned(),
+        );
+        collector.push_line(String::new());
+
+        match collector.finish_event().expect("output event") {
+            RunEvent::TestOutput {
+                key: output_key,
+                stdout,
+                stderr,
+            } => {
+                assert_eq!(output_key, key);
+                assert_eq!(stdout, "stdout from passing test\nstderr from passing test");
+                assert_eq!(stderr, "");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn successful_output_collector_handles_suite_event_before_output_block() {
+        let key = TestKey {
+            binary_id: None,
+            event_prefix: Some("capakit-e2e::bootstrap".to_owned()),
+            name: "bootstrap_xtask_prepare_action_is_ready".to_owned(),
+        };
+        let mut collector = SuccessfulOutputCollector::default();
+        collector.observe_event(&RunEvent::TestFinished {
+            key: key.clone(),
+            status: TestStatus::Passed,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration: Some(Duration::from_secs(28)),
+        });
+
+        let suite_line = r#"{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":0,"measured":0,"filtered_out":0,"exec_time":28.176076542,"nextest":{"crate":"capakit-e2e","test_binary":"bootstrap","kind":"test"}}"#;
+        assert!(parse_run_line(suite_line).is_some());
+        assert!(collector.try_start("  output ───"));
+        collector.push_line(String::new());
+        collector.push_line("    running 1 test".to_owned());
+        collector.push_line(
+            "    capakit-e2e xtask-action=apple-vm:prepare-e2e status=start command=stage-e2e"
+                .to_owned(),
+        );
+        collector.push_line(
+            "    test bootstrap_xtask_prepare_action_is_ready ... ok".to_owned(),
+        );
+        collector.push_line(String::new());
+        collector.push_line(
+            "    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.16s"
+                .to_owned(),
+        );
+
+        match collector.finish_event().expect("output event") {
+            RunEvent::TestOutput {
+                key: output_key,
+                stdout,
+                stderr,
+            } => {
+                assert_eq!(output_key, key);
+                assert_eq!(
+                    stdout,
+                    "capakit-e2e xtask-action=apple-vm:prepare-e2e status=start command=stage-e2e"
+                );
+                assert_eq!(stderr, "");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn successful_output_collector_ignores_unassociated_output_blocks() {
+        let mut collector = SuccessfulOutputCollector::default();
+
+        assert!(!collector.try_start("  output ───"));
+        assert!(collector.finish_event().is_none());
     }
 
     #[test]
@@ -185,4 +345,85 @@
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    struct CapturedTestOutput {
+        stdout: String,
+        stderr: String,
+    }
+
+    struct FinishedTestOutput {
+        status: TestStatus,
+        stdout: String,
+    }
+
+    async fn run_output_fixture(filter: &str, passthrough_args: Vec<String>) -> Vec<RunEvent> {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/output-workspace");
+        let client = NextestClient::new(None, Some(fixture), passthrough_args);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_stop_tx, stop_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        client
+            .run(
+                RunRequest {
+                    scope: RunScope::Test {
+                        name: filter.to_owned(),
+                    },
+                },
+                tx,
+                stop_rx,
+            )
+            .await
+            .expect("run output fixture");
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                RunEvent::RunnerFinished { .. } | RunEvent::RunnerStopped
+            )),
+            "fixture run did not finish; events: {events:#?}"
+        );
+        events
+    }
+
+    fn test_output_event(events: &[RunEvent], name: &str) -> CapturedTestOutput {
+        events
+            .iter()
+            .find_map(|event| match event {
+                RunEvent::TestOutput {
+                    key,
+                    stdout,
+                    stderr,
+                } if key.name.contains(name) => Some(CapturedTestOutput {
+                    stdout: stdout.clone(),
+                    stderr: stderr.clone(),
+                }),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing TestOutput event for {name}; events: {events:#?}"))
+    }
+
+    fn finished_test_event(events: &[RunEvent], name: &str) -> FinishedTestOutput {
+        events
+            .iter()
+            .find_map(|event| match event {
+                RunEvent::TestFinished {
+                    key,
+                    status,
+                    stdout,
+                    stderr,
+                    ..
+                } if key.name.contains(name) => Some(FinishedTestOutput {
+                    status: *status,
+                    stdout: format!("{stdout}{stderr}"),
+                }),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing TestFinished event for {name}; events: {events:#?}"))
     }

@@ -2,6 +2,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -130,6 +131,11 @@ pub enum RunEvent {
         stderr: String,
         duration: Option<Duration>,
     },
+    TestOutput {
+        key: TestKey,
+        stdout: String,
+        stderr: String,
+    },
     RunnerOutput(String),
     RunnerFinished {
         exit_code: Option<i32>,
@@ -217,12 +223,19 @@ impl NextestClient {
         let stdout = child.stdout.take().context("nextest stdout unavailable")?;
         let stderr = child.stderr.take().context("nextest stderr unavailable")?;
 
+        let success_output = Arc::new(Mutex::new(SuccessfulOutputCollector::default()));
         let stdout_tx = tx.clone();
+        let stdout_success_output = Arc::clone(&success_output);
         let stdout_task = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Some(line) = lines.next_line().await? {
+                if consume_success_output_line(&line, &stdout_success_output, &stdout_tx) {
+                    continue;
+                }
+
                 match parse_run_line(&line) {
                     Some(event) => {
+                        observe_success_output_event(&event, &stdout_success_output);
                         let _ = stdout_tx.send(event);
                     }
                     None if let Some(event) = parse_runner_line(&line) => {
@@ -234,19 +247,26 @@ impl NextestClient {
                     None => {}
                 }
             }
+            flush_success_output(&stdout_success_output, &stdout_tx);
             anyhow::Ok(())
         });
 
         let stderr_tx = tx.clone();
+        let stderr_success_output = Arc::clone(&success_output);
         let stderr_task = tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Some(line) = lines.next_line().await? {
+                if consume_success_output_line(&line, &stderr_success_output, &stderr_tx) {
+                    continue;
+                }
+
                 if let Some(event) = parse_runner_line(&line) {
                     let _ = stderr_tx.send(event);
                 } else if !line.trim().is_empty() {
                     let _ = stderr_tx.send(RunEvent::RunnerOutput(line));
                 }
             }
+            flush_success_output(&stderr_success_output, &stderr_tx);
             anyhow::Ok(())
         });
 
@@ -317,6 +337,8 @@ impl NextestClient {
             "none",
             "--final-status-level",
             "none",
+            "--success-output",
+            "immediate",
             "--no-input-handler",
         ]);
         command.args(&self.passthrough_args);
@@ -467,6 +489,161 @@ fn parse_suite_record(record: LibtestRecord) -> Option<RunEvent> {
             record.filtered_out.unwrap_or_default()
         ))),
         _ => None,
+    }
+}
+
+#[derive(Default)]
+struct SuccessfulOutputCollector {
+    last_started: Option<TestKey>,
+    last_success: Option<TestKey>,
+    collecting_for: Option<TestKey>,
+    lines: Vec<String>,
+}
+
+impl SuccessfulOutputCollector {
+    fn observe_event(&mut self, event: &RunEvent) {
+        match event {
+            RunEvent::TestStarted { key } => {
+                self.last_started = Some(key.clone());
+            }
+            RunEvent::TestFinished {
+                key,
+                status: TestStatus::Passed,
+                stdout,
+                stderr,
+                ..
+            } if stdout.is_empty() && stderr.is_empty() => {
+                self.last_success = Some(key.clone());
+            }
+            _ => {}
+        }
+    }
+
+    fn is_collecting(&self) -> bool {
+        self.collecting_for.is_some()
+    }
+
+    fn try_start(&mut self, line: &str) -> bool {
+        if !is_nextest_output_header(line) {
+            return false;
+        }
+
+        let Some(key) = self
+            .last_success
+            .take()
+            .or_else(|| self.last_started.clone())
+        else {
+            return false;
+        };
+
+        self.collecting_for = Some(key);
+        self.lines.clear();
+        true
+    }
+
+    fn should_finish_before(&self, line: &str) -> bool {
+        self.is_collecting()
+            && (line.starts_with('{')
+                || line.starts_with('─')
+                || parse_runner_line(line).is_some()
+                || line.trim_start().starts_with("Summary ["))
+    }
+
+    fn push_line(&mut self, line: String) {
+        self.lines.push(line);
+    }
+
+    fn finish_event(&mut self) -> Option<RunEvent> {
+        let key = self.collecting_for.take()?;
+        let stdout = clean_success_output_block(&key.name, &self.lines);
+        self.lines.clear();
+        (!stdout.is_empty()).then_some(RunEvent::TestOutput {
+            key,
+            stdout,
+            stderr: String::new(),
+        })
+    }
+}
+
+fn observe_success_output_event(
+    event: &RunEvent,
+    collector: &Arc<Mutex<SuccessfulOutputCollector>>,
+) {
+    if let Ok(mut collector) = collector.lock() {
+        collector.observe_event(event);
+    }
+}
+
+fn consume_success_output_line(
+    line: &str,
+    collector: &Arc<Mutex<SuccessfulOutputCollector>>,
+    tx: &mpsc::UnboundedSender<RunEvent>,
+) -> bool {
+    let mut event = None;
+    let consumed = if let Ok(mut collector) = collector.lock() {
+        if collector.should_finish_before(line) {
+            event = collector.finish_event();
+        }
+
+        if collector.is_collecting() {
+            collector.push_line(line.to_owned());
+            true
+        } else {
+            collector.try_start(line)
+        }
+    } else {
+        false
+    };
+
+    if let Some(event) = event {
+        let _ = tx.send(event);
+    }
+    consumed
+}
+
+fn flush_success_output(
+    collector: &Arc<Mutex<SuccessfulOutputCollector>>,
+    tx: &mpsc::UnboundedSender<RunEvent>,
+) {
+    let event = collector
+        .lock()
+        .ok()
+        .and_then(|mut collector| collector.finish_event());
+    if let Some(event) = event {
+        let _ = tx.send(event);
+    }
+}
+
+fn is_nextest_output_header(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("output ") && trimmed.contains('─')
+}
+
+fn clean_success_output_block(test_name: &str, lines: &[String]) -> String {
+    let mut cleaned = lines
+        .iter()
+        .map(|line| line.strip_prefix("    ").unwrap_or(line).to_owned())
+        .filter(|line| !is_libtest_success_output_metadata(test_name, line))
+        .collect::<Vec<_>>();
+    trim_blank_edges(&mut cleaned);
+    cleaned.join("\n")
+}
+
+fn is_libtest_success_output_metadata(test_name: &str, line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed == "running 1 test"
+        || trimmed.starts_with("test result: ok.")
+        || (trimmed.starts_with("test ")
+            && trimmed.contains(test_name)
+            && trimmed.ends_with(" ... ok"))
+}
+
+fn trim_blank_edges(lines: &mut Vec<String>) {
+    while lines.first().is_some_and(|line| line.trim().is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
     }
 }
 

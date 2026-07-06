@@ -2,8 +2,14 @@
 
     #[test]
     fn forced_modes_select_expected_palettes() {
-        assert_eq!(Theme::resolve(ThemeMode::Dark, false).text, Color::Gray);
-        assert_eq!(Theme::resolve(ThemeMode::Light, false).text, Color::Black);
+        assert_eq!(
+            Theme::resolve(ThemeMode::Dark, false).text,
+            Color::Rgb(205, 214, 244)
+        );
+        assert_eq!(
+            Theme::resolve(ThemeMode::Light, false).text,
+            Color::Rgb(76, 79, 105)
+        );
     }
 
     #[test]
@@ -15,8 +21,8 @@
     }
 
     #[test]
-    fn light_palette_uses_terminal_background_for_footer() {
-        assert_eq!(Theme::light().footer_bg, Color::Reset);
+    fn light_palette_uses_soft_footer_background() {
+        assert_eq!(Theme::light().footer_bg, Color::Rgb(230, 233, 239));
     }
 
     #[test]
@@ -28,21 +34,12 @@
     }
 
     #[test]
-    fn panel_title_color_codes_boolean_symbols() {
+    fn panel_title_uses_uniform_title_style_for_boolean_symbols() {
         let theme = Theme::dark();
         let title = theme.panel_title("filters: ✓ ✗", true);
+        let title_style = theme.title(true);
 
-        let enabled = title
-            .spans
-            .iter()
-            .find(|span| span.content.as_ref() == "✓")
-            .expect("enabled symbol");
-        let disabled = title
-            .spans
-            .iter()
-            .find(|span| span.content.as_ref() == "✗")
-            .expect("disabled symbol");
-
-        assert_eq!(enabled.style.fg, Some(theme.success));
-        assert_eq!(disabled.style.fg, Some(theme.danger));
+        assert_eq!(title.spans.len(), 3);
+        assert_eq!(title.spans[1].content.as_ref(), "filters: ✓ ✗");
+        assert!(title.spans.iter().all(|span| span.style == title_style));
     }

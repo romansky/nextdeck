@@ -11,7 +11,8 @@ use crate::{
     input_field::InputFieldInput,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
     output_pane::{
-        OutputSearchState, SearchDirection, SearchEditorInput, SearchEditorKey, SearchModalFocus,
+        OutputSearchState, OutputView, SearchDirection, SearchEditorInput, SearchEditorKey,
+        SearchModalFocus,
     },
     scroll,
     settings::{GlobalSettingsState, SettingsField},
@@ -31,6 +32,7 @@ pub struct App {
     pub tree_scroll: usize,
     pub status: String,
     pub key_echo: Option<KeyEcho>,
+    pub ui_ticks: usize,
     pub running: bool,
     pub should_quit: bool,
     pub output_scroll: u16,
@@ -142,6 +144,7 @@ impl App {
             tree_scroll: 0,
             status: "Ready".to_owned(),
             key_echo: None,
+            ui_ticks: 0,
             running: false,
             should_quit: false,
             output_scroll: 0,
@@ -253,6 +256,7 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        self.ui_ticks = self.ui_ticks.saturating_add(1);
         if self.discovery.running {
             self.discovery.ticks = self.discovery.ticks.saturating_add(1);
         }
@@ -466,6 +470,11 @@ impl App {
     pub fn discovery_spinner(&self) -> &'static str {
         const FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
         FRAMES[self.discovery.ticks % FRAMES.len()]
+    }
+
+    pub fn running_test_spinner(&self) -> &'static str {
+        const FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+        FRAMES[self.ui_ticks % FRAMES.len()]
     }
 
     pub fn discovery_elapsed_seconds(&self) -> usize {
@@ -877,8 +886,12 @@ impl App {
     }
 
     pub fn output_text(&self) -> String {
+        self.output_view().text
+    }
+
+    pub fn output_view(&self) -> OutputView {
         let text = self.output_source_text();
-        self.output_search.filtered_text(&text)
+        self.output_search.filtered_view(&text)
     }
 
     pub fn output_search_error(&self) -> Option<String> {
@@ -953,6 +966,14 @@ impl App {
                     .finish_test(&key, status, stdout, stderr, duration);
                 None
             }
+            RunEvent::TestOutput {
+                key,
+                stdout,
+                stderr,
+            } => {
+                self.tree.append_test_output(&key, stdout, stderr);
+                None
+            }
             RunEvent::RunnerOutput(line) => {
                 self.tree.append_runner_output(line);
                 None
@@ -984,7 +1005,7 @@ impl App {
         match self.run.phase {
             RunPhase::Building => "building",
             RunPhase::RunningTests => "running tests",
-            RunPhase::NotRunning => "not running",
+            RunPhase::NotRunning => "idle",
         }
     }
 
@@ -1065,7 +1086,7 @@ impl App {
         }
     }
 
-    fn output_source_text(&self) -> String {
+    pub(crate) fn output_source_text(&self) -> String {
         if let Some(error) = &self.discovery.error {
             discovery_error_output(error)
         } else {
@@ -1256,6 +1277,7 @@ impl App {
     }
 
     fn apply_output_search(&mut self) {
+        let previous_current_line = self.output_search.current_line;
         self.output_search.apply_draft();
         self.output_search.input_active = false;
         self.output_search.modal_open = false;
@@ -1265,7 +1287,7 @@ impl App {
             self.output_follow = false;
             self.status = "Output search cleared".to_owned();
         } else {
-            self.find_output_match(SearchDirection::Next);
+            self.select_output_match_after_apply(previous_current_line);
         }
     }
 
@@ -1307,8 +1329,7 @@ impl App {
         }
         self.output_search.filter = !self.output_search.filter;
         self.output_search.sync_draft_from_applied();
-        self.output_search.current_line = None;
-        self.output_scroll = 0;
+        self.scroll_to_current_output_match();
         self.output_follow = false;
         self.status = format!(
             "Output filter: {}",
@@ -1352,7 +1373,8 @@ impl App {
     }
 
     fn find_output_match(&mut self, direction: SearchDirection) {
-        let matches = match self.output_search_match_lines() {
+        let text = self.output_source_text();
+        let matches = match self.output_search.match_lines(&text) {
             Ok(matches) => matches,
             Err(error) => {
                 self.status = format!("Invalid output search regex: {error}");
@@ -1371,26 +1393,63 @@ impl App {
             return;
         }
 
-        let text = self.output_text();
         let output_match = self
             .output_search
             .next_match(&text, direction)
             .expect("matches already validated")
             .expect("matches already non-empty");
         self.output_search.current_line = Some(output_match.line);
-        self.output_scroll = output_match.line.min(u16::MAX as usize) as u16;
+        self.scroll_to_current_output_match();
         self.output_follow = false;
-        self.status = format!(
-            "Output match {}/{} for '{}'",
-            output_match.index + 1,
-            output_match.total,
-            self.output_search.query
-        );
+        self.status = self.output_match_status(output_match.index, output_match.total);
     }
 
-    fn output_search_match_lines(&self) -> Result<Vec<usize>, String> {
-        let text = self.output_text();
-        self.output_search.match_lines(&text)
+    fn select_output_match_after_apply(&mut self, preferred_source_line: Option<usize>) {
+        let text = self.output_source_text();
+        let matches = match self.output_search.match_lines(&text) {
+            Ok(matches) => matches,
+            Err(error) => {
+                self.status = format!("Invalid output search regex: {error}");
+                return;
+            }
+        };
+
+        if matches.is_empty() {
+            self.output_search.current_line = None;
+            self.status = format!("No output matches for '{}'", self.output_search.query);
+            return;
+        }
+
+        if let Some(source_line) = preferred_source_line
+            && let Some(index) = matches.iter().position(|line| *line == source_line)
+        {
+            self.output_search.current_line = Some(source_line);
+            self.scroll_to_current_output_match();
+            self.output_follow = false;
+            self.status = self.output_match_status(index, matches.len());
+            return;
+        }
+
+        self.find_output_match(SearchDirection::Next);
+    }
+
+    fn scroll_to_current_output_match(&mut self) {
+        let Some(source_line) = self.output_search.current_line else {
+            return;
+        };
+        let view = self.output_view();
+        if let Some(view_line) = view.line_index_for_source_line(source_line) {
+            self.output_scroll = view_line.min(u16::MAX as usize) as u16;
+        }
+    }
+
+    fn output_match_status(&self, index: usize, total: usize) -> String {
+        format!(
+            "Output match {}/{} for '{}'",
+            index + 1,
+            total,
+            self.output_search.query
+        )
     }
 }
 

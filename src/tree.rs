@@ -144,22 +144,6 @@ impl TestNode {
         }
     }
 
-    pub fn duration(&self) -> Option<Duration> {
-        if matches!(self.kind, NodeKind::Test(_)) {
-            return self.output.duration;
-        }
-
-        let mut total = Duration::ZERO;
-        let mut has_duration = false;
-        for child in &self.children {
-            if let Some(duration) = child.duration() {
-                total += duration;
-                has_duration = true;
-            }
-        }
-        has_duration.then_some(total)
-    }
-
     pub fn display_duration(&self) -> Option<Duration> {
         if matches!(self.kind, NodeKind::Test(_)) {
             return self.output.duration.or_else(|| {
@@ -169,7 +153,15 @@ impl TestNode {
             });
         }
 
-        self.duration()
+        let mut total = Duration::ZERO;
+        let mut has_duration = false;
+        for child in &self.children {
+            if let Some(duration) = child.display_duration() {
+                total += duration;
+                has_duration = true;
+            }
+        }
+        has_duration.then_some(total)
     }
 }
 
@@ -385,14 +377,33 @@ impl Tree {
             if node_matches(node, key) {
                 node.status = status;
                 node.started_at = None;
+                let stdout = if stdout.is_empty() {
+                    node.output.stdout.clone()
+                } else {
+                    stdout.clone()
+                };
+                let stderr = if stderr.is_empty() {
+                    node.output.stderr.clone()
+                } else {
+                    stderr.clone()
+                };
                 node.output = TestOutput {
-                    stdout: stdout.clone(),
-                    stderr: stderr.clone(),
+                    stdout,
+                    stderr,
                     duration,
                 };
             }
         });
         self.recompute_statuses();
+    }
+
+    pub fn append_test_output(&mut self, key: &TestKey, stdout: String, stderr: String) {
+        visit_mut(&mut self.root, &mut |node| {
+            if node_matches(node, key) {
+                append_output_text(&mut node.output.stdout, &stdout);
+                append_output_text(&mut node.output.stderr, &stderr);
+            }
+        });
     }
 
     pub fn stop_running_tests(&mut self) {
@@ -656,6 +667,16 @@ fn child_position(parent: &TestNode, label: &str) -> Option<usize> {
         .position(|child| child.label == label)
 }
 
+fn append_output_text(target: &mut String, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if !target.is_empty() && !target.ends_with('\n') {
+        target.push('\n');
+    }
+    target.push_str(text);
+}
+
 fn collect_visible<'a>(
     node: &'a TestNode,
     depth: usize,
@@ -681,7 +702,10 @@ fn node_has_visible_tests(node: &TestNode, filter: TestViewFilter) -> bool {
         NodeKind::Workspace
         | NodeKind::Package { .. }
         | NodeKind::Binary { .. }
-        | NodeKind::Module { .. } => descendant_test_count(node) > 0,
+        | NodeKind::Module { .. } => node
+            .children
+            .iter()
+            .any(|child| node_has_visible_tests(child, filter)),
     }
 }
 

@@ -59,16 +59,6 @@ impl DiskUsageSnapshot {
     pub fn total_bytes(&self) -> u64 {
         self.entries.iter().map(|entry| entry.bytes).sum()
     }
-
-    pub fn summary_label(&self) -> String {
-        let target = self
-            .entries
-            .iter()
-            .find(|entry| entry.label == "target")
-            .map(|entry| format_bytes(entry.bytes))
-            .unwrap_or_else(|| "-".to_owned());
-        format!("target {target}")
-    }
 }
 
 impl DiskUsageState {
@@ -90,19 +80,6 @@ impl DiskUsageState {
                 Err(error)
             }
         }
-    }
-
-    pub fn summary_label(&self) -> String {
-        if self.loading {
-            return "scanning...".to_owned();
-        }
-        if self.error.is_some() {
-            return "scan failed".to_owned();
-        }
-        self.snapshot
-            .as_ref()
-            .map(DiskUsageSnapshot::summary_label)
-            .unwrap_or_else(|| "not scanned".to_owned())
     }
 
     pub fn health(&self, low_space_threshold_bytes: u64) -> StorageHealth {

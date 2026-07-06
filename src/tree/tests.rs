@@ -79,11 +79,11 @@
     }
 
     #[test]
-    fn branches_remain_expandable_when_filter_hides_all_child_tests() {
-        let mut test = discovered_test("demo::demo", "demo", "tests", "ignored");
-        test.ignored = true;
-        test.status = TestStatus::Ignored;
-        let mut tree = Tree::from_tests(vec![test]);
+    fn view_filter_prunes_empty_parent_branches() {
+        let mut ignored = discovered_test("demo::demo", "demo", "tests", "ignored");
+        ignored.ignored = true;
+        ignored.status = TestStatus::Ignored;
+        let mut tree = Tree::from_tests(vec![ignored]);
         tree.set_view_filter(TestViewFilter {
             show_success: true,
             show_failed: true,
@@ -91,16 +91,26 @@
             show_skipped: true,
         });
 
-        assert_eq!(visible_labels(&tree), vec![".", "demo"]);
+        assert_eq!(visible_labels(&tree), vec!["."]);
+    }
 
-        tree.select_next();
-        tree.expand_selected();
-        assert_eq!(visible_labels(&tree), vec![".", "demo", "tests"]);
+    #[test]
+    fn view_filter_keeps_parent_branches_with_visible_descendants() {
+        let mut ignored = discovered_test("demo::demo", "demo", "tests", "ignored");
+        ignored.ignored = true;
+        ignored.status = TestStatus::Ignored;
+        let visible = discovered_test("demo::demo", "demo", "tests", "pending");
+        let mut tree = Tree::from_tests(vec![ignored, visible]);
+        expand_all(&mut tree);
 
-        tree.select_next();
-        tree.expand_selected();
-        assert_eq!(visible_labels(&tree), vec![".", "demo", "tests"]);
-        assert!(tree.selected_node().is_some_and(|node| node.expanded));
+        tree.set_view_filter(TestViewFilter {
+            show_success: true,
+            show_failed: true,
+            show_ignored: false,
+            show_skipped: true,
+        });
+
+        assert_eq!(visible_labels(&tree), vec![".", "demo", "tests", "pending"]);
     }
 
     #[test]
@@ -139,7 +149,7 @@
     }
 
     #[test]
-    fn running_duration_stays_on_test_leaf() {
+    fn running_duration_rolls_up_to_parent_rows() {
         let mut tree = Tree::from_tests(vec![discovered_test(
             "demo::demo",
             "demo",
@@ -152,8 +162,9 @@
         let package = &tree.root.children[0];
         let module = &package.children[0];
         let test = &module.children[0];
-        assert_eq!(package.display_duration(), None);
-        assert_eq!(module.display_duration(), None);
+        assert!(tree.root.display_duration().is_some());
+        assert!(package.display_duration().is_some());
+        assert!(module.display_duration().is_some());
         assert!(test.display_duration().is_some());
     }
 
@@ -288,6 +299,62 @@
         tree.select_next();
 
         assert_eq!(tree.selected_output(), "hello from stdout\n");
+    }
+
+    #[test]
+    fn late_success_output_is_attached_to_finished_test() {
+        let mut tree = Tree::from_tests(vec![discovered_test(
+            "demo::demo",
+            "demo",
+            "tests",
+            "works",
+        )]);
+        let key = TestKey {
+            binary_id: Some("demo::demo".to_owned()),
+            event_prefix: Some("demo::demo".to_owned()),
+            name: "tests::works".to_owned(),
+        };
+
+        tree.finish_test(
+            &key,
+            TestStatus::Passed,
+            String::new(),
+            String::new(),
+            Some(std::time::Duration::from_millis(12)),
+        );
+        tree.append_test_output(&key, "late stdout".to_owned(), String::new());
+        expand_all(&mut tree);
+        select_label(&mut tree, "works");
+
+        assert_eq!(tree.selected_output(), "late stdout\n");
+    }
+
+    #[test]
+    fn early_success_output_survives_empty_finished_event() {
+        let mut tree = Tree::from_tests(vec![discovered_test(
+            "demo::demo",
+            "demo",
+            "tests",
+            "works",
+        )]);
+        let key = TestKey {
+            binary_id: Some("demo::demo".to_owned()),
+            event_prefix: Some("demo::demo".to_owned()),
+            name: "tests::works".to_owned(),
+        };
+
+        tree.append_test_output(&key, "early stdout".to_owned(), String::new());
+        tree.finish_test(
+            &key,
+            TestStatus::Passed,
+            String::new(),
+            String::new(),
+            Some(std::time::Duration::from_millis(12)),
+        );
+        expand_all(&mut tree);
+        select_label(&mut tree, "works");
+
+        assert_eq!(tree.selected_output(), "early stdout\n");
     }
 
     #[test]

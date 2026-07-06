@@ -95,7 +95,15 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
         .enumerate()
         .skip(app.tree_scroll)
         .take(visible_height)
-        .map(|(index, row)| tree_item(row.depth, row.node, index == selected, theme))
+        .map(|(index, row)| {
+            tree_item(
+                row.depth,
+                row.node,
+                index == selected,
+                app.running_test_spinner(),
+                theme,
+            )
+        })
         .collect::<Vec<_>>();
 
     let focused = pane_focused(app, FocusPane::Tree);
@@ -146,9 +154,17 @@ fn fit_line_content(content: &str, width: usize) -> String {
 fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let area = centered_rect(62, 58, frame.area());
     if app.discovery.error.is_some() {
-        let text = app.output_text();
+        let source_text = app.output_source_text();
+        let output_view = app.output_search.filtered_view(&source_text);
         let page_size = area.height.saturating_sub(2).max(1);
-        let status = output_status_for("Discovery", app, &text, page_size, app.output_scroll);
+        let status = output_status_for(
+            "Discovery",
+            app,
+            &output_view.text,
+            &source_text,
+            page_size,
+            app.output_scroll,
+        );
         draw_output_panel(
             frame,
             theme,
@@ -157,7 +173,7 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
                 status: &status,
                 actions: discovery_error_actions(),
             },
-            output_lines(app, theme, &text),
+            output_lines(app, theme, &output_view),
             true,
             app.output_scroll,
         );
@@ -277,9 +293,17 @@ fn draw_output_search_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
 
 fn draw_disk_cleanup_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let area = centered_rect(70, 62, frame.area());
+    let paragraph = Paragraph::new(disk_cleanup_lines(app, theme))
+        .alignment(Alignment::Left)
+        .block(theme.modal_block("Disk Cleanup"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, area);
+    frame.render_widget(paragraph, area);
+}
+
+fn disk_cleanup_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::styled("Disk Usage", theme.title(false)),
-        Line::styled(app.disk_usage.summary_label(), theme.text()),
         Line::from(""),
     ];
 
@@ -335,12 +359,7 @@ fn draw_disk_cleanup_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         }
     }
 
-    let paragraph = Paragraph::new(lines)
-        .alignment(Alignment::Left)
-        .block(theme.modal_block("Disk Cleanup"))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(Clear, area);
-    frame.render_widget(paragraph, area);
+    lines
 }
 
 fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
@@ -421,7 +440,13 @@ fn modal_checkbox(
     )
 }
 
-fn tree_item<'a>(depth: usize, node: &TestNode, selected: bool, theme: &Theme) -> ListItem<'a> {
+fn tree_item<'a>(
+    depth: usize,
+    node: &TestNode,
+    selected: bool,
+    running_spinner: &str,
+    theme: &Theme,
+) -> ListItem<'a> {
     let row_style = if selected {
         theme.selected()
     } else {
@@ -431,7 +456,7 @@ fn tree_item<'a>(depth: usize, node: &TestNode, selected: bool, theme: &Theme) -
     ListItem::new(Line::from(vec![
         Span::styled(tree_leading_fields(depth, node), row_style),
         Span::styled(
-            node_label(node),
+            node_label(node, running_spinner),
             if selected { row_style } else { status_style },
         ),
     ]))
@@ -456,13 +481,18 @@ fn fold_marker(node: &TestNode) -> &'static str {
     }
 }
 
-fn node_label(node: &TestNode) -> String {
-    match &node.kind {
+fn node_label(node: &TestNode, running_spinner: &str) -> String {
+    let label = match &node.kind {
         NodeKind::Workspace => node.label.clone(),
         NodeKind::Package { name } => name.clone(),
         NodeKind::Binary { .. } | NodeKind::Module { .. } | NodeKind::Test(_) => {
             node.label.clone()
         }
+    };
+    if node.status == TestStatus::Running {
+        format!("{label} {running_spinner}")
+    } else {
+        label
     }
 }
 
@@ -758,9 +788,10 @@ fn status_label(status: TestStatus) -> &'static str {
 }
 
 fn draw_output(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
-    let text = app.output_text();
+    let source_text = app.output_source_text();
+    let output_view = app.output_search.filtered_view(&source_text);
     let focused = pane_focused(app, FocusPane::Output);
-    let status = output_status(app, &text);
+    let status = output_status(app, &output_view.text, &source_text);
     draw_output_panel(
         frame,
         theme,
@@ -769,7 +800,7 @@ fn draw_output(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
             status: &status,
             actions: output_actions(),
         },
-        output_lines(app, theme, &text),
+        output_lines(app, theme, &output_view),
         focused,
         app.output_scroll,
     );
@@ -820,13 +851,27 @@ fn info_status(_app: &App) -> String {
     "Info".to_owned()
 }
 
-fn output_status(app: &App, text: &str) -> String {
-    output_status_for("Output", app, text, app.output_page_size, app.output_scroll)
+fn output_status(app: &App, text: &str, source_text: &str) -> String {
+    output_status_for(
+        "Output",
+        app,
+        text,
+        source_text,
+        app.output_page_size,
+        app.output_scroll,
+    )
 }
 
-fn output_status_for(label: &str, app: &App, text: &str, page_size: u16, scroll: u16) -> String {
+fn output_status_for(
+    label: &str,
+    app: &App,
+    text: &str,
+    source_text: &str,
+    page_size: u16,
+    scroll: u16,
+) -> String {
     let total = output_line_count(text);
-    let search = output_search_title(app, text);
+    let search = output_search_title(app, source_text);
     let top = output_render_scroll(text, page_size, scroll) as usize;
     let visible = page_size.max(1) as usize;
     let bottom = top.saturating_add(visible).min(total);
@@ -851,11 +896,23 @@ fn output_line_count(text: &str) -> usize {
     text.lines().count().max(1)
 }
 
-fn output_lines(app: &App, theme: &Theme, text: &str) -> Vec<Line<'static>> {
-    let lines = text
+fn output_lines(
+    app: &App,
+    theme: &Theme,
+    output_view: &crate::output_pane::OutputView,
+) -> Vec<Line<'static>> {
+    let lines = output_view
+        .text
         .lines()
         .enumerate()
-        .map(|(index, line)| highlighted_output_line(app, theme, index, line))
+        .map(|(index, line)| {
+            let source_line = output_view
+                .source_lines
+                .get(index)
+                .copied()
+                .unwrap_or(index);
+            highlighted_output_line(app, theme, source_line, line)
+        })
         .collect::<Vec<_>>();
     if lines.is_empty() {
         vec![Line::from("")]
@@ -867,14 +924,14 @@ fn output_lines(app: &App, theme: &Theme, text: &str) -> Vec<Line<'static>> {
 fn highlighted_output_line(
     app: &App,
     theme: &Theme,
-    line_index: usize,
+    source_line: usize,
     line: &str,
 ) -> Line<'static> {
     let ranges = match app.output_search.match_ranges(line) {
         Ok(ranges) if !ranges.is_empty() => ranges,
         _ => return Line::styled(line.to_owned(), theme.text()),
     };
-    let match_style = if app.output_search.current_line == Some(line_index) {
+    let match_style = if app.output_search.current_line == Some(source_line) {
         theme.active_search_match()
     } else {
         theme.search_match()
@@ -952,12 +1009,7 @@ fn footer_run_status_style(app: &App, theme: &Theme) -> Style {
 }
 
 fn footer_run_status(app: &App) -> &'static str {
-    match app.run.phase {
-        crate::app::RunPhase::NotRunning => "idle",
-        crate::app::RunPhase::Building | crate::app::RunPhase::RunningTests => {
-            app.run_status_label()
-        }
-    }
+    app.run_status_label()
 }
 
 fn footer_storage_status_style(app: &App, theme: &Theme) -> Style {
@@ -977,6 +1029,11 @@ fn draw_help(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
 
 fn help_text(theme: &Theme, focus: FocusPane) -> Vec<Line<'static>> {
     let mut text = Vec::new();
+    text.push(Line::from(vec![
+        Span::styled("NextDeck", theme.title(true)),
+        Span::raw(" "),
+        Span::styled(env!("CARGO_PKG_VERSION"), theme.muted()),
+    ]));
     append_help_section(&mut text, "Global", true, theme);
     append_help_group(&mut text, CommandGroup::Navigation, true, theme);
     append_help_commands(&mut text, CommandGroup::Global, true, theme);

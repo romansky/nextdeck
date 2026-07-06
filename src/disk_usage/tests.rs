@@ -17,23 +17,6 @@
     }
 
     #[test]
-    fn summarizes_target_usage() {
-        let snapshot = DiskUsageSnapshot {
-            entries: vec![
-                DiskUsageEntry {
-                    label: "target",
-                    path: PathBuf::from("target"),
-                    bytes: 1024,
-                },
-            ],
-            available_bytes: Some(4096),
-            updated_at: UNIX_EPOCH,
-        };
-
-        assert_eq!(snapshot.summary_label(), "target 1.0 KiB");
-    }
-
-    #[test]
     fn reports_storage_health_from_available_space() {
         let state = DiskUsageState {
             snapshot: Some(DiskUsageSnapshot {

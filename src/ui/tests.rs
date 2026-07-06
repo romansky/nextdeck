@@ -11,9 +11,10 @@
     fn output_status_shows_all_when_text_fits() {
         let mut app = app_with_tree(Tree::from_tests(Vec::new()));
         app.output_page_size = 5;
+        let text = "one\ntwo";
 
         assert_eq!(
-            output_status(&app, "one\ntwo"),
+            output_status(&app, text, text),
             "Output <lines: 1-2/2> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
         );
     }
@@ -26,19 +27,19 @@
 
         app.output_scroll = 0;
         assert_eq!(
-            output_status(&app, text),
+            output_status(&app, text, text),
             "Output <lines: 1-3/6> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
         );
 
         app.output_scroll = 2;
         assert_eq!(
-            output_status(&app, text),
+            output_status(&app, text, text),
             "Output <lines: 3-5/6> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
         );
 
         app.output_scroll = 3;
         assert_eq!(
-            output_status(&app, text),
+            output_status(&app, text, text),
             "Output <lines: 4-6/6> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
         );
     }
@@ -93,7 +94,10 @@
             .collect::<Vec<_>>()
             .join("\n");
 
+        assert_eq!(footer_run_status(&app), app.run_status_label());
         assert!(run_text.contains("run id"));
+        assert!(run_text.contains(app.run_status_label()));
+        assert!(!run_text.contains("not running"));
         assert!(!run_text.contains("target"));
         assert!(storage_text.contains("Storage"));
         assert!(storage_text.contains("low"));
@@ -114,6 +118,29 @@
         });
 
         assert_eq!(storage_status(&app), "healthy");
+    }
+
+    #[test]
+    fn disk_cleanup_modal_shows_detailed_target_row_without_summary_duplicate() {
+        let mut app = app_with_tree(Tree::from_tests(Vec::new()));
+        app.disk_usage.snapshot = Some(DiskUsageSnapshot {
+            entries: vec![DiskUsageEntry {
+                label: "target",
+                path: PathBuf::from("/workspace/target"),
+                bytes: 1024,
+            }],
+            available_bytes: None,
+            updated_at: std::time::UNIX_EPOCH,
+        });
+
+        let text = disk_cleanup_lines(&app, &Theme::dark())
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!text.contains("target 1.0 KiB\n"));
+        assert!(text.contains("/workspace/target"));
     }
 
     #[test]
@@ -185,6 +212,7 @@
         let text = help_text(&theme, FocusPane::Tree);
         let lines = text.iter().map(line_text).collect::<Vec<_>>();
 
+        assert_eq!(lines.first(), Some(&format!("NextDeck {}", env!("CARGO_PKG_VERSION"))));
         assert!(lines.contains(&"Global".to_owned()));
         assert!(lines.contains(&"  Navigation".to_owned()));
         assert!(lines.contains(&"Tests".to_owned()));
@@ -296,7 +324,7 @@
     }
 
     #[test]
-    fn running_duration_field_is_only_populated_for_test_leaf() {
+    fn running_duration_field_rolls_up_to_parent_rows() {
         let mut tree = Tree::from_tests(vec![DiscoveredTest {
             key: TestKey {
                 binary_id: Some("demo::demo".to_owned()),
@@ -325,9 +353,56 @@
         let package = &tree.root.children[0];
         let module = &package.children[0];
         let test = &module.children[0];
-        assert_eq!(tree_leading_fields(1, package), "  > [        ] ");
-        assert_eq!(tree_leading_fields(2, module), "    > [        ] ");
+        assert_ne!(tree_leading_fields(1, package), "  > [        ] ");
+        assert_ne!(tree_leading_fields(2, module), "    > [        ] ");
         assert_ne!(tree_leading_fields(3, test), "        [        ] ");
+    }
+
+    #[test]
+    fn running_row_label_shows_spinner_after_name() {
+        let mut tree = Tree::from_tests(vec![DiscoveredTest {
+            key: TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: "tests::case".to_owned(),
+            },
+            package: "demo".to_owned(),
+            binary: "demo".to_owned(),
+            binary_kind: "lib".to_owned(),
+            cwd: PathBuf::from("."),
+            source_path: None,
+            module: Some("tests".to_owned()),
+            name: "case".to_owned(),
+            full_name: "tests::case".to_owned(),
+            status: TestStatus::Pending,
+            ignored: false,
+        }]);
+        let key = TestKey {
+            binary_id: Some("demo::demo".to_owned()),
+            event_prefix: Some("demo::demo".to_owned()),
+            name: "tests::case".to_owned(),
+        };
+        tree.start_test(&key);
+
+        let package = &tree.root.children[0];
+        let module = &package.children[0];
+        let test = &module.children[0];
+
+        assert_eq!(node_label(&tree.root, "⠋"), ". ⠋");
+        assert_eq!(node_label(package, "⠋"), "demo ⠋");
+        assert_eq!(node_label(module, "⠋"), "tests ⠋");
+        assert_eq!(node_label(test, "⠋"), "case ⠋");
+    }
+
+    #[test]
+    fn running_test_spinner_advances_with_app_tick() {
+        let mut app = app_with_tree(Tree::from_tests(Vec::new()));
+
+        assert_eq!(app.running_test_spinner(), "⠋");
+
+        app.tick();
+
+        assert_eq!(app.running_test_spinner(), "⠙");
     }
 
     #[test]
@@ -336,9 +411,10 @@
         app.output_page_size = 5;
         app.output_search.query = "panic".to_owned();
         app.output_search.filter = true;
+        let text = "panic line";
 
         assert_eq!(
-            output_status(&app, "panic line"),
+            output_status(&app, text, text),
             "Output <lines: 1-1/1> <search: [panic       ] 0/1 [n]ext [f]ilter:✓ [r]egex:✗ [c]ase-sensitive:✗>"
         );
     }
@@ -350,7 +426,11 @@
         app.output_search.query = "panic".to_owned();
         app.output_search.current_line = Some(1);
 
-        let lines = output_lines(&app, &theme, "panic one\npanic two");
+        let output_view = crate::output_pane::OutputView {
+            text: "panic one\npanic two".to_owned(),
+            source_lines: vec![0, 1],
+        };
+        let lines = output_lines(&app, &theme, &output_view);
 
         assert_eq!(lines[0].spans[0].style, theme.search_match());
         assert_eq!(lines[1].spans[0].style, theme.active_search_match());
@@ -372,7 +452,7 @@
         app.output_search.input_active = true;
 
         assert_eq!(
-            output_status(&app, "panic line"),
+            output_status(&app, "panic line", "panic line"),
             "Output <lines: 1-1/1> <search: [panic_      ] 0/0 [enter]submit [C+enter]advanced [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
         );
     }

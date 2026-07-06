@@ -7,7 +7,6 @@ use terminal_colorsaurus::{QueryOptions, ThemeMode as TerminalThemeMode};
 
 use crate::{
     config::ThemePreference,
-    symbols::{DISABLED, ENABLED},
     tree::TestStatus,
 };
 
@@ -64,35 +63,35 @@ impl Theme {
 
     pub const fn dark() -> Self {
         Self {
-            text: Color::Gray,
-            muted: Color::DarkGray,
-            accent: Color::LightCyan,
-            selected_bg: Color::Blue,
-            selected_fg: Color::White,
-            border: Color::DarkGray,
-            focused_border: Color::LightCyan,
-            footer_bg: Color::Blue,
-            footer_fg: Color::White,
-            success: Color::Green,
-            danger: Color::Red,
-            warning: Color::Yellow,
+            text: Color::Rgb(205, 214, 244),
+            muted: Color::Rgb(127, 132, 156),
+            accent: Color::Rgb(137, 180, 250),
+            selected_bg: Color::Rgb(69, 71, 90),
+            selected_fg: Color::Rgb(205, 214, 244),
+            border: Color::Rgb(49, 50, 68),
+            focused_border: Color::Rgb(137, 180, 250),
+            footer_bg: Color::Rgb(24, 24, 37),
+            footer_fg: Color::Rgb(205, 214, 244),
+            success: Color::Rgb(166, 227, 161),
+            danger: Color::Rgb(243, 139, 168),
+            warning: Color::Rgb(249, 226, 175),
         }
     }
 
     pub const fn light() -> Self {
         Self {
-            text: Color::Black,
-            muted: Color::Gray,
-            accent: Color::Blue,
-            selected_bg: Color::Blue,
-            selected_fg: Color::White,
-            border: Color::Gray,
-            focused_border: Color::Blue,
-            footer_bg: Color::Reset,
-            footer_fg: Color::Black,
-            success: Color::Green,
-            danger: Color::Red,
-            warning: Color::Yellow,
+            text: Color::Rgb(76, 79, 105),
+            muted: Color::Rgb(140, 143, 161),
+            accent: Color::Rgb(30, 102, 245),
+            selected_bg: Color::Rgb(204, 208, 218),
+            selected_fg: Color::Rgb(76, 79, 105),
+            border: Color::Rgb(188, 192, 204),
+            focused_border: Color::Rgb(30, 102, 245),
+            footer_bg: Color::Rgb(230, 233, 239),
+            footer_fg: Color::Rgb(76, 79, 105),
+            success: Color::Rgb(64, 160, 43),
+            danger: Color::Rgb(210, 15, 57),
+            warning: Color::Rgb(223, 142, 29),
         }
     }
 
@@ -147,28 +146,11 @@ impl Theme {
 
     fn panel_title<'a>(&self, status: &str, focused: bool) -> Line<'a> {
         let title_style = self.title(focused);
-        let mut spans = vec![Span::styled(" ".to_owned(), title_style)];
-        let mut normal = String::new();
-        for char in status.chars() {
-            let style = match char {
-                ENABLED => Some(self.success().add_modifier(Modifier::BOLD)),
-                DISABLED => Some(self.danger().add_modifier(Modifier::BOLD)),
-                _ => None,
-            };
-            let Some(style) = style else {
-                normal.push(char);
-                continue;
-            };
-            if !normal.is_empty() {
-                spans.push(Span::styled(std::mem::take(&mut normal), title_style));
-            }
-            spans.push(Span::styled(char.to_string(), style));
-        }
-        if !normal.is_empty() {
-            spans.push(Span::styled(normal, title_style));
-        }
-        spans.push(Span::styled(" ".to_owned(), title_style));
-        Line::from(spans)
+        Line::from(vec![
+            Span::styled(" ".to_owned(), title_style),
+            Span::styled(status.to_owned(), title_style),
+            Span::styled(" ".to_owned(), title_style),
+        ])
     }
 
     pub fn text(&self) -> Style {
@@ -197,7 +179,7 @@ impl Theme {
 
     pub fn search_match(&self) -> Style {
         Style::default()
-            .fg(self.selected_fg)
+            .fg(Color::Black)
             .bg(self.warning)
             .add_modifier(Modifier::BOLD)
     }
@@ -221,7 +203,7 @@ impl Theme {
     }
 
     pub fn footer_label(&self) -> Style {
-        Style::default().fg(Color::LightBlue).bg(self.footer_bg)
+        Style::default().fg(self.accent).bg(self.footer_bg)
     }
 
     pub fn footer_value(&self) -> Style {
