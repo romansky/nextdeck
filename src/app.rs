@@ -2,14 +2,12 @@ use std::time::{Duration, Instant};
 
 use crate::{
     command::{AppCommand, CommandContext, CommandFocus, InputMode, OverlayMode},
-    config::{
-        self, AppSettings, STORAGE_LOW_SPACE_THRESHOLD_STEP_GB, TREE_WIDTH_STEP_PERCENT,
-    },
+    config::{self, AppSettings, STORAGE_LOW_SPACE_THRESHOLD_STEP_GB, TREE_WIDTH_STEP_PERCENT},
     disk_usage::{DiskCleanupState, DiskUsageSnapshot, DiskUsageState},
     editor::SourceLocation,
     git_status::GitStatus,
     input_field::InputFieldInput,
-    nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
+    nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope, TargetSelector, TestSelector},
     output_pane::{
         OutputSearchState, OutputView, SearchDirection, SearchEditorInput, SearchEditorKey,
         SearchModalFocus,
@@ -247,10 +245,7 @@ impl App {
             None => InputMode::Normal(focus),
         };
 
-        CommandContext {
-            input,
-            overlay,
-        }
+        CommandContext { input, overlay }
     }
 
     pub fn record_key(&mut self, text: impl Into<String>) {
@@ -429,10 +424,7 @@ impl App {
                 } else {
                     self.settings.tree_duration_mode.next()
                 };
-                self.status = format!(
-                    "Tests time: {}",
-                    self.settings.tree_duration_mode.label()
-                );
+                self.status = format!("Tests time: {}", self.settings.tree_duration_mode.label());
                 self.save_settings_effect()
             }
             SettingsField::StorageThreshold => {
@@ -465,7 +457,11 @@ impl App {
                 self.settings.color_blind_mode = !self.settings.color_blind_mode;
                 self.status = format!(
                     "Color-blind mode: {}",
-                    if self.settings.color_blind_mode { "on" } else { "off" }
+                    if self.settings.color_blind_mode {
+                        "on"
+                    } else {
+                        "off"
+                    }
                 );
                 self.save_settings_effect()
             }
@@ -864,10 +860,7 @@ impl App {
         filter.show_failed = !filter.show_failed;
         let enabled = filter.show_failed;
         self.apply_tree_filter_change(filter);
-        self.status = format!(
-            "Show failed tests: {}",
-            if enabled { "on" } else { "off" }
-        );
+        self.status = format!("Show failed tests: {}", if enabled { "on" } else { "off" });
     }
 
     pub fn toggle_show_ignored(&mut self) {
@@ -875,10 +868,7 @@ impl App {
         filter.show_ignored = !filter.show_ignored;
         let enabled = filter.show_ignored;
         self.apply_tree_filter_change(filter);
-        self.status = format!(
-            "Show ignored tests: {}",
-            if enabled { "on" } else { "off" }
-        );
+        self.status = format!("Show ignored tests: {}", if enabled { "on" } else { "off" });
     }
 
     pub fn toggle_show_skipped(&mut self) {
@@ -886,10 +876,7 @@ impl App {
         filter.show_skipped = !filter.show_skipped;
         let enabled = filter.show_skipped;
         self.apply_tree_filter_change(filter);
-        self.status = format!(
-            "Show skipped tests: {}",
-            if enabled { "on" } else { "off" }
-        );
+        self.status = format!("Show skipped tests: {}", if enabled { "on" } else { "off" });
     }
 
     pub fn resize_tests_pane(&mut self, delta: i16) -> AppEffect {
@@ -950,15 +937,28 @@ impl App {
                 package,
                 name,
                 kind,
-            } => RunScope::Binary {
+            } => RunScope::Binary(TargetSelector {
                 package: package.clone(),
                 name: name.clone(),
                 kind: kind.clone(),
+            }),
+            NodeKind::Module { path } => match &node.id {
+                NodeId::Module {
+                    package,
+                    binary,
+                    kind,
+                    ..
+                } => RunScope::Module {
+                    target: TargetSelector {
+                        package: package.clone(),
+                        name: binary.clone(),
+                        kind: kind.clone(),
+                    },
+                    path: path.clone(),
+                },
+                _ => RunScope::Workspace,
             },
-            NodeKind::Module { path } => RunScope::Module { path: path.clone() },
-            NodeKind::Test(test) => RunScope::Test {
-                name: test.full_name.clone(),
-            },
+            NodeKind::Test(test) => RunScope::Test(TestSelector::from_test(test)),
         }
     }
 
@@ -1091,11 +1091,11 @@ impl App {
     }
 
     pub fn failed_scope(&self) -> Option<RunScope> {
-        let names = self.tree.failed_test_names();
-        if names.is_empty() {
+        let tests = self.tree.failed_test_selectors();
+        if tests.is_empty() {
             None
         } else {
-            Some(RunScope::Failed { names })
+            Some(RunScope::Failed { tests })
         }
     }
 
@@ -1374,7 +1374,11 @@ impl App {
         self.output_follow = false;
         self.status = format!(
             "Output filter: {}",
-            if self.output_search.filter { "on" } else { "off" }
+            if self.output_search.filter {
+                "on"
+            } else {
+                "off"
+            }
         );
     }
 
@@ -1390,7 +1394,11 @@ impl App {
             Some(error) => format!("Invalid output search regex: {error}"),
             None => format!(
                 "Output regex: {}",
-                if self.output_search.regex { "on" } else { "off" }
+                if self.output_search.regex {
+                    "on"
+                } else {
+                    "off"
+                }
             ),
         };
     }

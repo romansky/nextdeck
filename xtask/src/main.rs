@@ -50,7 +50,10 @@ enum XtaskCommand {
     },
     #[command(about = "Build, archive, checksum, and sign a release artifact")]
     Release {
-        #[arg(long, help = "Release version. Defaults to the root Cargo.toml version")]
+        #[arg(
+            long,
+            help = "Release version. Defaults to the root Cargo.toml version"
+        )]
         version: Option<String>,
         #[arg(long, help = "Rust target triple. Defaults to the host target")]
         target: Option<String>,
@@ -66,9 +69,16 @@ enum XtaskCommand {
     },
     #[command(about = "Generate a Homebrew formula from release artifact checksums")]
     HomebrewFormula {
-        #[arg(long, help = "Formula version. Defaults to the root Cargo.toml version")]
+        #[arg(
+            long,
+            help = "Formula version. Defaults to the root Cargo.toml version"
+        )]
         version: Option<String>,
-        #[arg(long, env = "GITHUB_REPOSITORY", help = "GitHub repository as owner/repo")]
+        #[arg(
+            long,
+            env = "GITHUB_REPOSITORY",
+            help = "GitHub repository as owner/repo"
+        )]
         github_repo: String,
         #[arg(long, default_value = DIST_DIR, help = "Directory containing *.tar.gz.sha256 files")]
         dist_dir: PathBuf,
@@ -103,7 +113,14 @@ fn main() -> Result<()> {
             allow_dirty,
             skip_sign,
             github_repo,
-        } => release(&workspace, version, target, allow_dirty, skip_sign, github_repo),
+        } => release(
+            &workspace,
+            version,
+            target,
+            allow_dirty,
+            skip_sign,
+            github_repo,
+        ),
         XtaskCommand::HomebrewFormula {
             version,
             github_repo,
@@ -496,7 +513,9 @@ fn write_homebrew_formula(
     let mut formula = String::new();
     formula.push_str("class Nextdeck < Formula\n");
     formula.push_str("  desc \"TUI dashboard for cargo-nextest\"\n");
-    formula.push_str(&format!("  homepage \"https://github.com/{github_repo}\"\n"));
+    formula.push_str(&format!(
+        "  homepage \"https://github.com/{github_repo}\"\n"
+    ));
     formula.push_str(&format!("  version \"{version}\"\n"));
     formula.push_str("  license \"MIT OR Apache-2.0\"\n\n");
     formula.push_str("  depends_on \"cargo-nextest\"\n\n");
@@ -527,7 +546,8 @@ fn write_homebrew_formula(
     formula.push_str("    bin.install \"nextdeck\"\n");
     formula.push_str("  end\n\n");
     formula.push_str("  test do\n");
-    formula.push_str("    assert_match version.to_s, shell_output(\"#{bin}/nextdeck --version\")\n");
+    formula
+        .push_str("    assert_match version.to_s, shell_output(\"#{bin}/nextdeck --version\")\n");
     formula.push_str("  end\n");
     formula.push_str("end\n");
 
@@ -595,9 +615,12 @@ fn formula_target_checksum(
     let checksum = parts
         .next()
         .with_context(|| format!("checksum file is empty: {}", checksum_path.display()))?;
-    let file_name = parts
-        .next()
-        .with_context(|| format!("checksum file is missing file name: {}", checksum_path.display()))?;
+    let file_name = parts.next().with_context(|| {
+        format!(
+            "checksum file is missing file name: {}",
+            checksum_path.display()
+        )
+    })?;
     if file_name != asset {
         bail!(
             "checksum {} references {file_name}, expected {asset}",
@@ -698,9 +721,7 @@ fn package_version(workspace: &Path) -> Result<String> {
             _ => {}
         }
 
-        if in_package
-            && let Some(version) = trimmed.strip_prefix("version = ")
-        {
+        if in_package && let Some(version) = trimmed.strip_prefix("version = ") {
             return Ok(version.trim_matches('"').to_owned());
         }
     }

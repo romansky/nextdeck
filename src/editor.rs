@@ -164,9 +164,7 @@ fn sanitize_title(title: &str) -> String {
 }
 
 fn env_string(key: &str) -> Option<String> {
-    env::var(key)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
+    env::var(key).ok().filter(|value| !value.trim().is_empty())
 }
 
 fn default_editor_command() -> String {

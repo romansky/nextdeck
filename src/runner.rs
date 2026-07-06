@@ -7,9 +7,9 @@ use tokio::sync::mpsc;
 
 use crate::{
     app::{App, AppEffect},
-    config::AppSettings,
     command::{AppCommand, CommandContext, InputMode, command_for_input},
     config,
+    config::AppSettings,
     disk_usage,
     editor::EditorConfig,
     git_status,
@@ -33,15 +33,9 @@ pub async fn run(
     let (queue_tx, queue_rx) = queue::channel();
 
     let discovery = start_discovery(client.clone(), queue_tx.clone());
-    let git_status = start_git_status(
-        client.project_dir(),
-        queue_tx.clone(),
-    );
+    let git_status = start_git_status(client.project_dir(), queue_tx.clone());
     app.begin_disk_usage_scan();
-    let disk_usage = start_disk_usage(
-        client.project_dir(),
-        queue_tx.clone(),
-    );
+    let disk_usage = start_disk_usage(client.project_dir(), queue_tx.clone());
     let input = InputSource::start(queue_tx.clone());
     let ticker = queue::start_ticker(queue_tx.clone(), Duration::from_millis(250));
     let result = run_loop(
@@ -149,11 +143,7 @@ enum LatestOnlyInput {
     TestsPaneWidth,
 }
 
-fn should_skip_stale_event(
-    events: &[QueueEvent],
-    index: usize,
-    context: CommandContext,
-) -> bool {
+fn should_skip_stale_event(events: &[QueueEvent], index: usize, context: CommandContext) -> bool {
     let Some(class) = latest_only_event(&events[index], context) else {
         return false;
     };
@@ -235,10 +225,7 @@ fn handle_queue_event(
         QueueEvent::CargoClean(result) => {
             if app.apply_cargo_clean(result) {
                 app.begin_disk_usage_scan();
-                start_disk_usage(
-                    context.client.project_dir(),
-                    context.queue_tx.clone(),
-                );
+                start_disk_usage(context.client.project_dir(), context.queue_tx.clone());
             }
         }
         QueueEvent::GitStatus(git_status) => app.apply_git_status(git_status),
@@ -306,28 +293,21 @@ fn handle_effect(
                 app.status = format!("Failed to open source: {error}");
             }
         },
-        AppEffect::OpenOutput(request) => match context
-            .editor
-            .open_text(&request.title, &request.text)
-        {
-            Ok(path) => {
-                app.status = format!("Opened output {}", path.display());
+        AppEffect::OpenOutput(request) => {
+            match context.editor.open_text(&request.title, &request.text) {
+                Ok(path) => {
+                    app.status = format!("Opened output {}", path.display());
+                }
+                Err(error) => {
+                    app.status = format!("Failed to open output: {error}");
+                }
             }
-            Err(error) => {
-                app.status = format!("Failed to open output: {error}");
-            }
-        },
+        }
         AppEffect::RefreshDiskUsage => {
-            start_disk_usage(
-                context.client.project_dir(),
-                context.queue_tx.clone(),
-            );
+            start_disk_usage(context.client.project_dir(), context.queue_tx.clone());
         }
         AppEffect::RunCargoClean => {
-            start_cargo_clean(
-                context.client.project_dir(),
-                context.queue_tx.clone(),
-            );
+            start_cargo_clean(context.client.project_dir(), context.queue_tx.clone());
         }
     }
 }

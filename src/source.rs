@@ -49,7 +49,11 @@ fn cargo_table_path(manifest: &Path, table_name: &str) -> Option<PathBuf> {
     None
 }
 
-fn cargo_named_target_path(manifest: &Path, table_name: &str, target_name: &str) -> Option<PathBuf> {
+fn cargo_named_target_path(
+    manifest: &Path,
+    table_name: &str,
+    target_name: &str,
+) -> Option<PathBuf> {
     let text = fs::read_to_string(manifest).ok()?;
     let mut in_target = false;
     let mut name = None;
@@ -58,7 +62,8 @@ fn cargo_named_target_path(manifest: &Path, table_name: &str, target_name: &str)
     for raw_line in text.lines().chain(["[[__flush__]]"]) {
         let line = strip_comment(raw_line).trim();
         if line.starts_with("[[") {
-            if in_target && name.as_deref() == Some(target_name)
+            if in_target
+                && name.as_deref() == Some(target_name)
                 && let Some(path) = path.take()
             {
                 return Some(manifest_parent(manifest).join(path));

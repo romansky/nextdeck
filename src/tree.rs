@@ -86,13 +86,17 @@ impl TestViewFilter {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NodeKind {
     Workspace,
-    Package { name: String },
+    Package {
+        name: String,
+    },
     Binary {
         package: String,
         name: String,
         kind: String,
     },
-    Module { path: String },
+    Module {
+        path: String,
+    },
     Test(DiscoveredTest),
 }
 
@@ -169,7 +173,10 @@ impl TestNode {
     fn test_display_duration_at(&self, now: Instant) -> Option<Duration> {
         self.output.duration.or_else(|| {
             (self.status == TestStatus::Running)
-                .then(|| self.started_at.map(|started_at| now.duration_since(started_at)))
+                .then(|| {
+                    self.started_at
+                        .map(|started_at| now.duration_since(started_at))
+                })
                 .flatten()
         })
     }
@@ -209,9 +216,9 @@ impl TestNode {
             started_at = Some(
                 started_at.map_or(child_started, |current: Instant| current.min(child_started)),
             );
-            finished_at = Some(
-                finished_at.map_or(child_finished, |current: Instant| current.max(child_finished)),
-            );
+            finished_at = Some(finished_at.map_or(child_finished, |current: Instant| {
+                current.max(child_finished)
+            }));
         }
         started_at.zip(finished_at)
     }
@@ -509,16 +516,16 @@ impl Tree {
         }
     }
 
-    pub fn failed_test_names(&self) -> Vec<String> {
-        let mut names = Vec::new();
+    pub fn failed_test_selectors(&self) -> Vec<crate::nextest::TestSelector> {
+        let mut tests = Vec::new();
         visit(&self.root, &mut |node| {
             if node.status == TestStatus::Failed
                 && let NodeKind::Test(test) = &node.kind
             {
-                names.push(test.full_name.clone());
+                tests.push(crate::nextest::TestSelector::from_test(test));
             }
         });
-        names
+        tests
     }
 
     pub fn select_next_failed(&mut self) -> bool {
@@ -774,14 +781,13 @@ fn node<'a>(current: &'a TestNode, target: &NodeId) -> Option<&'a TestNode> {
         return Some(current);
     }
 
-    current.children.iter().find_map(|child| node(child, target))
+    current
+        .children
+        .iter()
+        .find_map(|child| node(child, target))
 }
 
-fn with_id_mut(
-    node: &mut TestNode,
-    target: &NodeId,
-    f: &mut impl FnMut(&mut TestNode),
-) -> bool {
+fn with_id_mut(node: &mut TestNode, target: &NodeId, f: &mut impl FnMut(&mut TestNode)) -> bool {
     if node.id == *target {
         f(node);
         return true;

@@ -333,9 +333,17 @@ fn draw_output_search_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            modal_button("Clear", search.modal_focus == SearchModalFocus::Clear, theme),
+            modal_button(
+                "Clear",
+                search.modal_focus == SearchModalFocus::Clear,
+                theme,
+            ),
             Span::raw("  "),
-            modal_button("Apply", search.modal_focus == SearchModalFocus::Apply, theme),
+            modal_button(
+                "Apply",
+                search.modal_focus == SearchModalFocus::Apply,
+                theme,
+            ),
         ])),
         chunks[2],
     );
@@ -476,7 +484,9 @@ fn settings_value(app: &App, field: SettingsField) -> String {
         SettingsField::OpenWith if app.global_settings.open_with_editing => {
             format!("[{}]", app.global_settings.open_with.view(42, true))
         }
-        SettingsField::OpenWith => format!("[{}]", fit_line_content(app.settings.open_with_label(), 42)),
+        SettingsField::OpenWith => {
+            format!("[{}]", fit_line_content(app.settings.open_with_label(), 42))
+        }
         SettingsField::TreeWidth => format!("{}%", app.settings.tree_width_percent),
         SettingsField::TreeDuration => app.settings.tree_duration_mode.label().to_owned(),
         SettingsField::StorageThreshold => {
@@ -488,13 +498,21 @@ fn settings_value(app: &App, field: SettingsField) -> String {
 }
 
 fn modal_label_style(active: bool, theme: &Theme) -> ratatui::style::Style {
-    if active { theme.title(true) } else { theme.muted() }
+    if active {
+        theme.title(true)
+    } else {
+        theme.muted()
+    }
 }
 
 fn modal_button(label: &'static str, active: bool, theme: &Theme) -> Span<'static> {
     Span::styled(
         format!("[ {label} ]"),
-        if active { theme.selected() } else { theme.text() },
+        if active {
+            theme.selected()
+        } else {
+            theme.text()
+        },
     )
 }
 
@@ -507,7 +525,11 @@ fn modal_checkbox(
     let marker = if checked { "x" } else { " " };
     Line::styled(
         format!("[{marker}] {label}"),
-        if active { theme.selected() } else { theme.text() },
+        if active {
+            theme.selected()
+        } else {
+            theme.text()
+        },
     )
 }
 
@@ -561,9 +583,7 @@ fn node_label(node: &TestNode, running_spinner: &str) -> String {
     let label = match &node.kind {
         NodeKind::Workspace => node.label.clone(),
         NodeKind::Package { name } => name.clone(),
-        NodeKind::Binary { .. } | NodeKind::Module { .. } | NodeKind::Test(_) => {
-            node.label.clone()
-        }
+        NodeKind::Binary { .. } | NodeKind::Module { .. } | NodeKind::Test(_) => node.label.clone(),
     };
     if node.status == TestStatus::Running {
         format!("{label} {running_spinner}")
@@ -709,12 +729,7 @@ fn test_details_modal_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
             theme.text(),
             theme,
         ),
-        detail_line(
-            "tests",
-            status_counts_label(counts),
-            theme.text(),
-            theme,
-        ),
+        detail_line("tests", status_counts_label(counts), theme.text(), theme),
     ];
 
     match &node.kind {
@@ -736,7 +751,12 @@ fn test_details_modal_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
         }
         NodeKind::Module { path } => {
             lines.push(detail_line("module", path.clone(), theme.accent(), theme));
-            lines.push(detail_line("source", first_source_path(node), theme.text(), theme));
+            lines.push(detail_line(
+                "source",
+                first_source_path(node),
+                theme.text(),
+                theme,
+            ));
         }
         NodeKind::Test(test) => {
             lines.extend([
@@ -767,7 +787,12 @@ fn test_details_modal_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     lines.extend([
         Line::from(""),
         Line::styled("Manual", theme.title(true)),
-        detail_line("cargo", selected_manual_command(app, node), theme.accent(), theme),
+        detail_line(
+            "cargo",
+            selected_manual_command(app, node),
+            theme.accent(),
+            theme,
+        ),
     ]);
     lines
 }
@@ -785,7 +810,12 @@ fn selected_kind_label(node: &TestNode) -> &'static str {
 fn status_counts_label(counts: crate::state::StatusCounts) -> String {
     format!(
         "{} pending, {} running, {} passed, {} failed, {} ignored, {} skipped",
-        counts.pending, counts.running, counts.passed, counts.failed, counts.ignored, counts.skipped
+        counts.pending,
+        counts.running,
+        counts.passed,
+        counts.failed,
+        counts.ignored,
+        counts.skipped
     )
 }
 
@@ -861,7 +891,12 @@ fn run_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
 fn storage_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::styled("Storage", theme.title(false)),
-        detail_line("status", storage_status(app), storage_status_style(app, theme), theme),
+        detail_line(
+            "status",
+            storage_status(app),
+            storage_status_style(app, theme),
+            theme,
+        ),
     ];
 
     if let Some(snapshot) = &app.disk_usage.snapshot {
@@ -881,7 +916,12 @@ fn storage_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
                 theme.text(),
                 theme,
             ),
-            detail_line("total", format_bytes(snapshot.total_bytes()), theme.text(), theme),
+            detail_line(
+                "total",
+                format_bytes(snapshot.total_bytes()),
+                theme.text(),
+                theme,
+            ),
         ]);
         for entry in &snapshot.entries {
             lines.push(detail_line(
@@ -1037,11 +1077,7 @@ fn draw_output_panel(
     let scroll = output_render_scroll_for_count(text_line_count, page_size, scroll);
     let output = Paragraph::new(lines)
         .style(theme.text())
-        .block(theme.panel_block(
-            chrome.status,
-            Some(chrome.actions),
-            focused,
-        ))
+        .block(theme.panel_block(chrome.status, Some(chrome.actions), focused))
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     frame.render_widget(Clear, area);
@@ -1278,20 +1314,38 @@ fn help_text(theme: &Theme, focus: FocusPane) -> Vec<Line<'static>> {
     text
 }
 
-fn append_help_section(text: &mut Vec<Line<'static>>, title: &'static str, active: bool, theme: &Theme) {
+fn append_help_section(
+    text: &mut Vec<Line<'static>>,
+    title: &'static str,
+    active: bool,
+    theme: &Theme,
+) {
     if !text.is_empty() {
         text.push(Line::from(""));
     }
     text.push(Line::styled(
         title,
-        if active { theme.title(true) } else { theme.muted() },
+        if active {
+            theme.title(true)
+        } else {
+            theme.muted()
+        },
     ));
 }
 
-fn append_help_group(text: &mut Vec<Line<'static>>, group: CommandGroup, active: bool, theme: &Theme) {
+fn append_help_group(
+    text: &mut Vec<Line<'static>>,
+    group: CommandGroup,
+    active: bool,
+    theme: &Theme,
+) {
     text.push(Line::styled(
         format!("  {}", group.title()),
-        if active { theme.accent() } else { theme.muted() },
+        if active {
+            theme.accent()
+        } else {
+            theme.muted()
+        },
     ));
     append_help_commands(text, group, active, theme);
 }
@@ -1317,7 +1371,11 @@ fn help_sort_text(info: &CommandInfo) -> String {
 }
 
 fn help_line(info: &CommandInfo, active: bool, theme: &Theme) -> Line<'static> {
-    let key_style = if active { theme.accent() } else { theme.muted() };
+    let key_style = if active {
+        theme.accent()
+    } else {
+        theme.muted()
+    };
     let label_style = if active { theme.text() } else { theme.muted() };
     Line::from(vec![
         Span::raw("    "),

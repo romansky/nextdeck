@@ -10,10 +10,10 @@ mod nextest;
 mod output;
 mod output_pane;
 mod queue;
+mod runner;
 mod scroll;
 mod settings;
 mod source;
-mod runner;
 mod state;
 mod symbols;
 mod terminal;
@@ -88,7 +88,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let run_on_start = cli.run;
     let settings = config::load();
-    let editor = editor::EditorConfig::resolve(cli.open_with.clone(), settings.open_with_command.clone());
+    let editor =
+        editor::EditorConfig::resolve(cli.open_with.clone(), settings.open_with_command.clone());
     let client = NextestClient::new(cli.manifest_path, cli.current_dir, cli.nextest_args);
     if cli.list_json {
         let tests = client.discover().await?;

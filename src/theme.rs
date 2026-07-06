@@ -5,10 +5,7 @@ use ratatui::{
 };
 use terminal_colorsaurus::{QueryOptions, ThemeMode as TerminalThemeMode};
 
-use crate::{
-    config::ThemePreference,
-    tree::TestStatus,
-};
+use crate::{config::ThemePreference, tree::TestStatus};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ThemeMode {
@@ -40,7 +37,11 @@ impl Theme {
             ThemeMode::Dark => Self::dark(),
             ThemeMode::Light => Self::light(),
         };
-        if color_blind_mode { theme.color_blind() } else { theme }
+        if color_blind_mode {
+            theme.color_blind()
+        } else {
+            theme
+        }
     }
 
     fn color_blind(mut self) -> Self {

@@ -416,9 +416,7 @@ impl AppCommand {
             | Self::SearchModalNextControl
             | Self::SearchModalPreviousControl
             | Self::SearchModalActivate => None,
-            Self::OutputSearchEdit(_)
-            | Self::ClearOutputSearch
-            | Self::CancelOutputSearch => None,
+            Self::OutputSearchEdit(_) | Self::ClearOutputSearch | Self::CancelOutputSearch => None,
             Self::FindNextOutputMatch | Self::FindPreviousOutputMatch => {
                 Some(CommandKind::FindOutputMatch)
             }
@@ -536,11 +534,7 @@ pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppComm
     }
 }
 
-fn command_for_input_mode(
-    code: KeyCode,
-    modifiers: KeyModifiers,
-    input: InputMode,
-) -> AppCommand {
+fn command_for_input_mode(code: KeyCode, modifiers: KeyModifiers, input: InputMode) -> AppCommand {
     match input {
         InputMode::DiscoveryRunning => command_for_discovery_running(code),
         InputMode::SettingsOpenWith => command_for_settings_open_with_input(code, modifiers),
@@ -678,10 +672,7 @@ fn search_editor_input_for_key(
     Some(SearchEditorInput::new(key, ctrl, alt, shift))
 }
 
-fn input_field_input_for_key(
-    code: KeyCode,
-    modifiers: KeyModifiers,
-) -> Option<InputFieldInput> {
+fn input_field_input_for_key(code: KeyCode, modifiers: KeyModifiers) -> Option<InputFieldInput> {
     let reserved_modifiers = KeyModifiers::CONTROL
         | KeyModifiers::ALT
         | KeyModifiers::SUPER

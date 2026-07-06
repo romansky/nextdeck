@@ -1,7 +1,8 @@
 use std::{
-    env, fs,
+    collections::BTreeMap,
+    env, fs, io,
     path::{Path, PathBuf},
-    process::Stdio,
+    process::{ExitStatus, Stdio},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -12,8 +13,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
-    process::Command,
+    process::{Child, Command},
     sync::mpsc,
+    time,
 };
 
 use crate::{
@@ -40,20 +42,59 @@ pub enum RunScope {
     Package {
         name: String,
     },
-    Binary {
-        package: String,
-        name: String,
-        kind: String,
-    },
+    Binary(TargetSelector),
     Module {
+        target: TargetSelector,
         path: String,
     },
-    Test {
-        name: String,
-    },
+    Test(TestSelector),
     Failed {
-        names: Vec<String>,
+        tests: Vec<TestSelector>,
     },
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct TargetSelector {
+    pub package: String,
+    pub name: String,
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct TestSelector {
+    pub target: TargetSelector,
+    pub name: String,
+}
+
+impl TargetSelector {
+    pub fn from_test(test: &DiscoveredTest) -> Self {
+        Self {
+            package: test.package.clone(),
+            name: test.binary.clone(),
+            kind: test.binary_kind.clone(),
+        }
+    }
+
+    fn matches_test(&self, test: &DiscoveredTest) -> bool {
+        test.package == self.package && test.binary == self.name && test.binary_kind == self.kind
+    }
+
+    fn nextest_args(&self) -> Vec<String> {
+        binary_nextest_args(&self.package, &self.name, &self.kind)
+    }
+}
+
+impl TestSelector {
+    pub fn from_test(test: &DiscoveredTest) -> Self {
+        Self {
+            target: TargetSelector::from_test(test),
+            name: test.full_name.clone(),
+        }
+    }
+
+    fn matches_test(&self, test: &DiscoveredTest) -> bool {
+        self.target.matches_test(test) && test.full_name == self.name
+    }
 }
 
 impl RunScope {
@@ -61,10 +102,10 @@ impl RunScope {
         match self {
             Self::Workspace => "workspace".to_owned(),
             Self::Package { name } => format!("package {name}"),
-            Self::Binary { name, kind, .. } => format!("{kind} target {name}"),
-            Self::Module { path } => format!("module {path}"),
-            Self::Test { name } => format!("test {name}"),
-            Self::Failed { names } => format!("{} failed test(s)", names.len()),
+            Self::Binary(target) => format!("{} target {}", target.kind, target.name),
+            Self::Module { path, .. } => format!("module {path}"),
+            Self::Test(test) => format!("test {}", test.name),
+            Self::Failed { tests } => format!("{} failed test(s)", tests.len()),
         }
     }
 
@@ -72,31 +113,65 @@ impl RunScope {
         match self {
             Self::Workspace => true,
             Self::Package { name } => test.package == *name,
-            Self::Binary {
-                package,
-                name,
-                kind,
-            } => test.package == *package && test.binary == *name && test.binary_kind == *kind,
-            Self::Module { path } => test.full_name.starts_with(path),
-            Self::Test { name } => test.full_name == *name,
-            Self::Failed { names } => names.contains(&test.full_name),
+            Self::Binary(target) => target.matches_test(test),
+            Self::Module { target, path } => {
+                target.matches_test(test)
+                    && (test.full_name == *path
+                        || test
+                            .full_name
+                            .strip_prefix(path)
+                            .is_some_and(|rest| rest.starts_with("::")))
+            }
+            Self::Test(selector) => selector.matches_test(test),
+            Self::Failed { tests } => tests.iter().any(|selector| selector.matches_test(test)),
         }
     }
 
+    #[cfg(test)]
     fn nextest_args(&self) -> Vec<String> {
+        self.nextest_arg_sets()
+            .into_iter()
+            .next()
+            .unwrap_or_default()
+    }
+
+    fn nextest_arg_sets(&self) -> Vec<Vec<String>> {
         match self {
-            Self::Workspace => Vec::new(),
-            Self::Package { name } => vec!["-p".to_owned(), name.clone()],
-            Self::Binary {
-                package,
-                name,
-                kind,
-            } => binary_nextest_args(package, name, kind),
-            Self::Module { path } => vec![path.clone()],
-            Self::Test { name } => vec![name.clone()],
-            Self::Failed { names } => names.clone(),
+            Self::Workspace => vec![Vec::new()],
+            Self::Package { name } => vec![vec!["-p".to_owned(), name.clone()]],
+            Self::Binary(target) => vec![target.nextest_args()],
+            Self::Module { target, path } => {
+                let mut args = target.nextest_args();
+                args.push(path.clone());
+                vec![args]
+            }
+            Self::Test(test) => {
+                let mut args = test.target.nextest_args();
+                args.push(test.name.clone());
+                vec![args]
+            }
+            Self::Failed { tests } => failed_nextest_arg_sets(tests),
         }
     }
+}
+
+fn failed_nextest_arg_sets(tests: &[TestSelector]) -> Vec<Vec<String>> {
+    let mut grouped: BTreeMap<TargetSelector, Vec<String>> = BTreeMap::new();
+    for test in tests {
+        let names = grouped.entry(test.target.clone()).or_default();
+        if !names.contains(&test.name) {
+            names.push(test.name.clone());
+        }
+    }
+
+    grouped
+        .into_iter()
+        .map(|(target, names)| {
+            let mut args = target.nextest_args();
+            args.extend(names);
+            args
+        })
+        .collect()
 }
 
 fn binary_nextest_args(package: &str, name: &str, kind: &str) -> Vec<String> {
@@ -113,11 +188,7 @@ fn binary_nextest_args(package: &str, name: &str, kind: &str) -> Vec<String> {
 }
 
 pub fn manual_test_command(test: &DiscoveredTest) -> String {
-    let mut args = vec![
-        "cargo".to_owned(),
-        "nextest".to_owned(),
-        "run".to_owned(),
-    ];
+    let mut args = vec!["cargo".to_owned(), "nextest".to_owned(), "run".to_owned()];
     args.extend(binary_nextest_args(
         &test.package,
         &test.binary,
@@ -131,13 +202,16 @@ pub fn manual_test_command(test: &DiscoveredTest) -> String {
 }
 
 pub fn manual_run_command(scope: &RunScope) -> String {
-    let mut args = vec![
-        "cargo".to_owned(),
-        "nextest".to_owned(),
-        "run".to_owned(),
-    ];
-    args.extend(scope.nextest_args());
-    shell_command(args)
+    scope
+        .nextest_arg_sets()
+        .into_iter()
+        .map(|scope_args| {
+            let mut args = vec!["cargo".to_owned(), "nextest".to_owned(), "run".to_owned()];
+            args.extend(scope_args);
+            shell_command(args)
+        })
+        .collect::<Vec<_>>()
+        .join(" && ")
 }
 
 fn shell_command(args: Vec<String>) -> String {
@@ -149,9 +223,9 @@ fn shell_command(args: Vec<String>) -> String {
 
 fn shell_quote(arg: &str) -> String {
     if !arg.is_empty()
-        && arg.chars().all(|ch| {
-            ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '=')
-        })
+        && arg
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '='))
     {
         arg.to_owned()
     } else {
@@ -209,8 +283,7 @@ impl NextestClient {
     }
 
     pub fn project_dir(&self) -> Option<PathBuf> {
-        self.manifest_dir()
-            .or_else(|| self.current_dir.clone())
+        self.manifest_dir().or_else(|| self.current_dir.clone())
     }
 
     fn manifest_dir(&self) -> Option<PathBuf> {
@@ -258,7 +331,43 @@ impl NextestClient {
         tx: mpsc::UnboundedSender<RunEvent>,
         mut stop_rx: mpsc::UnboundedReceiver<()>,
     ) -> Result<()> {
-        let mut command = self.run_command(&request);
+        let arg_sets = request.scope.nextest_arg_sets();
+        let total_runs = arg_sets.len();
+        let mut exit_code = Some(0);
+        for (index, scope_args) in arg_sets.into_iter().enumerate() {
+            if total_runs > 1 {
+                let _ = tx.send(RunEvent::RunnerOutput(format!(
+                    "Starting failed test group {}/{}",
+                    index + 1,
+                    total_runs
+                )));
+            }
+
+            match self.run_once(scope_args, &tx, &mut stop_rx).await? {
+                RunProcessOutcome::Finished(status) => {
+                    if !status.success() && exit_code == Some(0) {
+                        exit_code = status.code().or(Some(1));
+                    }
+                }
+                RunProcessOutcome::Stopped => {
+                    let _ = tx.send(RunEvent::RunnerStopped);
+                    return Ok(());
+                }
+            }
+        }
+
+        let _ = tx.send(RunEvent::RunnerFinished { exit_code });
+        Ok(())
+    }
+
+    async fn run_once(
+        &self,
+        scope_args: Vec<String>,
+        tx: &mpsc::UnboundedSender<RunEvent>,
+        stop_rx: &mut mpsc::UnboundedReceiver<()>,
+    ) -> Result<RunProcessOutcome> {
+        let mut command = self.run_command(scope_args);
+        configure_run_command(&mut command);
         let mut child = command
             .kill_on_drop(true)
             .stdin(Stdio::null())
@@ -324,31 +433,34 @@ impl NextestClient {
             stop = stop_rx.recv() => {
                 if stop.is_some() {
                     let _ = tx.send(RunEvent::RunnerOutput("Run stopped by user".to_owned()));
-                    if let Err(error) = child.start_kill() {
+                    if let Err(error) = terminate_child_process_tree(&mut child) {
                         let _ = tx.send(RunEvent::RunnerOutput(format!(
                             "Failed to stop nextest: {error}"
                         )));
                     }
+                    (
+                        wait_for_stopped_child(&mut child, tx)
+                            .await?,
+                        true,
+                    )
+                } else {
+                    (
+                        child
+                            .wait()
+                            .await
+                            .context("waiting for nextest after stop channel closed")?,
+                        false,
+                    )
                 }
-                (
-                    child
-                        .wait()
-                        .await
-                        .context("waiting for stopped nextest")?,
-                    stop.is_some(),
-                )
             }
         };
         stdout_task.await.context("joining stdout task")??;
         stderr_task.await.context("joining stderr task")??;
         if stopped {
-            let _ = tx.send(RunEvent::RunnerStopped);
+            Ok(RunProcessOutcome::Stopped)
         } else {
-            let _ = tx.send(RunEvent::RunnerFinished {
-                exit_code: status.code(),
-            });
+            Ok(RunProcessOutcome::Finished(status))
         }
-        Ok(())
     }
 
     fn list_command(&self) -> Command {
@@ -364,7 +476,7 @@ impl NextestClient {
         command
     }
 
-    fn run_command(&self, request: &RunRequest) -> Command {
+    fn run_command(&self, scope_args: Vec<String>) -> Command {
         let mut command = Command::new("cargo");
         if let Some(path) = &self.current_dir {
             command.current_dir(path);
@@ -389,9 +501,106 @@ impl NextestClient {
             "--no-input-handler",
         ]);
         command.args(&self.passthrough_args);
-        command.args(request.scope.nextest_args());
+        command.args(scope_args);
         command.env("NEXTEST_EXPERIMENTAL_LIBTEST_JSON", "1");
         command
+    }
+}
+
+enum RunProcessOutcome {
+    Finished(ExitStatus),
+    Stopped,
+}
+
+const STOP_GRACE_PERIOD: Duration = Duration::from_secs(2);
+
+#[cfg(unix)]
+fn configure_run_command(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    command.as_std_mut().process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_run_command(_command: &mut Command) {}
+
+async fn wait_for_stopped_child(
+    child: &mut Child,
+    tx: &mpsc::UnboundedSender<RunEvent>,
+) -> Result<ExitStatus> {
+    match time::timeout(STOP_GRACE_PERIOD, child.wait()).await {
+        Ok(status) => status.context("waiting for stopped nextest"),
+        Err(_) => {
+            let _ = tx.send(RunEvent::RunnerOutput(
+                "Run did not stop promptly; forcing termination".to_owned(),
+            ));
+            if let Err(error) = force_kill_child_process_tree(child) {
+                let _ = tx.send(RunEvent::RunnerOutput(format!(
+                    "Failed to force stop nextest: {error}"
+                )));
+            }
+            child
+                .wait()
+                .await
+                .context("waiting for force-stopped nextest")
+        }
+    }
+}
+
+fn terminate_child_process_tree(child: &mut Child) -> io::Result<()> {
+    signal_child_process_tree(child, StopSignal::Terminate)
+}
+
+fn force_kill_child_process_tree(child: &mut Child) -> io::Result<()> {
+    signal_child_process_tree(child, StopSignal::Kill)
+}
+
+enum StopSignal {
+    Terminate,
+    Kill,
+}
+
+#[cfg(unix)]
+fn signal_child_process_tree(child: &mut Child, signal: StopSignal) -> io::Result<()> {
+    let raw_signal = match signal {
+        StopSignal::Terminate => libc::SIGTERM,
+        StopSignal::Kill => libc::SIGKILL,
+    };
+
+    match signal_child_process_group(child, raw_signal) {
+        Ok(()) => Ok(()),
+        Err(group_error) => child.start_kill().map_err(|child_error| {
+            io::Error::new(
+                child_error.kind(),
+                format!(
+                    "process group signal failed: {group_error}; child kill failed: {child_error}"
+                ),
+            )
+        }),
+    }
+}
+
+#[cfg(not(unix))]
+fn signal_child_process_tree(child: &mut Child, _signal: StopSignal) -> io::Result<()> {
+    child.start_kill()
+}
+
+#[cfg(unix)]
+fn signal_child_process_group(child: &Child, signal: libc::c_int) -> io::Result<()> {
+    let Some(pid) = child.id() else {
+        return Ok(());
+    };
+    let process_group = -(pid as libc::pid_t);
+    let result = unsafe { libc::kill(process_group, signal) };
+    if result == 0 {
+        return Ok(());
+    }
+
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
     }
 }
 
