@@ -1,4 +1,4 @@
-# cargo-test-tui
+# nextdeck
 
 Terminal-native Rust test UI built on cargo-nextest.
 
@@ -35,7 +35,7 @@ cargo run -- --theme dark
 cargo run -- --theme light
 ```
 
-Open source/output in an editor with `--editor`, `CARGO_TEST_TUI_EDITOR`, `VISUAL`, or `EDITOR`:
+Open source/output in an editor with `--editor`, `NEXTDECK_EDITOR`, `VISUAL`, or `EDITOR`:
 
 ```sh
 cargo run -- --editor idea
@@ -54,9 +54,15 @@ cargo xtask --help
 Useful local publishing commands:
 
 - `cargo xtask check --allow-dirty`: run format check, tests, and package verification.
-- `cargo xtask package --allow-dirty`: create and verify `target/package-verify/package/cargo-test-tui-*.crate`.
+- `cargo xtask package --allow-dirty`: create and verify `target/package-verify/package/nextdeck-*.crate`.
 - `cargo xtask publish-local --allow-dirty`: package, install from the verified package directory, and verify `PATH` resolves to the installed binary.
 - `cargo xtask install-path`: install directly from the workspace checkout.
+- `cargo xtask release --allow-dirty --skip-sign`: build a local release archive in `target/dist`.
+- `cargo xtask homebrew-formula --github-repo owner/nextdeck --dist-dir target/dist --output Formula/nextdeck.rb`: render a Homebrew formula from release checksums.
+
+Release signing uses `cosign sign-blob` and writes Sigstore bundle files next to each archive/checksum. Pass `--skip-sign` for unsigned local dry runs.
+
+The GitHub release workflow builds Linux and macOS archives, signs them with GitHub OIDC keyless signing, publishes a GitHub release for `v*` tags, and updates a Homebrew tap when the repository variable `HOMEBREW_TAP` and secret `HOMEBREW_TAP_TOKEN` are configured.
 
 Keys:
 

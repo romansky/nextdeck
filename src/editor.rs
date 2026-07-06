@@ -21,7 +21,7 @@ impl EditorConfig {
         let command = cli_editor
             .filter(|value| !value.trim().is_empty())
             .or_else(|| settings_editor.filter(|value| !value.trim().is_empty()))
-            .or_else(|| env_string("CARGO_TEST_TUI_EDITOR"))
+            .or_else(|| env_string("NEXTDECK_EDITOR"))
             .or_else(|| env_string("VISUAL"))
             .or_else(|| env_string("EDITOR"))
             .unwrap_or_else(default_editor_command);
@@ -144,7 +144,7 @@ fn temp_text_path(title: &str) -> PathBuf {
         .map(|duration| duration.as_millis())
         .unwrap_or_default();
     env::temp_dir().join(format!(
-        "cargo-test-tui-{}-{timestamp}.txt",
+        "nextdeck-{}-{timestamp}.txt",
         sanitize_title(title)
     ))
 }
@@ -178,34 +178,4 @@ fn default_editor_command() -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn intellij_args_include_line_flag() {
-        let mut args = Vec::new();
-        append_editor_args("idea", &mut args, "/tmp/test.rs", 42);
-        assert_eq!(args, vec!["--line", "42", "/tmp/test.rs"]);
-    }
-
-    #[test]
-    fn vscode_args_use_goto_format() {
-        let mut args = Vec::new();
-        append_editor_args("code", &mut args, "/tmp/test.rs", 42);
-        assert_eq!(args, vec!["-g", "/tmp/test.rs:42"]);
-    }
-
-    #[test]
-    fn command_splitter_preserves_quoted_arguments() {
-        let (program, args) = editor_command_parts(r#"open -a "IntelliJ IDEA""#);
-        assert_eq!(program, "open");
-        assert_eq!(args, vec!["-a", "IntelliJ IDEA"]);
-    }
-
-    #[test]
-    fn editor_alias_maps_intellij_to_idea_cli() {
-        let (program, args) = editor_command_parts("intellij");
-        assert_eq!(program, "idea");
-        assert!(args.is_empty());
-    }
-}
+mod tests;

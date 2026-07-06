@@ -1,6 +1,8 @@
 use regex::{Regex, RegexBuilder};
 use tui_textarea::{Input as TextAreaInput, Key as TextAreaKey, TextArea};
 
+use crate::symbols::bool_symbol;
+
 #[derive(Clone, Debug, Default)]
 pub struct OutputSearchState {
     pub input_active: bool,
@@ -82,9 +84,9 @@ impl SearchBoxView {
             summary,
             invalid,
             input_actions,
-            on_off(self.filter),
-            on_off(self.regex),
-            on_off(self.case_sensitive)
+            bool_symbol(self.filter),
+            bool_symbol(self.regex),
+            bool_symbol(self.case_sensitive)
         )
     }
 }
@@ -379,10 +381,6 @@ fn fit_search_content(content: &str, width: usize) -> String {
         .collect()
 }
 
-fn on_off(value: bool) -> &'static str {
-    if value { "on" } else { "off" }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OutputMatch {
     pub line: usize,
@@ -454,101 +452,4 @@ fn output_regex(search: &OutputSearchState) -> Result<Option<Regex>, String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn filters_literal_matches_case_insensitively_by_default() {
-        let search = OutputSearchState {
-            query: "panic".to_owned(),
-            filter: true,
-            ..OutputSearchState::default()
-        };
-
-        assert_eq!(search.filtered_text("ok\nPANIC\nfine"), "PANIC");
-    }
-
-    #[test]
-    fn finds_next_and_previous_matches() {
-        let mut search = OutputSearchState {
-            query: "case".to_owned(),
-            ..OutputSearchState::default()
-        };
-
-        let next = search
-            .next_match("case_1\nother\ncase_2", SearchDirection::Next)
-            .expect("valid search")
-            .expect("match");
-        assert_eq!(next.line, 0);
-        assert_eq!(next.index, 0);
-        assert_eq!(next.total, 2);
-
-        search.current_line = Some(next.line);
-        let previous = search
-            .next_match("case_1\nother\ncase_2", SearchDirection::Previous)
-            .expect("valid search")
-            .expect("match");
-        assert_eq!(previous.line, 2);
-    }
-
-    #[test]
-    fn search_box_view_is_fixed_width_and_marks_active_input() {
-        let search = OutputSearchState {
-            draft_query: "panic".to_owned(),
-            input_active: true,
-            ..OutputSearchState::default()
-        };
-
-        assert_eq!(search.box_text(18), "[panic_            ]");
-        assert_eq!(search.box_text(18).len(), 20);
-    }
-
-    #[test]
-    fn search_box_view_truncates_long_query_from_left() {
-        let search = OutputSearchState {
-            query: "abcdefghijklmnopqrstuvwxyz".to_owned(),
-            ..OutputSearchState::default()
-        };
-
-        assert_eq!(search.box_text(18), "[ijklmnopqrstuvwxyz]");
-    }
-
-    #[test]
-    fn search_box_view_marks_invalid_regex() {
-        let search = OutputSearchState {
-            query: "(".to_owned(),
-            regex: true,
-            ..OutputSearchState::default()
-        };
-
-        assert!(search.view("anything").invalid);
-        assert!(search.view("anything").title_fragment().contains("!regex"));
-    }
-
-    #[test]
-    fn match_ranges_find_literal_ranges_case_insensitively() {
-        let search = OutputSearchState {
-            query: "panic".to_owned(),
-            ..OutputSearchState::default()
-        };
-
-        assert_eq!(
-            search.match_ranges("PANIC then panic").expect("ranges"),
-            vec![(0, 5), (11, 16)]
-        );
-    }
-
-    #[test]
-    fn match_ranges_find_regex_ranges() {
-        let search = OutputSearchState {
-            query: r"case_\d+".to_owned(),
-            regex: true,
-            ..OutputSearchState::default()
-        };
-
-        assert_eq!(
-            search.match_ranges("case_01 case_aa case_22").expect("ranges"),
-            vec![(0, 7), (16, 23)]
-        );
-    }
-}
+mod tests;

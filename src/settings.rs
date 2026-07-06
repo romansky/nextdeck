@@ -96,8 +96,4 @@ impl GlobalSettingsState {
         self.open_with_editing = false;
         self.sync_open_with(settings);
     }
-
-    pub fn clear_open_with_draft(&mut self) {
-        self.open_with.clear();
-    }
 }

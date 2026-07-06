@@ -8,6 +8,26 @@ pub struct TestOutput {
 }
 
 impl TestOutput {
+    pub fn captured_text(&self) -> String {
+        let mut text = String::new();
+        if !self.stdout.is_empty() {
+            text.push_str(&self.stdout);
+            text.push('\n');
+        }
+        if !self.stderr.is_empty() {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&self.stderr);
+            text.push('\n');
+        }
+        if text.trim().is_empty() {
+            "No output captured".to_owned()
+        } else {
+            text
+        }
+    }
+
     pub fn display_text(&self) -> String {
         let mut text = String::new();
         if let Some(duration) = self.duration {
@@ -33,3 +53,6 @@ impl TestOutput {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -15,6 +15,7 @@ mod settings;
 mod source;
 mod runner;
 mod state;
+mod symbols;
 mod terminal;
 mod theme;
 mod tree;
@@ -64,7 +65,7 @@ struct Cli {
     #[arg(
         long = "open-with",
         alias = "editor",
-        help = "Command for opening sources/output. Also reads CARGO_TEST_TUI_EDITOR, VISUAL, EDITOR"
+        help = "Command for opening sources/output. Also reads NEXTDECK_EDITOR, VISUAL, EDITOR"
     )]
     open_with: Option<String>,
 

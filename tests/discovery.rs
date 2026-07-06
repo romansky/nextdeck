@@ -5,14 +5,14 @@ use serde_json::Value;
 #[test]
 fn list_json_discovers_fixture_workspace() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample-workspace");
-    let output = Command::new(env!("CARGO_BIN_EXE_cargo-test-tui"))
+    let output = Command::new(env!("CARGO_BIN_EXE_nextdeck"))
         .args([
             "--current-dir",
             fixture.to_str().expect("fixture path"),
             "--list-json",
         ])
         .output()
-        .expect("ran cargo-test-tui");
+        .expect("ran nextdeck");
 
     assert!(
         output.status.success(),

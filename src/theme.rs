@@ -1,11 +1,15 @@
 use ratatui::{
     style::{Color, Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Borders},
 };
 use terminal_colorsaurus::{QueryOptions, ThemeMode as TerminalThemeMode};
 
-use crate::{config::ThemePreference, tree::TestStatus};
+use crate::{
+    config::ThemePreference,
+    symbols::{DISABLED, ENABLED},
+    tree::TestStatus,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ThemeMode {
@@ -99,7 +103,7 @@ impl Theme {
         focused: bool,
     ) -> Block<'a> {
         let block = Block::default()
-            .title(Line::styled(format!(" {status} "), self.title(focused)))
+            .title(self.panel_title(status, focused))
             .borders(Borders::ALL)
             .border_style(self.border(focused));
         if let Some(actions) = actions {
@@ -139,6 +143,32 @@ impl Theme {
 
     fn panel_actions(&self, focused: bool) -> Style {
         self.title(focused)
+    }
+
+    fn panel_title<'a>(&self, status: &str, focused: bool) -> Line<'a> {
+        let title_style = self.title(focused);
+        let mut spans = vec![Span::styled(" ".to_owned(), title_style)];
+        let mut normal = String::new();
+        for char in status.chars() {
+            let style = match char {
+                ENABLED => Some(self.success().add_modifier(Modifier::BOLD)),
+                DISABLED => Some(self.danger().add_modifier(Modifier::BOLD)),
+                _ => None,
+            };
+            let Some(style) = style else {
+                normal.push(char);
+                continue;
+            };
+            if !normal.is_empty() {
+                spans.push(Span::styled(std::mem::take(&mut normal), title_style));
+            }
+            spans.push(Span::styled(char.to_string(), style));
+        }
+        if !normal.is_empty() {
+            spans.push(Span::styled(normal, title_style));
+        }
+        spans.push(Span::styled(" ".to_owned(), title_style));
+        Line::from(spans)
     }
 
     pub fn text(&self) -> Style {
@@ -244,33 +274,4 @@ impl Default for Theme {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn forced_modes_select_expected_palettes() {
-        assert_eq!(Theme::resolve(ThemeMode::Dark, false).text, Color::Gray);
-        assert_eq!(Theme::resolve(ThemeMode::Light, false).text, Color::Black);
-    }
-
-    #[test]
-    fn color_blind_mode_changes_status_colors() {
-        let theme = Theme::resolve(ThemeMode::Dark, true);
-
-        assert_eq!(theme.success, Color::Cyan);
-        assert_eq!(theme.danger, Color::Magenta);
-    }
-
-    #[test]
-    fn light_palette_uses_terminal_background_for_footer() {
-        assert_eq!(Theme::light().footer_bg, Color::Reset);
-    }
-
-    #[test]
-    fn panel_actions_follow_panel_focus_style() {
-        let theme = Theme::dark();
-
-        assert_eq!(theme.panel_actions(true), theme.title(true));
-        assert_eq!(theme.panel_actions(false), theme.title(false));
-    }
-}
+mod tests;

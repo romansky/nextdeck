@@ -41,7 +41,6 @@ pub enum AppCommand {
     SettingsOpenWithEdit(InputFieldInput),
     CommitOpenWithSetting,
     CancelOpenWithSetting,
-    ClearOpenWithSetting,
     RefreshDiskUsage,
     OpenDiskCleanup,
     CloseDiskCleanup,
@@ -399,7 +398,6 @@ impl AppCommand {
             | Self::SettingsOpenWithEdit(_)
             | Self::CommitOpenWithSetting
             | Self::CancelOpenWithSetting
-            | Self::ClearOpenWithSetting
             | Self::CloseDiskCleanup
             | Self::RunCargoClean
             | Self::ApplyOutputSearch
@@ -445,7 +443,6 @@ impl AppCommand {
             Self::SettingsOpenWithEdit(_) => Some("settings input"),
             Self::CommitOpenWithSetting => Some("settings save"),
             Self::CancelOpenWithSetting => Some("settings cancel"),
-            Self::ClearOpenWithSetting => Some("settings clear"),
             Self::RunCargoClean => Some("cargo clean"),
             Self::ReportStatus(_) => Some("status"),
             _ => self.info().map(|info| info.ticker),
@@ -476,62 +473,6 @@ impl CommandContext {
     pub const fn normal(focus: CommandFocus) -> Self {
         Self {
             input: InputMode::Normal(focus),
-            overlay: None,
-        }
-    }
-
-    #[cfg(test)]
-    pub const fn help() -> Self {
-        Self {
-            input: InputMode::Help,
-            overlay: Some(OverlayMode::Help),
-        }
-    }
-
-    #[cfg(test)]
-    pub const fn discovery_running() -> Self {
-        Self {
-            input: InputMode::DiscoveryRunning,
-            overlay: Some(OverlayMode::Discovery),
-        }
-    }
-
-    #[cfg(test)]
-    pub const fn settings_modal() -> Self {
-        Self {
-            input: InputMode::SettingsModal,
-            overlay: Some(OverlayMode::Settings),
-        }
-    }
-
-    #[cfg(test)]
-    pub const fn settings_open_with_input() -> Self {
-        Self {
-            input: InputMode::SettingsOpenWith,
-            overlay: Some(OverlayMode::Settings),
-        }
-    }
-
-    #[cfg(test)]
-    pub const fn disk_cleanup_modal() -> Self {
-        Self {
-            input: InputMode::DiskCleanupModal,
-            overlay: Some(OverlayMode::DiskCleanup),
-        }
-    }
-
-    #[cfg(test)]
-    pub const fn output_search_modal() -> Self {
-        Self {
-            input: InputMode::OutputSearchModal,
-            overlay: Some(OverlayMode::OutputSearch),
-        }
-    }
-
-    #[cfg(test)]
-    pub const fn output_search_inline() -> Self {
-        Self {
-            input: InputMode::OutputSearchInline,
             overlay: None,
         }
     }
@@ -627,7 +568,7 @@ fn is_advanced_search_modifier(modifiers: KeyModifiers) -> bool {
 
 fn command_for_discovery_running(code: KeyCode) -> AppCommand {
     match code {
-        KeyCode::Char('q') | KeyCode::Esc => AppCommand::Quit,
+        KeyCode::Char('q') => AppCommand::Quit,
         _ => AppCommand::Noop,
     }
 }
@@ -636,9 +577,6 @@ fn command_for_settings_open_with_input(code: KeyCode, modifiers: KeyModifiers) 
     match code {
         KeyCode::Esc => AppCommand::CancelOpenWithSetting,
         KeyCode::Enter => AppCommand::CommitOpenWithSetting,
-        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-            AppCommand::ClearOpenWithSetting
-        }
         _ => input_field_input_for_key(code, modifiers)
             .map(AppCommand::SettingsOpenWithEdit)
             .unwrap_or(AppCommand::Noop),
@@ -647,21 +585,20 @@ fn command_for_settings_open_with_input(code: KeyCode, modifiers: KeyModifiers) 
 
 fn command_for_settings_modal(code: KeyCode) -> AppCommand {
     match code {
-        KeyCode::Esc | KeyCode::Char('q') => AppCommand::CloseSettings,
+        KeyCode::Esc => AppCommand::CloseSettings,
         KeyCode::Up | KeyCode::BackTab => AppCommand::SettingsPrevious,
         KeyCode::Down | KeyCode::Tab => AppCommand::SettingsNext,
         KeyCode::Left => AppCommand::SettingsAdjustLeft,
         KeyCode::Right => AppCommand::SettingsAdjustRight,
         KeyCode::Enter => AppCommand::SettingsActivate,
         KeyCode::Char('e') => AppCommand::SettingsActivate,
-        KeyCode::Char('x') => AppCommand::ClearOpenWithSetting,
         _ => AppCommand::Noop,
     }
 }
 
 fn command_for_disk_cleanup_modal(code: KeyCode) -> AppCommand {
     match code {
-        KeyCode::Esc | KeyCode::Char('q') => AppCommand::CloseDiskCleanup,
+        KeyCode::Esc => AppCommand::CloseDiskCleanup,
         KeyCode::Char('c') => AppCommand::RunCargoClean,
         KeyCode::Char('r') | KeyCode::Char('d') => AppCommand::RefreshDiskUsage,
         _ => AppCommand::Noop,
@@ -817,474 +754,4 @@ fn is_question_mark(code: KeyCode, modifiers: KeyModifiers) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crossterm::event::KeyEvent;
-
-    #[test]
-    fn maps_normalized_question_mark_to_help() {
-        assert_eq!(
-            command_for_key(
-                KeyCode::Char('?'),
-                KeyModifiers::NONE,
-                CommandFocus::Tests
-            ),
-            AppCommand::ToggleHelp
-        );
-        assert_eq!(
-            command_for_key(
-                KeyCode::Char('?'),
-                KeyModifiers::SHIFT,
-                CommandFocus::Tests
-            ),
-            AppCommand::ToggleHelp
-        );
-        assert_eq!(
-            command_for_key(
-                KeyCode::Char('/'),
-                KeyModifiers::SHIFT,
-                CommandFocus::Tests
-            ),
-            AppCommand::ToggleHelp
-        );
-    }
-
-    #[test]
-    fn maps_fallback_help_keys() {
-        assert_eq!(
-            command_for_key(KeyCode::Char('h'), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::ToggleHelp
-        );
-        assert_eq!(
-            command_for_key(KeyCode::F(1), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::ToggleHelp
-        );
-    }
-
-    #[test]
-    fn plain_slash_searches_output_only_when_output_is_focused() {
-        assert_eq!(
-            command_for_key(KeyCode::Char('/'), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::Noop
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('/'), KeyModifiers::NONE, CommandFocus::Output),
-            AppCommand::StartOutputSearch
-        );
-    }
-
-    #[test]
-    fn maps_ctrl_c_to_stop_run() {
-        assert_eq!(
-            command_for_key(KeyCode::Char('c'), KeyModifiers::CONTROL, CommandFocus::Tests),
-            AppCommand::StopRun
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('c'), KeyModifiers::CONTROL, CommandFocus::Output),
-            AppCommand::StopRun
-        );
-    }
-
-    #[test]
-    fn ctrl_c_stops_run_in_search_and_help_contexts() {
-        let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
-            KeyCode::Char('c'),
-            KeyModifiers::CONTROL,
-        )));
-
-        assert_eq!(
-            command_for_input(
-                &event,
-                CommandContext::output_search_inline()
-            ),
-            AppCommand::StopRun
-        );
-        assert_eq!(
-            command_for_input(&event, CommandContext::help()),
-            AppCommand::StopRun
-        );
-    }
-
-    #[test]
-    fn maps_refresh_and_view_filter_keys() {
-        assert_eq!(
-            command_for_key(KeyCode::Char('u'), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::RefreshTests
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('u'), KeyModifiers::NONE, CommandFocus::Output),
-            AppCommand::RefreshTests
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('p'), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::ToggleShowSuccess
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('f'), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::ToggleShowFailed
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('i'), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::ToggleShowIgnored
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('s'), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::ToggleShowSkipped
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('j'), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::SelectNextFailed
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('J'), KeyModifiers::SHIFT, CommandFocus::Tests),
-            AppCommand::SelectPreviousFailed
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('o'), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::OpenSource
-        );
-    }
-
-    #[test]
-    fn maps_disk_usage_keys_across_focus_modes() {
-        assert_eq!(
-            command_for_key(KeyCode::Char('d'), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::RefreshDiskUsage
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('D'), KeyModifiers::SHIFT, CommandFocus::Output),
-            AppCommand::OpenDiskCleanup
-        );
-    }
-
-    #[test]
-    fn maps_global_settings_key_across_focus_modes() {
-        assert_eq!(
-            command_for_key(KeyCode::Char(','), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::OpenSettings
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char(','), KeyModifiers::NONE, CommandFocus::Output),
-            AppCommand::OpenSettings
-        );
-    }
-
-    #[test]
-    fn settings_modal_uses_settings_commands() {
-        let context = CommandContext::settings_modal();
-        let next =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
-        assert_eq!(command_for_input(&next, context), AppCommand::SettingsNext);
-
-        let edit =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        assert_eq!(
-            command_for_input(&edit, context),
-            AppCommand::SettingsActivate
-        );
-
-        let close =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-        assert_eq!(
-            command_for_input(&close, context),
-            AppCommand::CloseSettings
-        );
-    }
-
-    #[test]
-    fn settings_open_with_input_accepts_text_and_commit() {
-        let context = CommandContext::settings_open_with_input();
-        let char =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)));
-        assert_eq!(
-            command_for_input(&char, context),
-            AppCommand::SettingsOpenWithEdit(InputFieldInput::char('i'))
-        );
-
-        let enter =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        assert_eq!(
-            command_for_input(&enter, context),
-            AppCommand::CommitOpenWithSetting
-        );
-    }
-
-    #[test]
-    fn settings_open_with_input_ignores_modified_navigation() {
-        let context = CommandContext::settings_open_with_input();
-        let ctrl_left =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)));
-        let super_v =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::SUPER)));
-
-        assert_eq!(command_for_input(&ctrl_left, context), AppCommand::Noop);
-        assert_eq!(command_for_input(&super_v, context), AppCommand::Noop);
-    }
-
-    #[test]
-    fn discovery_running_blocks_normal_tui_commands() {
-        let context = CommandContext::discovery_running();
-        let down =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
-        assert_eq!(command_for_input(&down, context), AppCommand::Noop);
-
-        let quit =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)));
-        assert_eq!(command_for_input(&quit, context), AppCommand::Quit);
-    }
-
-    #[test]
-    fn disk_cleanup_modal_uses_cleanup_commands() {
-        let context = CommandContext::disk_cleanup_modal();
-        let clean =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)));
-        assert_eq!(command_for_input(&clean, context), AppCommand::RunCargoClean);
-
-        let refresh =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)));
-        assert_eq!(
-            command_for_input(&refresh, context),
-            AppCommand::RefreshDiskUsage
-        );
-
-        let close =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-        assert_eq!(
-            command_for_input(&close, context),
-            AppCommand::CloseDiskCleanup
-        );
-    }
-
-    #[test]
-    fn maps_tests_pane_resize_keys() {
-        assert_eq!(
-            command_for_key(KeyCode::Left, KeyModifiers::SHIFT, CommandFocus::Tests),
-            AppCommand::NarrowTestsPane
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Right, KeyModifiers::SHIFT, CommandFocus::Tests),
-            AppCommand::WidenTestsPane
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('['), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::NarrowTestsPane
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char(']'), KeyModifiers::NONE, CommandFocus::Tests),
-            AppCommand::WidenTestsPane
-        );
-    }
-
-    #[test]
-    fn output_focus_uses_output_search_commands() {
-        assert_eq!(
-            command_for_key(KeyCode::Char('f'), KeyModifiers::NONE, CommandFocus::Output),
-            AppCommand::ToggleOutputFilter
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('r'), KeyModifiers::NONE, CommandFocus::Output),
-            AppCommand::ToggleOutputRegex
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('c'), KeyModifiers::NONE, CommandFocus::Output),
-            AppCommand::ToggleOutputCaseSensitive
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('n'), KeyModifiers::NONE, CommandFocus::Output),
-            AppCommand::FindNextOutputMatch
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('N'), KeyModifiers::SHIFT, CommandFocus::Output),
-            AppCommand::FindPreviousOutputMatch
-        );
-        assert_eq!(
-            command_for_key(KeyCode::Char('o'), KeyModifiers::NONE, CommandFocus::Output),
-            AppCommand::OpenOutput
-        );
-    }
-
-    #[test]
-    fn command_metadata_drives_ticker_labels() {
-        assert_eq!(AppCommand::RunSelected.ticker_label(), Some("run"));
-        assert_eq!(
-            AppCommand::ToggleOutputRegex.ticker_label(),
-            Some("regex")
-        );
-        assert_eq!(AppCommand::CloseHelp.ticker_label(), Some("close help"));
-    }
-
-    #[test]
-    fn command_metadata_contains_help_entries() {
-        assert!(command_infos().iter().any(|info| {
-            info.group == CommandGroup::Navigation
-                && info.keys == "Tab"
-                && info.label == "switch tree/output focus"
-        }));
-        assert!(command_infos().iter().any(|info| {
-            info.group == CommandGroup::Global
-                && info.keys == "h/?/F1"
-                && info.label == "open or close help"
-        }));
-        assert!(command_infos().iter().any(|info| {
-            info.group == CommandGroup::Runs
-                && info.keys == "r"
-                && info.label == "run selected scope"
-        }));
-        assert!(command_infos().iter().any(|info| {
-            info.group == CommandGroup::Global
-                && info.keys == "Ctrl+C"
-                && info.label == "stop running tests"
-        }));
-        assert!(command_infos().iter().any(|info| {
-            info.group == CommandGroup::Output && info.keys == "/" && info.label == "search output"
-        }));
-        assert!(command_infos().iter().any(|info| {
-            info.group == CommandGroup::View
-                && info.keys == "f"
-                && info.label == "toggle failed tests"
-        }));
-    }
-
-    #[test]
-    fn output_search_input_accepts_text_and_controls() {
-        let context = CommandContext::output_search_inline();
-        let text = InputEvent::Terminal(Event::Key(KeyEvent::new(
-            KeyCode::Char('p'),
-            KeyModifiers::NONE,
-        )));
-        assert_eq!(
-            command_for_input(&text, context),
-            AppCommand::OutputSearchEdit(SearchEditorInput::char('p'))
-        );
-
-        let backspace =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
-        assert_eq!(
-            command_for_input(&backspace, context),
-            AppCommand::OutputSearchEdit(SearchEditorInput::new(
-                SearchEditorKey::Backspace,
-                false,
-                false,
-                false,
-            ))
-        );
-
-        let left =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)));
-        assert_eq!(
-            command_for_input(&left, context),
-            AppCommand::OutputSearchEdit(SearchEditorInput::new(
-                SearchEditorKey::Left,
-                false,
-                false,
-                false,
-            ))
-        );
-
-        let clear = InputEvent::Terminal(Event::Key(KeyEvent::new(
-            KeyCode::Char('u'),
-            KeyModifiers::CONTROL,
-        )));
-        assert_eq!(
-            command_for_input(&clear, context),
-            AppCommand::ClearOutputSearch
-        );
-
-        let enter =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        assert_eq!(
-            command_for_input(&enter, context),
-            AppCommand::ApplyOutputSearch
-        );
-
-        let advanced = InputEvent::Terminal(Event::Key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::CONTROL,
-        )));
-        assert_eq!(
-            command_for_input(&advanced, context),
-            AppCommand::OpenOutputSearchModal
-        );
-
-        let mac_advanced = InputEvent::Terminal(Event::Key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::SUPER,
-        )));
-        assert_eq!(
-            command_for_input(&mac_advanced, context),
-            AppCommand::OpenOutputSearchModal
-        );
-    }
-
-    #[test]
-    fn output_search_modal_accepts_navigation_and_apply_keys() {
-        let context = CommandContext::output_search_modal();
-
-        let tab = InputEvent::Terminal(Event::Key(KeyEvent::new(
-            KeyCode::Tab,
-            KeyModifiers::NONE,
-        )));
-        assert_eq!(
-            command_for_input(&tab, context),
-            AppCommand::SearchModalNextControl
-        );
-
-        let enter =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        assert_eq!(
-            command_for_input(&enter, context),
-            AppCommand::SearchModalActivate
-        );
-
-        let apply = InputEvent::Terminal(Event::Key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::CONTROL,
-        )));
-        assert_eq!(
-            command_for_input(&apply, context),
-            AppCommand::ApplyOutputSearch
-        );
-    }
-
-    #[test]
-    fn help_context_only_closes_on_close_keys() {
-        let context = CommandContext::help();
-        let event =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
-        assert_eq!(command_for_input(&event, context), AppCommand::Noop);
-
-        let event =
-            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-        assert_eq!(command_for_input(&event, context), AppCommand::CloseHelp);
-    }
-
-    #[test]
-    fn ignores_non_press_key_events() {
-        let repeat = InputEvent::Terminal(Event::Key(KeyEvent::new(
-            KeyCode::Char('h'),
-            KeyModifiers::NONE,
-        )));
-        let mut repeat = match repeat {
-            InputEvent::Terminal(Event::Key(key)) => key,
-            _ => unreachable!(),
-        };
-        repeat.kind = KeyEventKind::Repeat;
-
-        assert_eq!(
-            command_for_input(
-                &InputEvent::Terminal(Event::Key(repeat)),
-                CommandContext::default()
-            ),
-            AppCommand::Noop
-        );
-    }
-
-    #[test]
-    fn resize_is_a_command() {
-        let event = InputEvent::Terminal(Event::Resize(80, 24));
-        assert_eq!(
-            command_for_input(&event, CommandContext::default()),
-            AppCommand::Resize
-        );
-    }
-}
+mod tests;

@@ -61,20 +61,13 @@ impl DiskUsageSnapshot {
     }
 
     pub fn summary_label(&self) -> String {
-        let total = format_bytes(self.total_bytes());
         let target = self
             .entries
             .iter()
             .find(|entry| entry.label == "target")
             .map(|entry| format_bytes(entry.bytes))
             .unwrap_or_else(|| "-".to_owned());
-        let cargo = self
-            .entries
-            .iter()
-            .filter(|entry| entry.label.starts_with("cargo "))
-            .map(|entry| entry.bytes)
-            .sum::<u64>();
-        format!("total {total}, target {target}, cargo {}", format_bytes(cargo))
+        format!("target {target}")
     }
 }
 
@@ -183,18 +176,7 @@ fn disk_roots(cwd: Option<PathBuf>) -> Result<Vec<(&'static str, PathBuf)>, Stri
     let workspace = cwd
         .or_else(|| env::current_dir().ok())
         .ok_or_else(|| "could not determine current directory".to_owned())?;
-    let mut roots = vec![("target", workspace.join("target"))];
-    if let Some(cargo_home) = cargo_home() {
-        roots.push(("cargo registry", cargo_home.join("registry")));
-        roots.push(("cargo git", cargo_home.join("git")));
-    }
-    Ok(roots)
-}
-
-fn cargo_home() -> Option<PathBuf> {
-    env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
+    Ok(vec![("target", workspace.join("target"))])
 }
 
 fn dir_size(path: &Path) -> io::Result<u64> {
@@ -285,96 +267,4 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, u64, u64) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn formats_bytes_with_binary_units() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(512), "512 B");
-        assert_eq!(format_bytes(1536), "1.5 KiB");
-        assert_eq!(format_bytes(3 * 1024 * 1024), "3.0 MiB");
-    }
-
-    #[test]
-    fn formats_timestamps_as_utc() {
-        assert_eq!(
-            format_timestamp_utc(UNIX_EPOCH + std::time::Duration::from_secs(86_400)),
-            "1970-01-02 00:00:00 UTC"
-        );
-    }
-
-    #[test]
-    fn summarizes_total_target_and_cargo() {
-        let snapshot = DiskUsageSnapshot {
-            entries: vec![
-                DiskUsageEntry {
-                    label: "target",
-                    path: PathBuf::from("target"),
-                    bytes: 1024,
-                },
-                DiskUsageEntry {
-                    label: "cargo registry",
-                    path: PathBuf::from("registry"),
-                    bytes: 2048,
-                },
-                DiskUsageEntry {
-                    label: "cargo git",
-                    path: PathBuf::from("git"),
-                    bytes: 1024,
-                },
-            ],
-            available_bytes: Some(4096),
-            updated_at: UNIX_EPOCH,
-        };
-
-        assert_eq!(
-            snapshot.summary_label(),
-            "total 4.0 KiB, target 1.0 KiB, cargo 3.0 KiB"
-        );
-    }
-
-    #[test]
-    fn reports_storage_health_from_available_space() {
-        let state = DiskUsageState {
-            snapshot: Some(DiskUsageSnapshot {
-                entries: Vec::new(),
-                available_bytes: Some(11 * 1024 * 1024 * 1024),
-                updated_at: UNIX_EPOCH,
-            }),
-            ..DiskUsageState::default()
-        };
-        assert_eq!(state.health(10 * 1024 * 1024 * 1024), StorageHealth::Healthy);
-
-        let state = DiskUsageState {
-            snapshot: Some(DiskUsageSnapshot {
-                entries: Vec::new(),
-                available_bytes: Some(9 * 1024 * 1024 * 1024),
-                updated_at: UNIX_EPOCH,
-            }),
-            ..DiskUsageState::default()
-        };
-        assert_eq!(state.health(10 * 1024 * 1024 * 1024), StorageHealth::Low);
-    }
-
-    #[test]
-    fn reports_storage_health_for_transient_states() {
-        assert_eq!(
-            DiskUsageState {
-                loading: true,
-                ..DiskUsageState::default()
-            }
-            .health(10),
-            StorageHealth::Scanning
-        );
-        assert_eq!(
-            DiskUsageState {
-                error: Some("boom".to_owned()),
-                ..DiskUsageState::default()
-            }
-            .health(10),
-            StorageHealth::Failed
-        );
-        assert_eq!(DiskUsageState::default().health(10), StorageHealth::NotScanned);
-    }
-}
+mod tests;
