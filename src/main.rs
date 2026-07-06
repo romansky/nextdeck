@@ -5,6 +5,7 @@ mod disk_usage;
 mod editor;
 mod git_status;
 mod input;
+mod input_field;
 mod nextest;
 mod output;
 mod output_pane;

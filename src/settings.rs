@@ -1,6 +1,7 @@
 use crate::{
     config::AppSettings,
-    output_pane::{SearchEditor, SearchEditorInput},
+    input_field::InputField,
+    output_pane::SearchEditorInput,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -9,7 +10,7 @@ pub struct GlobalSettingsState {
     pub selected: SettingsField,
     pub editor_editing: bool,
     pub editor_draft: String,
-    pub editor: SearchEditor,
+    pub editor: InputField,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -24,7 +25,7 @@ pub enum SettingsField {
 impl SettingsField {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Editor => "editor",
+            Self::Editor => "open with",
             Self::TreeWidth => "tests width",
             Self::Theme => "theme",
             Self::ColorBlindMode => "color-blind",

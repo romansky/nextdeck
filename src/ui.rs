@@ -367,16 +367,11 @@ fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         settings_line(app, SettingsField::TreeWidth, theme),
         settings_line(app, SettingsField::Theme, theme),
         settings_line(app, SettingsField::ColorBlindMode, theme),
-        Line::from(""),
-        Line::styled(
-            "Editor examples: idea, code, cursor, zed, open -a \"IntelliJ IDEA\"",
-            theme.muted(),
-        ),
     ];
     let actions = if settings.editor_editing {
         "actions: [enter]save [esc]cancel [C-u]clear"
     } else {
-        "actions: [up/down]select [left/right]change [enter]edit/apply [x]clear-editor [q]close"
+        "actions: [up/down]select [left/right]change [enter]edit/apply [x]clear-open-with [q]close"
     };
     let paragraph = Paragraph::new(lines)
         .alignment(Alignment::Left)
@@ -405,8 +400,7 @@ fn settings_line(app: &App, field: SettingsField, theme: &Theme) -> Line<'static
 fn settings_value(app: &App, field: SettingsField) -> String {
     match field {
         SettingsField::Editor if app.global_settings.editor_editing => {
-            let text = format!("{}_", app.global_settings.editor_draft);
-            format!("[{}]", fit_line_content(&text, 42))
+            format!("[{}]", app.global_settings.editor.view(42, true))
         }
         SettingsField::Editor => format!("[{}]", fit_line_content(app.settings.editor_label(), 42)),
         SettingsField::TreeWidth => format!("{}%", app.settings.tree_width_percent),

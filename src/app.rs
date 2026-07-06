@@ -334,7 +334,7 @@ impl App {
 
     fn begin_edit_editor_setting(&mut self) {
         self.global_settings.begin_editor_edit(&self.settings);
-        self.status = "Editing editor command".to_owned();
+        self.status = "Editing open-with command".to_owned();
     }
 
     fn edit_editor_setting(&mut self, input: SearchEditorInput) {
@@ -346,13 +346,13 @@ impl App {
         self.settings.editor_command = Some(self.global_settings.editor_draft.clone());
         self.settings = self.settings.clone().normalized();
         self.sync_settings_editor();
-        self.status = format!("Editor: {}", self.settings.editor_label());
+        self.status = format!("Open with: {}", self.settings.editor_label());
         self.save_settings_effect()
     }
 
     fn cancel_editor_setting(&mut self) {
         self.global_settings.cancel_editor_edit(&self.settings);
-        self.status = "Editor edit canceled".to_owned();
+        self.status = "Open-with edit canceled".to_owned();
     }
 
     fn clear_editor_setting(&mut self) -> AppEffect {
@@ -363,7 +363,7 @@ impl App {
         }
         self.settings.editor_command = None;
         self.sync_settings_editor();
-        self.status = "Editor: env/default".to_owned();
+        self.status = "Open with: env/default".to_owned();
         self.save_settings_effect()
     }
 
@@ -388,7 +388,7 @@ impl App {
         };
         self.settings.editor_command = PRESETS[next].map(ToOwned::to_owned);
         self.sync_settings_editor();
-        self.status = format!("Editor: {}", self.settings.editor_label());
+        self.status = format!("Open with: {}", self.settings.editor_label());
         self.save_settings_effect()
     }
 
@@ -1520,6 +1520,25 @@ mod tests {
         let effect = app.apply_command(AppCommand::CommitEditorSetting);
 
         assert_eq!(app.settings.editor_command.as_deref(), Some("id"));
+        assert_eq!(effect, AppEffect::SaveSettings(app.settings.clone()));
+    }
+
+    #[test]
+    fn settings_modal_appends_to_existing_editor_command() {
+        let mut app = App::with_settings(
+            Tree::from_tests(test_rows(1)),
+            AppSettings {
+                editor_command: Some("idea".to_owned()),
+                ..AppSettings::default()
+            },
+        );
+        app.apply_command(AppCommand::OpenSettings);
+        app.apply_command(AppCommand::SettingsActivate);
+        app.apply_command(AppCommand::SettingsEditorEdit(SearchEditorInput::char('X')));
+
+        let effect = app.apply_command(AppCommand::CommitEditorSetting);
+
+        assert_eq!(app.settings.editor_command.as_deref(), Some("ideaX"));
         assert_eq!(effect, AppEffect::SaveSettings(app.settings.clone()));
     }
 
