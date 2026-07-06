@@ -210,7 +210,7 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
             area,
             ModalChrome {
                 title: "Discovery",
-                actions: Some("actions: [q]quit"),
+                actions: Some("[q]quit"),
             },
             lines,
         );
@@ -225,7 +225,7 @@ fn draw_test_details_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         area,
         ModalChrome {
             title: "Test Details",
-            actions: Some("actions: [esc]close"),
+            actions: Some("[esc]close"),
         },
         test_details_modal_lines(app, theme),
     );
@@ -287,7 +287,7 @@ fn draw_output_search_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         area,
         ModalChrome {
             title: "Output Search",
-            actions: Some("actions: [tab]focus [enter]activate [C+enter]apply [esc]cancel"),
+            actions: Some("[tab]focus [enter]activate [C+enter]apply [esc]cancel"),
         },
     );
     let chunks = Layout::default()
@@ -444,9 +444,9 @@ fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         settings_line(app, SettingsField::ColorBlindMode, theme),
     ];
     let actions = if settings.open_with_editing {
-        "actions: [enter]save [esc]cancel"
+        "[enter]save [esc]cancel"
     } else {
-        "actions: [up/down]select [left/right]change [enter]edit/apply [esc]close"
+        "[up/down]select [left/right]change [enter]edit/apply [esc]close"
     };
     let inner = draw_modal_shell(
         frame,
@@ -1085,23 +1085,23 @@ fn draw_output_panel(
 }
 
 fn tests_actions() -> &'static str {
-    "actions: [enter]details [r]un [R]failed [o]pen-editor [u]update"
+    "[enter]details [r]un [R]failed [o]pen-editor [u]update"
 }
 
 fn info_actions() -> &'static str {
-    "actions: [d]disk-refresh [D]cleanup"
+    "[d]disk-refresh [D]cleanup"
 }
 
 fn disk_cleanup_actions() -> &'static str {
-    "actions: [c]cargo-clean [r]refresh [esc]close"
+    "[c]cargo-clean [r]refresh [esc]close"
 }
 
 fn output_actions() -> &'static str {
-    "actions: [/]search [n]ext [N]prev [o]pen-editor"
+    "[/]search [n]ext [N]prev [o]pen-editor"
 }
 
 fn discovery_error_actions() -> &'static str {
-    "actions: [u]retry [/]search [n]ext [N]prev [o]pen-editor [q]quit"
+    "[u]retry [/]search [n]ext [N]prev [o]pen-editor [q]quit"
 }
 
 fn info_status(_app: &App) -> String {
@@ -1282,7 +1282,7 @@ fn draw_help(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         area,
         ModalChrome {
             title: "Help",
-            actions: Some("actions: [h/?/F1]close [esc]close [q]close"),
+            actions: Some("[h/?/F1]close [esc]close [q]close"),
         },
     );
     let help = Paragraph::new(text)

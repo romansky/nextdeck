@@ -175,20 +175,17 @@ fn footer_includes_run_and_storage_status_before_key() {
 fn panel_actions_describe_local_commands() {
     assert_eq!(
         tests_actions(),
-        "actions: [enter]details [r]un [R]failed [o]pen-editor [u]update"
+        "[enter]details [r]un [R]failed [o]pen-editor [u]update"
     );
-    assert_eq!(info_actions(), "actions: [d]disk-refresh [D]cleanup");
+    assert_eq!(info_actions(), "[d]disk-refresh [D]cleanup");
     assert_eq!(
         disk_cleanup_actions(),
-        "actions: [c]cargo-clean [r]refresh [esc]close"
+        "[c]cargo-clean [r]refresh [esc]close"
     );
-    assert_eq!(
-        output_actions(),
-        "actions: [/]search [n]ext [N]prev [o]pen-editor"
-    );
+    assert_eq!(output_actions(), "[/]search [n]ext [N]prev [o]pen-editor");
     assert_eq!(
         discovery_error_actions(),
-        "actions: [u]retry [/]search [n]ext [N]prev [o]pen-editor [q]quit"
+        "[u]retry [/]search [n]ext [N]prev [o]pen-editor [q]quit"
     );
 }
 
