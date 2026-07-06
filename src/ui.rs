@@ -115,11 +115,16 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
 }
 
 fn pane_focused(app: &App, pane: FocusPane) -> bool {
-    app.focus == pane && !pane_focus_suppressed(app)
+    app.focus == pane && !modal_visible(app)
 }
 
-fn pane_focus_suppressed(app: &App) -> bool {
-    app.command_context().mode.suppresses_pane_focus()
+fn modal_visible(app: &App) -> bool {
+    app.show_help
+        || app.output_search.modal_open
+        || app.disk_cleanup.modal_open
+        || app.global_settings.modal_open
+        || app.is_discovering()
+        || app.discovery.error.is_some()
 }
 
 fn tests_status(app: &App) -> String {

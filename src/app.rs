@@ -1,9 +1,7 @@
 use std::time::{Duration, Instant};
 
 use crate::{
-    command::{
-        AppCommand, CommandContext, CommandFocus, OutputSearchCommandMode, SettingsCommandMode,
-    },
+    command::{AppCommand, CommandContext, CommandFocus},
     config::{self, AppSettings, TREE_WIDTH_STEP_PERCENT},
     disk_usage::{DiskCleanupState, DiskUsageSnapshot, DiskUsageState},
     editor::SourceLocation,
@@ -211,34 +209,19 @@ impl App {
     }
 
     pub fn command_context(&self) -> CommandContext {
-        if self.discovery.running {
-            return CommandContext::discovery_running();
+        CommandContext {
+            help_visible: self.show_help,
+            focus: match self.command_focus() {
+                FocusPane::Tree => CommandFocus::Tests,
+                FocusPane::Output => CommandFocus::Output,
+            },
+            output_search_input: self.output_search.input_active,
+            output_search_modal: self.output_search.modal_open,
+            disk_cleanup_modal: self.disk_cleanup.modal_open,
+            settings_modal: self.global_settings.modal_open,
+            settings_open_with_input: self.global_settings.open_with_editing,
+            discovery_running: self.discovery.running,
         }
-        if self.global_settings.open_with_editing {
-            return CommandContext::settings(SettingsCommandMode::EditingOpenWith);
-        }
-        if self.global_settings.modal_open {
-            return CommandContext::settings(SettingsCommandMode::Browsing);
-        }
-        if self.disk_cleanup.modal_open {
-            return CommandContext::disk_cleanup();
-        }
-        if self.output_search.modal_open {
-            return CommandContext::output_search(OutputSearchCommandMode::Modal);
-        }
-        if self.output_search.input_active {
-            return CommandContext::output_search(OutputSearchCommandMode::InlineInput);
-        }
-        if self.show_help {
-            return CommandContext::help();
-        }
-        if self.discovery.error.is_some() {
-            return CommandContext::discovery_error();
-        }
-        CommandContext::normal(match self.command_focus() {
-            FocusPane::Tree => CommandFocus::Tests,
-            FocusPane::Output => CommandFocus::Output,
-        })
     }
 
     pub fn record_key(&mut self, text: impl Into<String>) {
@@ -1444,7 +1427,6 @@ fn run_summary_status(outcome: RunOutcome, counts: StatusCounts, exit_code: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::CommandMode;
     use crate::output_pane::{SearchEditorInput, SearchEditorKey};
     use crate::tree::{DiscoveredTest, TestKey, TestStatus};
 
@@ -1972,7 +1954,7 @@ mod tests {
             "first\nsecond\nneedle\nfourth".to_owned(),
         )));
 
-        assert_eq!(app.command_context().mode, CommandMode::DiscoveryError);
+        assert_eq!(app.command_context().focus, CommandFocus::Output);
         app.apply_command(AppCommand::MoveDown);
         assert_eq!(app.output_scroll, 1);
 
