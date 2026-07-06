@@ -933,6 +933,7 @@ impl App {
         }
 
         self.reset_for_run(request);
+        self.begin_disk_usage_scan();
         true
     }
 
@@ -1692,6 +1693,16 @@ mod tests {
         assert!(app.begin_run(&RunRequest::default()));
         assert_eq!(app.apply_command(AppCommand::StopRun), AppEffect::StopRun);
         assert_eq!(app.status, "Stopping run...");
+    }
+
+    #[test]
+    fn begin_run_refreshes_storage_status() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+
+        assert!(!app.disk_usage.loading);
+        assert!(app.begin_run(&RunRequest::default()));
+
+        assert!(app.disk_usage.loading);
     }
 
     #[test]

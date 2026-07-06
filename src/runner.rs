@@ -416,6 +416,8 @@ fn start_run(
         return None;
     }
 
+    start_disk_usage(client.project_dir(), tx.clone());
+
     let (run_tx, mut run_rx) = mpsc::unbounded_channel::<RunEvent>();
     let (stop_tx, stop_rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
