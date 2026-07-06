@@ -9,7 +9,7 @@ use ratatui::{
 
 use crate::{
     app::{App, FocusPane},
-    command::{CommandGroup, CommandInfo, command_infos},
+    command::{CommandGroup, CommandInfo, OverlayMode, command_infos},
     config,
     disk_usage::{format_bytes, format_timestamp_utc},
     output_pane::SearchModalFocus,
@@ -72,24 +72,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     draw_output(frame, app, theme, app_layout.output);
     draw_status(frame, app, theme, app_layout.status);
 
-    if app.is_discovering() || app.discovery.error.is_some() {
-        draw_discovery_modal(frame, app, theme);
-    }
-
-    if app.output_search.modal_open {
-        draw_output_search_modal(frame, app, theme);
-    }
-
-    if app.disk_cleanup.modal_open {
-        draw_disk_cleanup_modal(frame, app, theme);
-    }
-
-    if app.global_settings.modal_open {
-        draw_global_settings_modal(frame, app, theme);
-    }
-
-    if app.show_help {
-        draw_help(frame, app, theme);
+    match app.command_context().overlay {
+        Some(OverlayMode::Discovery | OverlayMode::DiscoveryError) => {
+            draw_discovery_modal(frame, app, theme);
+        }
+        Some(OverlayMode::OutputSearch) => draw_output_search_modal(frame, app, theme),
+        Some(OverlayMode::DiskCleanup) => draw_disk_cleanup_modal(frame, app, theme),
+        Some(OverlayMode::Settings) => draw_global_settings_modal(frame, app, theme),
+        Some(OverlayMode::Help) => draw_help(frame, app, theme),
+        None => {}
     }
 }
 
@@ -115,16 +106,7 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
 }
 
 fn pane_focused(app: &App, pane: FocusPane) -> bool {
-    app.focus == pane && !modal_visible(app)
-}
-
-fn modal_visible(app: &App) -> bool {
-    app.show_help
-        || app.output_search.modal_open
-        || app.disk_cleanup.modal_open
-        || app.global_settings.modal_open
-        || app.is_discovering()
-        || app.discovery.error.is_some()
+    app.focus == pane && !app.command_context().pane_focus_suppressed()
 }
 
 fn tests_status(app: &App) -> String {

@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use crate::{
     app::{App, AppEffect},
     config::AppSettings,
-    command::{AppCommand, CommandContext, command_for_input},
+    command::{AppCommand, CommandContext, InputMode, command_for_input},
     config,
     disk_usage,
     editor::EditorConfig,
@@ -201,13 +201,7 @@ fn latest_only_input(input: &InputEvent, context: CommandContext) -> Option<Late
 }
 
 fn context_accepts_tests_pane_width(context: CommandContext) -> bool {
-    !context.help_visible
-        && !context.output_search_input
-        && !context.output_search_modal
-        && !context.disk_cleanup_modal
-        && !context.settings_modal
-        && !context.settings_open_with_input
-        && !context.discovery_running
+    matches!(context.input, InputMode::Normal(_))
 }
 
 fn handle_queue_event(
@@ -521,10 +515,7 @@ mod tests {
             key(KeyCode::Char(']'), KeyModifiers::NONE),
             key(KeyCode::Char(']'), KeyModifiers::NONE),
         ];
-        let context = CommandContext {
-            output_search_input: true,
-            ..CommandContext::default()
-        };
+        let context = CommandContext::output_search_inline();
 
         assert!(!should_skip_stale_event(&events, 0, context));
         assert!(!should_skip_stale_event(&events, 1, context));
@@ -536,10 +527,7 @@ mod tests {
             key(KeyCode::Right, KeyModifiers::SHIFT),
             key(KeyCode::Right, KeyModifiers::SHIFT),
         ];
-        let context = CommandContext {
-            settings_modal: true,
-            ..CommandContext::default()
-        };
+        let context = CommandContext::settings_modal();
 
         assert!(!should_skip_stale_event(&events, 0, context));
         assert!(!should_skip_stale_event(&events, 1, context));

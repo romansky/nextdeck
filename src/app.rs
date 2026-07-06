@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use crate::{
-    command::{AppCommand, CommandContext, CommandFocus},
+    command::{AppCommand, CommandContext, CommandFocus, InputMode, OverlayMode},
     config::{self, AppSettings, TREE_WIDTH_STEP_PERCENT},
     disk_usage::{DiskCleanupState, DiskUsageSnapshot, DiskUsageState},
     editor::SourceLocation,
@@ -209,18 +209,42 @@ impl App {
     }
 
     pub fn command_context(&self) -> CommandContext {
+        let focus = match self.command_focus() {
+            FocusPane::Tree => CommandFocus::Tests,
+            FocusPane::Output => CommandFocus::Output,
+        };
+        let overlay = if self.show_help {
+            Some(OverlayMode::Help)
+        } else if self.global_settings.modal_open {
+            Some(OverlayMode::Settings)
+        } else if self.disk_cleanup.modal_open {
+            Some(OverlayMode::DiskCleanup)
+        } else if self.output_search.modal_open {
+            Some(OverlayMode::OutputSearch)
+        } else if self.discovery.running {
+            Some(OverlayMode::Discovery)
+        } else if self.discovery.error.is_some() {
+            Some(OverlayMode::DiscoveryError)
+        } else {
+            None
+        };
+        let input = match overlay {
+            Some(OverlayMode::Help) => InputMode::Help,
+            Some(OverlayMode::Settings) if self.global_settings.open_with_editing => {
+                InputMode::SettingsOpenWith
+            }
+            Some(OverlayMode::Settings) => InputMode::SettingsModal,
+            Some(OverlayMode::DiskCleanup) => InputMode::DiskCleanupModal,
+            Some(OverlayMode::OutputSearch) => InputMode::OutputSearchModal,
+            Some(OverlayMode::Discovery) => InputMode::DiscoveryRunning,
+            Some(OverlayMode::DiscoveryError) => InputMode::Normal(CommandFocus::Output),
+            None if self.output_search.input_active => InputMode::OutputSearchInline,
+            None => InputMode::Normal(focus),
+        };
+
         CommandContext {
-            help_visible: self.show_help,
-            focus: match self.command_focus() {
-                FocusPane::Tree => CommandFocus::Tests,
-                FocusPane::Output => CommandFocus::Output,
-            },
-            output_search_input: self.output_search.input_active,
-            output_search_modal: self.output_search.modal_open,
-            disk_cleanup_modal: self.disk_cleanup.modal_open,
-            settings_modal: self.global_settings.modal_open,
-            settings_open_with_input: self.global_settings.open_with_editing,
-            discovery_running: self.discovery.running,
+            input,
+            overlay,
         }
     }
 
@@ -433,10 +457,6 @@ impl App {
             SettingsField::ColorBlindMode => self.adjust_selected_setting(1),
             SettingsField::TreeWidth | SettingsField::Theme => self.adjust_selected_setting(1),
         }
-    }
-
-    pub fn is_discovering(&self) -> bool {
-        self.discovery.running
     }
 
     pub fn discovery_spinner(&self) -> &'static str {
@@ -1431,6 +1451,82 @@ mod tests {
     use crate::tree::{DiscoveredTest, TestKey, TestStatus};
 
     #[test]
+    fn command_context_uses_normal_input_without_overlay_by_default() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+
+        assert_eq!(
+            app.command_context(),
+            CommandContext {
+                input: InputMode::Normal(CommandFocus::Tests),
+                overlay: None,
+            }
+        );
+
+        app.focus = FocusPane::Output;
+        assert_eq!(
+            app.command_context(),
+            CommandContext {
+                input: InputMode::Normal(CommandFocus::Output),
+                overlay: None,
+            }
+        );
+    }
+
+    #[test]
+    fn command_context_keeps_inline_output_search_out_of_overlay_state() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+
+        app.apply_command(AppCommand::StartOutputSearch);
+
+        assert_eq!(
+            app.command_context(),
+            CommandContext {
+                input: InputMode::OutputSearchInline,
+                overlay: None,
+            }
+        );
+    }
+
+    #[test]
+    fn command_context_distinguishes_settings_browsing_from_text_input() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+
+        app.global_settings.modal_open = true;
+        assert_eq!(
+            app.command_context(),
+            CommandContext {
+                input: InputMode::SettingsModal,
+                overlay: Some(OverlayMode::Settings),
+            }
+        );
+
+        app.global_settings.open_with_editing = true;
+        assert_eq!(
+            app.command_context(),
+            CommandContext {
+                input: InputMode::SettingsOpenWith,
+                overlay: Some(OverlayMode::Settings),
+            }
+        );
+    }
+
+    #[test]
+    fn command_context_routes_top_help_overlay_to_help_input() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+
+        app.global_settings.modal_open = true;
+        app.show_help = true;
+
+        assert_eq!(
+            app.command_context(),
+            CommandContext {
+                input: InputMode::Help,
+                overlay: Some(OverlayMode::Help),
+            }
+        );
+    }
+
+    #[test]
     fn tree_scroll_follows_selection_past_viewport() {
         let mut app = App::new(Tree::from_tests(test_rows(30)));
         expand_all(&mut app.tree.root);
@@ -1954,7 +2050,14 @@ mod tests {
             "first\nsecond\nneedle\nfourth".to_owned(),
         )));
 
-        assert_eq!(app.command_context().focus, CommandFocus::Output);
+        assert_eq!(
+            app.command_context().input,
+            InputMode::Normal(CommandFocus::Output)
+        );
+        assert_eq!(
+            app.command_context().overlay,
+            Some(OverlayMode::DiscoveryError)
+        );
         app.apply_command(AppCommand::MoveDown);
         assert_eq!(app.output_scroll, 1);
 
