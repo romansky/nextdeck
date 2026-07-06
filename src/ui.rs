@@ -1036,6 +1036,18 @@ mod tests {
     }
 
     #[test]
+    fn output_title_shows_submit_and_advanced_hints_while_searching() {
+        let mut app = App::new(Tree::from_tests(Vec::new()));
+        app.output_search.draft_query = "panic".to_owned();
+        app.output_search.input_active = true;
+
+        assert_eq!(
+            output_title(&app, "panic line"),
+            "Output <lines: 1-1/1> <search: [panic_      ] 0/0 [enter]submit [C+enter]advanced [n]ext [f]ilter:off [r]egex:off [c]ase-sensitive:off>"
+        );
+    }
+
+    #[test]
     fn output_search_box_keeps_fixed_width_for_long_query() {
         let mut app = App::new(Tree::from_tests(Vec::new()));
         app.output_search.query = "abcdefghijklmnopqrstuvwxyz".to_owned();

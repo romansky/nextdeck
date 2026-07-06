@@ -57,6 +57,7 @@ impl SearchModalFocus {
 pub struct SearchBoxView {
     pub box_text: String,
     pub match_summary: Option<(usize, usize)>,
+    pub input_active: bool,
     pub filter: bool,
     pub regex: bool,
     pub case_sensitive: bool,
@@ -70,11 +71,17 @@ impl SearchBoxView {
             .map(|(current, total)| format!(" {current}/{total}"))
             .unwrap_or_else(|| " 0/0".to_owned());
         let invalid = if self.invalid { " !regex" } else { "" };
+        let input_actions = if self.input_active {
+            " [enter]submit [C+enter]advanced"
+        } else {
+            ""
+        };
         format!(
-            "<search: {}{}{} [n]ext [f]ilter:{} [r]egex:{} [c]ase-sensitive:{}>",
+            "<search: {}{}{}{} [n]ext [f]ilter:{} [r]egex:{} [c]ase-sensitive:{}>",
             self.box_text,
             summary,
             invalid,
+            input_actions,
             on_off(self.filter),
             on_off(self.regex),
             on_off(self.case_sensitive)
@@ -179,6 +186,7 @@ impl OutputSearchState {
             } else {
                 self.match_summary(text)
             },
+            input_active: self.input_active,
             filter: self.filter,
             regex: self.regex,
             case_sensitive: self.case_sensitive,

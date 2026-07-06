@@ -437,7 +437,10 @@ pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppComm
 fn command_for_output_search_input(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
     match code {
         KeyCode::Esc => AppCommand::CancelOutputSearch,
-        KeyCode::Enter => AppCommand::OpenOutputSearchModal,
+        KeyCode::Enter if is_advanced_search_modifier(modifiers) => {
+            AppCommand::OpenOutputSearchModal
+        }
+        KeyCode::Enter => AppCommand::ApplyOutputSearch,
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
             AppCommand::ClearOutputSearch
         }
@@ -445,6 +448,10 @@ fn command_for_output_search_input(code: KeyCode, modifiers: KeyModifiers) -> Ap
             .map(AppCommand::OutputSearchEdit)
             .unwrap_or(AppCommand::Noop),
     }
+}
+
+fn is_advanced_search_modifier(modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::SUPER)
 }
 
 fn command_for_output_search_modal(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
@@ -845,6 +852,24 @@ mod tests {
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         assert_eq!(
             command_for_input(&enter, context),
+            AppCommand::ApplyOutputSearch
+        );
+
+        let advanced = InputEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(
+            command_for_input(&advanced, context),
+            AppCommand::OpenOutputSearchModal
+        );
+
+        let mac_advanced = InputEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::SUPER,
+        )));
+        assert_eq!(
+            command_for_input(&mac_advanced, context),
             AppCommand::OpenOutputSearchModal
         );
     }
