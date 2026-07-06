@@ -11,7 +11,7 @@ use crate::{
     app::{App, FocusPane},
     command::{CommandGroup, CommandInfo, command_infos},
     config,
-    disk_usage::format_bytes,
+    disk_usage::{format_bytes, format_timestamp_utc},
     output_pane::SearchModalFocus,
     settings::SettingsField,
     theme::Theme,
@@ -632,10 +632,28 @@ fn run_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
 fn storage_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::styled("Storage", theme.title(false)),
-        detail_line("status", app.disk_usage.summary_label(), theme.text(), theme),
+        detail_line("status", storage_status(app), storage_status_style(app, theme), theme),
     ];
 
     if let Some(snapshot) = &app.disk_usage.snapshot {
+        lines.extend([
+            detail_line(
+                "available",
+                snapshot
+                    .available_bytes
+                    .map(format_bytes)
+                    .unwrap_or_else(|| "-".to_owned()),
+                theme.text(),
+                theme,
+            ),
+            detail_line(
+                "updated",
+                format_timestamp_utc(snapshot.updated_at),
+                theme.text(),
+                theme,
+            ),
+            detail_line("total", format_bytes(snapshot.total_bytes()), theme.text(), theme),
+        ]);
         for entry in &snapshot.entries {
             lines.push(detail_line(
                 entry.label,
@@ -661,6 +679,28 @@ fn storage_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     }
 
     lines
+}
+
+fn storage_status(app: &App) -> &'static str {
+    if app.disk_usage.loading {
+        "scanning"
+    } else if app.disk_usage.error.is_some() {
+        "failed"
+    } else if app.disk_usage.snapshot.is_some() {
+        "ready"
+    } else {
+        "not scanned"
+    }
+}
+
+fn storage_status_style(app: &App, theme: &Theme) -> ratatui::style::Style {
+    if app.disk_usage.error.is_some() {
+        theme.danger()
+    } else if app.disk_usage.loading {
+        theme.accent()
+    } else {
+        theme.text()
+    }
 }
 
 fn run_result_style(app: &App, theme: &Theme) -> ratatui::style::Style {
@@ -798,8 +838,8 @@ fn discovery_error_actions() -> &'static str {
     "actions: [u]retry [/]search [n]ext [N]prev [o]pen-editor [q]quit"
 }
 
-fn info_status(app: &App) -> String {
-    format!("Info <disk: {}>", app.disk_usage.summary_label())
+fn info_status(_app: &App) -> String {
+    "Info".to_owned()
 }
 
 fn output_status(app: &App, text: &str) -> String {
@@ -1073,7 +1113,7 @@ mod tests {
     fn info_status_includes_disk_state() {
         let app = App::new(Tree::from_tests(Vec::new()));
 
-        assert_eq!(info_status(&app), "Info <disk: not scanned>");
+        assert_eq!(info_status(&app), "Info");
     }
 
     #[test]
@@ -1085,6 +1125,8 @@ mod tests {
                 path: PathBuf::from("target"),
                 bytes: 1024,
             }],
+            available_bytes: Some(2048),
+            updated_at: std::time::UNIX_EPOCH,
         });
 
         let run_text = run_details(&app, &Theme::dark())
@@ -1101,6 +1143,10 @@ mod tests {
         assert!(run_text.contains("run id"));
         assert!(!run_text.contains("target"));
         assert!(storage_text.contains("Storage"));
+        assert!(storage_text.contains("ready"));
+        assert!(storage_text.contains("available"));
+        assert!(storage_text.contains("2.0 KiB"));
+        assert!(storage_text.contains("1970-01-01 00:00:00 UTC"));
         assert!(storage_text.contains("target"));
         assert!(storage_text.contains("1.0 KiB"));
     }

@@ -1,11 +1,14 @@
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiskUsageSnapshot {
     pub entries: Vec<DiskUsageEntry>,
+    pub available_bytes: Option<u64>,
+    pub updated_at: SystemTime,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,18 +61,17 @@ impl DiskUsageState {
         self.error = None;
     }
 
-    pub fn apply_result(&mut self, result: Result<DiskUsageSnapshot, String>) -> String {
+    pub fn apply_result(&mut self, result: Result<DiskUsageSnapshot, String>) -> Result<(), String> {
         self.loading = false;
         match result {
             Ok(snapshot) => {
-                let summary = snapshot.summary_label();
                 self.snapshot = Some(snapshot);
                 self.error = None;
-                format!("Disk usage: {summary}")
+                Ok(())
             }
             Err(error) => {
                 self.error = Some(error.clone());
-                format!("Disk usage failed: {error}")
+                Err(error)
             }
         }
     }
@@ -114,6 +116,10 @@ pub async fn load(cwd: Option<PathBuf>) -> Result<DiskUsageSnapshot, String> {
 
 fn load_blocking(cwd: Option<PathBuf>) -> Result<DiskUsageSnapshot, String> {
     let roots = disk_roots(cwd)?;
+    let available_bytes = roots
+        .first()
+        .and_then(|(_, path)| path.parent().or(Some(path.as_path())))
+        .and_then(available_space);
     let mut entries = Vec::new();
     for (label, path) in roots {
         if path.exists() {
@@ -126,7 +132,11 @@ fn load_blocking(cwd: Option<PathBuf>) -> Result<DiskUsageSnapshot, String> {
             });
         }
     }
-    Ok(DiskUsageSnapshot { entries })
+    Ok(DiskUsageSnapshot {
+        entries,
+        available_bytes,
+        updated_at: SystemTime::now(),
+    })
 }
 
 fn disk_roots(cwd: Option<PathBuf>) -> Result<Vec<(&'static str, PathBuf)>, String> {
@@ -164,6 +174,29 @@ fn dir_size(path: &Path) -> io::Result<u64> {
     Ok(total)
 }
 
+#[cfg(unix)]
+fn available_space(path: &Path) -> Option<u64> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+    let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    let result = unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) };
+    if result != 0 {
+        return None;
+    }
+    let stat = unsafe { stat.assume_init() };
+    Some(
+        (stat.f_bavail as u128)
+            .saturating_mul(stat.f_frsize as u128)
+            .min(u64::MAX as u128) as u64,
+    )
+}
+
+#[cfg(not(unix))]
+fn available_space(_path: &Path) -> Option<u64> {
+    None
+}
+
 pub fn format_bytes(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
@@ -179,6 +212,38 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
+pub fn format_timestamp_utc(time: SystemTime) -> String {
+    let Ok(duration) = time.duration_since(UNIX_EPOCH) else {
+        return "-".to_owned();
+    };
+    let seconds = duration.as_secs();
+    let days = (seconds / 86_400) as i64;
+    let seconds_of_day = seconds % 86_400;
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
+}
+
+fn civil_from_days(days_since_epoch: i64) -> (i64, u64, u64) {
+    let days = days_since_epoch + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year =
+        day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+    (year, month as u64, day as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +254,14 @@ mod tests {
         assert_eq!(format_bytes(512), "512 B");
         assert_eq!(format_bytes(1536), "1.5 KiB");
         assert_eq!(format_bytes(3 * 1024 * 1024), "3.0 MiB");
+    }
+
+    #[test]
+    fn formats_timestamps_as_utc() {
+        assert_eq!(
+            format_timestamp_utc(UNIX_EPOCH + std::time::Duration::from_secs(86_400)),
+            "1970-01-02 00:00:00 UTC"
+        );
     }
 
     #[test]
@@ -211,6 +284,8 @@ mod tests {
                     bytes: 1024,
                 },
             ],
+            available_bytes: Some(4096),
+            updated_at: UNIX_EPOCH,
         };
 
         assert_eq!(

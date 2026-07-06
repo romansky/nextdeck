@@ -280,11 +280,12 @@ impl App {
 
     pub fn begin_disk_usage_scan(&mut self) {
         self.disk_usage.begin_scan();
-        self.status = "Scanning disk usage".to_owned();
     }
 
     pub fn apply_disk_usage(&mut self, result: Result<DiskUsageSnapshot, String>) {
-        self.status = self.disk_usage.apply_result(result);
+        if let Some(error) = self.disk_usage.apply_result(result).err() {
+            self.status = format!("Disk usage failed: {error}");
+        }
     }
 
     pub fn begin_cargo_clean(&mut self) -> bool {

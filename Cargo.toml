@@ -16,6 +16,7 @@ anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.29"
 futures = "0.3"
+libc = "0.2"
 nextest-metadata = "0.14.1"
 ratatui = "0.29"
 regex = "1.11"
