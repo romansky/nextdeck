@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, FocusPane},
+    app::{App, FocusPane, SettingsField},
     command::{CommandGroup, CommandInfo, command_infos},
     config,
     disk_usage::format_bytes,
@@ -83,6 +83,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         draw_disk_cleanup_modal(frame, app, theme);
     }
 
+    if app.global_settings.modal_open {
+        draw_global_settings_modal(frame, app, theme);
+    }
+
     if app.show_help {
         draw_help(frame, app, theme);
     }
@@ -117,6 +121,7 @@ fn modal_visible(app: &App) -> bool {
     app.show_help
         || app.output_search.modal_open
         || app.disk_cleanup.modal_open
+        || app.global_settings.modal_open
         || app.is_discovering()
         || app.discovery.error.is_some()
 }
@@ -140,6 +145,17 @@ fn filter_hint(label: &str, key: &str, enabled: bool) -> String {
 
 fn on_off(value: bool) -> &'static str {
     if value { "on" } else { "off" }
+}
+
+fn fit_line_content(content: &str, width: usize) -> String {
+    let char_count = content.chars().count();
+    if char_count <= width {
+        return format!("{content:<width$}");
+    }
+    content
+        .chars()
+        .skip(char_count.saturating_sub(width))
+        .collect()
 }
 
 fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
@@ -340,6 +356,62 @@ fn draw_disk_cleanup_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         .wrap(Wrap { trim: false });
     frame.render_widget(Clear, area);
     frame.render_widget(paragraph, area);
+}
+
+fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
+    let area = centered_rect(72, 58, frame.area());
+    let settings = &app.global_settings;
+    let lines = vec![
+        settings_line(app, SettingsField::Editor, theme),
+        settings_line(app, SettingsField::TreeWidth, theme),
+        settings_line(app, SettingsField::Theme, theme),
+        settings_line(app, SettingsField::ColorBlindMode, theme),
+        Line::from(""),
+        Line::styled(
+            "Editor examples: idea, code, cursor, zed, open -a \"IntelliJ IDEA\"",
+            theme.muted(),
+        ),
+    ];
+    let actions = if settings.editor_editing {
+        "actions: [enter]save [esc]cancel [C-u]clear"
+    } else {
+        "actions: [up/down]select [left/right]change [enter]edit/apply [x]clear-editor [q]close"
+    };
+    let paragraph = Paragraph::new(lines)
+        .alignment(Alignment::Left)
+        .style(theme.text())
+        .block(theme.panel_block("Settings", Some(actions), true))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, area);
+    frame.render_widget(paragraph, area);
+}
+
+fn settings_line(app: &App, field: SettingsField, theme: &Theme) -> Line<'static> {
+    let selected = app.global_settings.selected == field;
+    let marker = if selected { ">" } else { " " };
+    let value = settings_value(app, field);
+    let style = if selected {
+        theme.selected()
+    } else {
+        theme.text()
+    };
+    Line::from(vec![
+        Span::styled(format!("{marker} {:<13}", field.label()), style),
+        Span::styled(value, style),
+    ])
+}
+
+fn settings_value(app: &App, field: SettingsField) -> String {
+    match field {
+        SettingsField::Editor if app.global_settings.editor_editing => {
+            let text = format!("{}_", app.global_settings.editor_draft);
+            format!("[{}]", fit_line_content(&text, 42))
+        }
+        SettingsField::Editor => format!("[{}]", fit_line_content(app.settings.editor_label(), 42)),
+        SettingsField::TreeWidth => format!("{}%", app.settings.tree_width_percent),
+        SettingsField::Theme => app.settings.theme_mode.label().to_owned(),
+        SettingsField::ColorBlindMode => on_off(app.settings.color_blind_mode).to_owned(),
+    }
 }
 
 fn modal_label_style(active: bool, theme: &Theme) -> ratatui::style::Style {

@@ -56,8 +56,8 @@ struct Cli {
     #[arg(long, help = "Run all discovered tests immediately on startup")]
     run: bool,
 
-    #[arg(long, value_enum, default_value = "auto", help = "Theme mode to use")]
-    theme: ThemeArg,
+    #[arg(long, value_enum, help = "Theme mode to use")]
+    theme: Option<ThemeArg>,
 
     #[arg(
         long,
@@ -83,7 +83,8 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let run_on_start = cli.run;
-    let editor = editor::EditorConfig::resolve(cli.editor);
+    let settings = config::load();
+    let editor = editor::EditorConfig::resolve(cli.editor.clone(), settings.editor_command.clone());
     let client = NextestClient::new(cli.manifest_path, cli.current_dir, cli.nextest_args);
     if cli.list_json {
         let tests = client.discover().await?;
@@ -92,8 +93,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut app = App::discovering(config::load());
-    let theme = Theme::resolve(cli.theme.into());
+    let mut app = App::discovering(settings);
+    let theme_mode = cli
+        .theme
+        .map(ThemeMode::from)
+        .unwrap_or_else(|| app.settings.theme_mode.into());
+    let theme = Theme::resolve(theme_mode, app.settings.color_blind_mode);
     let mut terminal = TerminalSession::enter()?;
     let result = runner::run(
         terminal.terminal_mut(),
@@ -102,6 +107,7 @@ async fn main() -> Result<()> {
         run_on_start,
         theme,
         editor,
+        cli.editor,
     )
     .await;
     terminal.restore()?;

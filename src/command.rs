@@ -30,6 +30,17 @@ pub enum AppCommand {
     RunFailed,
     OpenSource,
     OpenOutput,
+    OpenSettings,
+    CloseSettings,
+    SettingsNext,
+    SettingsPrevious,
+    SettingsAdjustLeft,
+    SettingsAdjustRight,
+    SettingsActivate,
+    SettingsEditorEdit(SearchEditorInput),
+    CommitEditorSetting,
+    CancelEditorSetting,
+    ClearEditorSetting,
     RefreshDiskUsage,
     OpenDiskCleanup,
     CloseDiskCleanup,
@@ -97,6 +108,7 @@ pub enum CommandKind {
     RunFailed,
     OpenSource,
     OpenOutput,
+    OpenSettings,
     RefreshDiskUsage,
     OpenDiskCleanup,
     ToggleShowSuccess,
@@ -305,6 +317,13 @@ const COMMANDS: &[CommandInfo] = &[
         ticker: "open output",
     },
     CommandInfo {
+        kind: CommandKind::OpenSettings,
+        group: CommandGroup::Global,
+        keys: ",",
+        label: "open global settings",
+        ticker: "settings",
+    },
+    CommandInfo {
         kind: CommandKind::ToggleHelp,
         group: CommandGroup::Global,
         keys: "h/?/F1",
@@ -360,6 +379,7 @@ impl AppCommand {
             Self::RunFailed => Some(CommandKind::RunFailed),
             Self::OpenSource => Some(CommandKind::OpenSource),
             Self::OpenOutput => Some(CommandKind::OpenOutput),
+            Self::OpenSettings => Some(CommandKind::OpenSettings),
             Self::RefreshDiskUsage => Some(CommandKind::RefreshDiskUsage),
             Self::OpenDiskCleanup => Some(CommandKind::OpenDiskCleanup),
             Self::ToggleShowSuccess => Some(CommandKind::ToggleShowSuccess),
@@ -369,6 +389,16 @@ impl AppCommand {
             Self::SelectNextFailed | Self::SelectPreviousFailed => Some(CommandKind::SelectFailed),
             Self::StartOutputSearch => Some(CommandKind::StartOutputSearch),
             Self::OpenOutputSearchModal
+            | Self::CloseSettings
+            | Self::SettingsNext
+            | Self::SettingsPrevious
+            | Self::SettingsAdjustLeft
+            | Self::SettingsAdjustRight
+            | Self::SettingsActivate
+            | Self::SettingsEditorEdit(_)
+            | Self::CommitEditorSetting
+            | Self::CancelEditorSetting
+            | Self::ClearEditorSetting
             | Self::CloseDiskCleanup
             | Self::RunCargoClean
             | Self::ApplyOutputSearch
@@ -407,6 +437,14 @@ impl AppCommand {
             Self::SearchModalNextControl => Some("search focus"),
             Self::SearchModalPreviousControl => Some("search focus"),
             Self::SearchModalActivate => Some("search action"),
+            Self::CloseSettings => Some("settings close"),
+            Self::SettingsNext | Self::SettingsPrevious => Some("settings select"),
+            Self::SettingsAdjustLeft | Self::SettingsAdjustRight => Some("settings adjust"),
+            Self::SettingsActivate => Some("settings edit"),
+            Self::SettingsEditorEdit(_) => Some("settings input"),
+            Self::CommitEditorSetting => Some("settings save"),
+            Self::CancelEditorSetting => Some("settings cancel"),
+            Self::ClearEditorSetting => Some("settings clear"),
             Self::RunCargoClean => Some("cargo clean"),
             Self::ReportStatus(_) => Some("status"),
             _ => self.info().map(|info| info.ticker),
@@ -428,6 +466,8 @@ pub struct CommandContext {
     pub output_search_input: bool,
     pub output_search_modal: bool,
     pub disk_cleanup_modal: bool,
+    pub settings_modal: bool,
+    pub settings_editor_input: bool,
 }
 
 pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppCommand {
@@ -438,6 +478,12 @@ pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppComm
         }
         InputEvent::Terminal(Event::Key(key)) if is_stop_key(key.code, key.modifiers) => {
             AppCommand::StopRun
+        }
+        InputEvent::Terminal(Event::Key(key)) if context.settings_editor_input => {
+            command_for_settings_editor_input(key.code, key.modifiers)
+        }
+        InputEvent::Terminal(Event::Key(key)) if context.settings_modal => {
+            command_for_settings_modal(key.code)
         }
         InputEvent::Terminal(Event::Key(key)) if context.disk_cleanup_modal => {
             command_for_disk_cleanup_modal(key.code)
@@ -481,6 +527,33 @@ fn command_for_output_search_input(code: KeyCode, modifiers: KeyModifiers) -> Ap
 
 fn is_advanced_search_modifier(modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::SUPER)
+}
+
+fn command_for_settings_editor_input(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+    match code {
+        KeyCode::Esc => AppCommand::CancelEditorSetting,
+        KeyCode::Enter => AppCommand::CommitEditorSetting,
+        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+            AppCommand::ClearEditorSetting
+        }
+        _ => search_editor_input_for_key(code, modifiers)
+            .map(AppCommand::SettingsEditorEdit)
+            .unwrap_or(AppCommand::Noop),
+    }
+}
+
+fn command_for_settings_modal(code: KeyCode) -> AppCommand {
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => AppCommand::CloseSettings,
+        KeyCode::Up | KeyCode::BackTab => AppCommand::SettingsPrevious,
+        KeyCode::Down | KeyCode::Tab => AppCommand::SettingsNext,
+        KeyCode::Left => AppCommand::SettingsAdjustLeft,
+        KeyCode::Right => AppCommand::SettingsAdjustRight,
+        KeyCode::Enter => AppCommand::SettingsActivate,
+        KeyCode::Char('e') => AppCommand::SettingsActivate,
+        KeyCode::Char('x') => AppCommand::ClearEditorSetting,
+        _ => AppCommand::Noop,
+    }
 }
 
 fn command_for_disk_cleanup_modal(code: KeyCode) -> AppCommand {
@@ -547,6 +620,7 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) 
         KeyCode::Char('q') => AppCommand::Quit,
         code if is_stop_key(code, modifiers) => AppCommand::StopRun,
         code if is_help_key(code, modifiers) => AppCommand::ToggleHelp,
+        KeyCode::Char(',') => AppCommand::OpenSettings,
         KeyCode::Char('d') => AppCommand::RefreshDiskUsage,
         KeyCode::Char('D') => AppCommand::OpenDiskCleanup,
         KeyCode::Tab => AppCommand::ToggleFocus,
@@ -759,6 +833,65 @@ mod tests {
         assert_eq!(
             command_for_key(KeyCode::Char('D'), KeyModifiers::SHIFT, CommandFocus::Output),
             AppCommand::OpenDiskCleanup
+        );
+    }
+
+    #[test]
+    fn maps_global_settings_key_across_focus_modes() {
+        assert_eq!(
+            command_for_key(KeyCode::Char(','), KeyModifiers::NONE, CommandFocus::Tests),
+            AppCommand::OpenSettings
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char(','), KeyModifiers::NONE, CommandFocus::Output),
+            AppCommand::OpenSettings
+        );
+    }
+
+    #[test]
+    fn settings_modal_uses_settings_commands() {
+        let context = CommandContext {
+            settings_modal: true,
+            ..CommandContext::default()
+        };
+        let next =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        assert_eq!(command_for_input(&next, context), AppCommand::SettingsNext);
+
+        let edit =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert_eq!(
+            command_for_input(&edit, context),
+            AppCommand::SettingsActivate
+        );
+
+        let close =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert_eq!(
+            command_for_input(&close, context),
+            AppCommand::CloseSettings
+        );
+    }
+
+    #[test]
+    fn settings_editor_input_accepts_text_and_commit() {
+        let context = CommandContext {
+            settings_modal: true,
+            settings_editor_input: true,
+            ..CommandContext::default()
+        };
+        let char =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)));
+        assert_eq!(
+            command_for_input(&char, context),
+            AppCommand::SettingsEditorEdit(SearchEditorInput::char('i'))
+        );
+
+        let enter =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert_eq!(
+            command_for_input(&enter, context),
+            AppCommand::CommitEditorSetting
         );
     }
 

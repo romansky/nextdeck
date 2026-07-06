@@ -7,15 +7,57 @@ pub const MIN_TREE_WIDTH_PERCENT: u16 = 25;
 pub const MAX_TREE_WIDTH_PERCENT: u16 = 70;
 pub const TREE_WIDTH_STEP_PERCENT: u16 = 5;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemePreference {
+    #[default]
+    Auto,
+    Dark,
+    Light,
+}
+
+impl ThemePreference {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::Dark,
+            Self::Dark => Self::Light,
+            Self::Light => Self::Auto,
+        }
+    }
+
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::Auto => Self::Light,
+            Self::Dark => Self::Auto,
+            Self::Light => Self::Dark,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
 pub struct AppSettings {
     pub tree_width_percent: u16,
+    pub editor_command: Option<String>,
+    pub theme_mode: ThemePreference,
+    pub color_blind_mode: bool,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             tree_width_percent: DEFAULT_TREE_WIDTH_PERCENT,
+            editor_command: None,
+            theme_mode: ThemePreference::Auto,
+            color_blind_mode: false,
         }
     }
 }
@@ -23,7 +65,12 @@ impl Default for AppSettings {
 impl AppSettings {
     pub fn normalized(mut self) -> Self {
         self.tree_width_percent = clamp_tree_width(self.tree_width_percent);
+        self.editor_command = self.editor_command.and_then(non_empty_trimmed);
         self
+    }
+
+    pub fn editor_label(&self) -> &str {
+        self.editor_command.as_deref().unwrap_or("env/default")
     }
 }
 
@@ -77,6 +124,15 @@ fn home_dir() -> Option<PathBuf> {
         .filter(|path| !path.as_os_str().is_empty())
 }
 
+fn non_empty_trimmed(value: String) -> Option<String> {
+    let trimmed = value.trim().to_owned();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,6 +142,7 @@ mod tests {
         assert_eq!(
             AppSettings {
                 tree_width_percent: 10,
+                ..AppSettings::default()
             }
             .normalized()
             .tree_width_percent,
@@ -94,11 +151,23 @@ mod tests {
         assert_eq!(
             AppSettings {
                 tree_width_percent: 90,
+                ..AppSettings::default()
             }
             .normalized()
             .tree_width_percent,
             MAX_TREE_WIDTH_PERCENT
         );
+    }
+
+    #[test]
+    fn normalizes_empty_editor_command() {
+        let settings = AppSettings {
+            editor_command: Some("  ".to_owned()),
+            ..AppSettings::default()
+        }
+        .normalized();
+
+        assert_eq!(settings.editor_command, None);
     }
 
     #[test]

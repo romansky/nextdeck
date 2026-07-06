@@ -5,7 +5,7 @@ use ratatui::{
 };
 use terminal_colorsaurus::{QueryOptions, ThemeMode as TerminalThemeMode};
 
-use crate::tree::TestStatus;
+use crate::{config::ThemePreference, tree::TestStatus};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ThemeMode {
@@ -31,12 +31,22 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn resolve(mode: ThemeMode) -> Self {
-        match mode {
+    pub fn resolve(mode: ThemeMode, color_blind_mode: bool) -> Self {
+        let theme = match mode {
             ThemeMode::Auto => Self::auto(),
             ThemeMode::Dark => Self::dark(),
             ThemeMode::Light => Self::light(),
-        }
+        };
+        if color_blind_mode { theme.color_blind() } else { theme }
+    }
+
+    fn color_blind(mut self) -> Self {
+        self.success = Color::Cyan;
+        self.danger = Color::Magenta;
+        self.warning = Color::Yellow;
+        self.selected_bg = Color::DarkGray;
+        self.focused_border = self.accent;
+        self
     }
 
     pub fn auto() -> Self {
@@ -217,6 +227,16 @@ impl Theme {
     }
 }
 
+impl From<ThemePreference> for ThemeMode {
+    fn from(value: ThemePreference) -> Self {
+        match value {
+            ThemePreference::Auto => Self::Auto,
+            ThemePreference::Dark => Self::Dark,
+            ThemePreference::Light => Self::Light,
+        }
+    }
+}
+
 impl Default for Theme {
     fn default() -> Self {
         Self::dark()
@@ -229,8 +249,16 @@ mod tests {
 
     #[test]
     fn forced_modes_select_expected_palettes() {
-        assert_eq!(Theme::resolve(ThemeMode::Dark).text, Color::Gray);
-        assert_eq!(Theme::resolve(ThemeMode::Light).text, Color::Black);
+        assert_eq!(Theme::resolve(ThemeMode::Dark, false).text, Color::Gray);
+        assert_eq!(Theme::resolve(ThemeMode::Light, false).text, Color::Black);
+    }
+
+    #[test]
+    fn color_blind_mode_changes_status_colors() {
+        let theme = Theme::resolve(ThemeMode::Dark, true);
+
+        assert_eq!(theme.success, Color::Cyan);
+        assert_eq!(theme.danger, Color::Magenta);
     }
 
     #[test]

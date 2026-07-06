@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     app::{App, AppEffect},
+    config::AppSettings,
     command::{AppCommand, command_for_input},
     config,
     disk_usage,
@@ -26,6 +27,7 @@ pub async fn run(
     run_on_start: bool,
     theme: Theme,
     editor: EditorConfig,
+    cli_editor: Option<String>,
 ) -> Result<()> {
     let (queue_tx, queue_rx) = queue::channel();
 
@@ -49,6 +51,7 @@ pub async fn run(
             client,
             theme,
             editor,
+            cli_editor,
             queue_tx,
         },
         queue_rx,
@@ -66,7 +69,7 @@ async fn run_loop(
     terminal: &mut AppTerminal,
     app: &mut App,
     mut run_on_start: bool,
-    context: RunLoopContext<'_>,
+    mut context: RunLoopContext<'_>,
     mut queue_rx: queue::QueueReceiver,
 ) -> Result<()> {
     let mut run_control = None;
@@ -83,11 +86,9 @@ async fn run_loop(
         };
         handle_queue_event(
             app,
-            context.client,
-            &context.editor,
+            &mut context,
             &mut run_on_start,
             event,
-            context.queue_tx.clone(),
             &mut run_control,
         );
     }
@@ -98,16 +99,15 @@ struct RunLoopContext<'a> {
     client: &'a NextestClient,
     theme: Theme,
     editor: EditorConfig,
+    cli_editor: Option<String>,
     queue_tx: QueueSender,
 }
 
 fn handle_queue_event(
     app: &mut App,
-    client: &NextestClient,
-    editor: &EditorConfig,
+    context: &mut RunLoopContext<'_>,
     run_on_start: &mut bool,
     event: QueueEvent,
-    tx: QueueSender,
     run_control: &mut Option<RunControl>,
 ) {
     match event {
@@ -117,19 +117,27 @@ fn handle_queue_event(
                 app.record_key(key_echo_text(key, &command));
             }
             let effect = app.apply_command(command);
-            handle_effect(app, client, editor, effect, tx, run_control);
+            handle_effect(app, context, effect, run_control);
         }
         QueueEvent::Discovery(event) => {
             if app.apply_discovery_event(event) && *run_on_start {
                 *run_on_start = false;
-                *run_control = start_run(app, client.clone(), RunRequest::default(), tx);
+                *run_control = start_run(
+                    app,
+                    context.client.clone(),
+                    RunRequest::default(),
+                    context.queue_tx.clone(),
+                );
             }
         }
         QueueEvent::DiskUsage(result) => app.apply_disk_usage(result),
         QueueEvent::CargoClean(result) => {
             if app.apply_cargo_clean(result) {
                 app.begin_disk_usage_scan();
-                start_disk_usage(client.current_dir().map(ToOwned::to_owned), tx);
+                start_disk_usage(
+                    context.client.current_dir().map(ToOwned::to_owned),
+                    context.queue_tx.clone(),
+                );
             }
         }
         QueueEvent::GitStatus(git_status) => app.apply_git_status(git_status),
@@ -156,10 +164,8 @@ fn key_echo_text(key: String, command: &AppCommand) -> String {
 
 fn handle_effect(
     app: &mut App,
-    client: &NextestClient,
-    editor: &EditorConfig,
+    context: &mut RunLoopContext<'_>,
     effect: AppEffect,
-    tx: QueueSender,
     run_control: &mut Option<RunControl>,
 ) {
     match effect {
@@ -167,13 +173,20 @@ fn handle_effect(
         AppEffect::SaveSettings(settings) => {
             if let Err(error) = config::save(settings) {
                 app.status = format!("Failed to save settings: {error}");
+            } else {
+                apply_runtime_settings(context, &app.settings);
             }
         }
         AppEffect::StartDiscovery => {
-            start_discovery(client.clone(), tx);
+            start_discovery(context.client.clone(), context.queue_tx.clone());
         }
         AppEffect::StartRun(request) => {
-            *run_control = start_run(app, client.clone(), request, tx);
+            *run_control = start_run(
+                app,
+                context.client.clone(),
+                request,
+                context.queue_tx.clone(),
+            );
         }
         AppEffect::StopRun => {
             if let Some(control) = run_control {
@@ -184,15 +197,18 @@ fn handle_effect(
                 app.status = "No run in progress".to_owned();
             }
         }
-        AppEffect::OpenSource(location) => match editor.open_source(&location) {
+        AppEffect::OpenSource(location) => match context.editor.open_source(&location) {
             Ok(()) => {
-                app.status = format!("Opened source with {}", editor.command());
+                app.status = format!("Opened source with {}", context.editor.command());
             }
             Err(error) => {
                 app.status = format!("Failed to open source: {error}");
             }
         },
-        AppEffect::OpenOutput(request) => match editor.open_text(&request.title, &request.text) {
+        AppEffect::OpenOutput(request) => match context
+            .editor
+            .open_text(&request.title, &request.text)
+        {
             Ok(path) => {
                 app.status = format!("Opened output {}", path.display());
             }
@@ -201,12 +217,26 @@ fn handle_effect(
             }
         },
         AppEffect::RefreshDiskUsage => {
-            start_disk_usage(client.current_dir().map(ToOwned::to_owned), tx);
+            start_disk_usage(
+                context.client.current_dir().map(ToOwned::to_owned),
+                context.queue_tx.clone(),
+            );
         }
         AppEffect::RunCargoClean => {
-            start_cargo_clean(client.current_dir().map(ToOwned::to_owned), tx);
+            start_cargo_clean(
+                context.client.current_dir().map(ToOwned::to_owned),
+                context.queue_tx.clone(),
+            );
         }
     }
+}
+
+fn apply_runtime_settings(context: &mut RunLoopContext<'_>, settings: &AppSettings) {
+    context.editor = EditorConfig::resolve(
+        context.cli_editor.clone(),
+        settings.editor_command.clone(),
+    );
+    context.theme = Theme::resolve(settings.theme_mode.into(), settings.color_blind_mode);
 }
 
 struct RunControl {

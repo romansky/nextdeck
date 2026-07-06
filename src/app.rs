@@ -8,7 +8,8 @@ use crate::{
     git_status::GitStatus,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
     output_pane::{
-        OutputSearchState, SearchDirection, SearchEditorInput, SearchEditorKey, SearchModalFocus,
+        OutputSearchState, SearchDirection, SearchEditor, SearchEditorInput, SearchEditorKey,
+        SearchModalFocus,
     },
     scroll,
     source,
@@ -40,6 +41,7 @@ pub struct App {
     pub git_status: GitStatus,
     pub disk_usage: DiskUsageState,
     pub disk_cleanup: DiskCleanupState,
+    pub global_settings: GlobalSettingsState,
     pub run: RunState,
     pub settings: AppSettings,
 }
@@ -69,6 +71,53 @@ pub struct DiskCleanupState {
     pub modal_open: bool,
     pub running: bool,
     pub last_result: Option<Result<(), String>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GlobalSettingsState {
+    pub modal_open: bool,
+    pub selected: SettingsField,
+    pub editor_editing: bool,
+    pub editor_draft: String,
+    pub editor: SearchEditor,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SettingsField {
+    #[default]
+    Editor,
+    TreeWidth,
+    Theme,
+    ColorBlindMode,
+}
+
+impl SettingsField {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Editor => "editor",
+            Self::TreeWidth => "tests width",
+            Self::Theme => "theme",
+            Self::ColorBlindMode => "color-blind",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Editor => Self::TreeWidth,
+            Self::TreeWidth => Self::Theme,
+            Self::Theme => Self::ColorBlindMode,
+            Self::ColorBlindMode => Self::Editor,
+        }
+    }
+
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::Editor => Self::ColorBlindMode,
+            Self::TreeWidth => Self::Editor,
+            Self::Theme => Self::TreeWidth,
+            Self::ColorBlindMode => Self::Theme,
+        }
+    }
 }
 
 impl DiskUsageState {
@@ -184,6 +233,7 @@ impl App {
             git_status: GitStatus::unknown(),
             disk_usage: DiskUsageState::default(),
             disk_cleanup: DiskCleanupState::default(),
+            global_settings: GlobalSettingsState::default(),
             run: RunState::default(),
             settings: settings.normalized(),
         }
@@ -243,6 +293,8 @@ impl App {
             output_search_input: self.output_search.input_active,
             output_search_modal: self.output_search.modal_open,
             disk_cleanup_modal: self.disk_cleanup.modal_open,
+            settings_modal: self.global_settings.modal_open,
+            settings_editor_input: self.global_settings.editor_editing,
         }
     }
 
@@ -346,6 +398,150 @@ impl App {
                 self.status = format!("cargo clean failed: {error}");
                 false
             }
+        }
+    }
+
+    fn save_settings_effect(&mut self) -> AppEffect {
+        self.settings = self.settings.clone().normalized();
+        AppEffect::SaveSettings(self.settings.clone())
+    }
+
+    pub fn open_global_settings(&mut self) {
+        self.global_settings.modal_open = true;
+        self.global_settings.editor_editing = false;
+        self.sync_settings_editor();
+        self.status = "Settings opened".to_owned();
+    }
+
+    pub fn close_global_settings(&mut self) {
+        self.global_settings.modal_open = false;
+        self.global_settings.editor_editing = false;
+        self.status = "Settings closed".to_owned();
+    }
+
+    fn sync_settings_editor(&mut self) {
+        let text = self
+            .settings
+            .editor_command
+            .clone()
+            .unwrap_or_default();
+        self.global_settings.editor_draft = text.clone();
+        self.global_settings.editor.set_text(&text);
+    }
+
+    fn select_next_setting(&mut self) {
+        self.global_settings.selected = self.global_settings.selected.next();
+    }
+
+    fn select_previous_setting(&mut self) {
+        self.global_settings.selected = self.global_settings.selected.previous();
+    }
+
+    fn begin_edit_editor_setting(&mut self) {
+        self.global_settings.selected = SettingsField::Editor;
+        self.global_settings.editor_editing = true;
+        self.sync_settings_editor();
+        self.status = "Editing editor command".to_owned();
+    }
+
+    fn edit_editor_setting(&mut self, input: SearchEditorInput) {
+        if self.global_settings.editor.input(input) {
+            self.global_settings.editor_draft = self.global_settings.editor.text();
+        }
+    }
+
+    fn commit_editor_setting(&mut self) -> AppEffect {
+        self.global_settings.editor_editing = false;
+        self.settings.editor_command = Some(self.global_settings.editor_draft.clone());
+        self.settings = self.settings.clone().normalized();
+        self.sync_settings_editor();
+        self.status = format!("Editor: {}", self.settings.editor_label());
+        self.save_settings_effect()
+    }
+
+    fn cancel_editor_setting(&mut self) {
+        self.global_settings.editor_editing = false;
+        self.sync_settings_editor();
+        self.status = "Editor edit canceled".to_owned();
+    }
+
+    fn clear_editor_setting(&mut self) -> AppEffect {
+        if self.global_settings.editor_editing {
+            self.global_settings.editor_draft.clear();
+            self.global_settings.editor.clear();
+            self.status = "Editor draft cleared".to_owned();
+            return AppEffect::None;
+        }
+        self.settings.editor_command = None;
+        self.sync_settings_editor();
+        self.status = "Editor: env/default".to_owned();
+        self.save_settings_effect()
+    }
+
+    fn cycle_editor_setting(&mut self, direction: i8) -> AppEffect {
+        const PRESETS: &[Option<&str>] = &[
+            None,
+            Some("idea"),
+            Some("code"),
+            Some("cursor"),
+            Some("zed"),
+            Some("open"),
+        ];
+        let current = self.settings.editor_command.as_deref();
+        let index = PRESETS
+            .iter()
+            .position(|preset| *preset == current)
+            .unwrap_or(0);
+        let next = if direction < 0 {
+            index.checked_sub(1).unwrap_or(PRESETS.len() - 1)
+        } else {
+            (index + 1) % PRESETS.len()
+        };
+        self.settings.editor_command = PRESETS[next].map(ToOwned::to_owned);
+        self.sync_settings_editor();
+        self.status = format!("Editor: {}", self.settings.editor_label());
+        self.save_settings_effect()
+    }
+
+    fn adjust_selected_setting(&mut self, direction: i8) -> AppEffect {
+        match self.global_settings.selected {
+            SettingsField::Editor => self.cycle_editor_setting(direction),
+            SettingsField::TreeWidth => {
+                let delta = if direction < 0 {
+                    -(TREE_WIDTH_STEP_PERCENT as i16)
+                } else {
+                    TREE_WIDTH_STEP_PERCENT as i16
+                };
+                self.resize_tests_pane(delta)
+            }
+            SettingsField::Theme => {
+                self.settings.theme_mode = if direction < 0 {
+                    self.settings.theme_mode.previous()
+                } else {
+                    self.settings.theme_mode.next()
+                };
+                self.status = format!("Theme: {}", self.settings.theme_mode.label());
+                self.save_settings_effect()
+            }
+            SettingsField::ColorBlindMode => {
+                self.settings.color_blind_mode = !self.settings.color_blind_mode;
+                self.status = format!(
+                    "Color-blind mode: {}",
+                    if self.settings.color_blind_mode { "on" } else { "off" }
+                );
+                self.save_settings_effect()
+            }
+        }
+    }
+
+    fn activate_selected_setting(&mut self) -> AppEffect {
+        match self.global_settings.selected {
+            SettingsField::Editor => {
+                self.begin_edit_editor_setting();
+                AppEffect::None
+            }
+            SettingsField::ColorBlindMode => self.adjust_selected_setting(1),
+            SettingsField::TreeWidth | SettingsField::Theme => self.adjust_selected_setting(1),
         }
     }
 
@@ -498,6 +694,35 @@ impl App {
             }
             AppCommand::OpenSource => self.open_source_effect(),
             AppCommand::OpenOutput => self.open_output_effect(),
+            AppCommand::OpenSettings => {
+                self.open_global_settings();
+                AppEffect::None
+            }
+            AppCommand::CloseSettings => {
+                self.close_global_settings();
+                AppEffect::None
+            }
+            AppCommand::SettingsNext => {
+                self.select_next_setting();
+                AppEffect::None
+            }
+            AppCommand::SettingsPrevious => {
+                self.select_previous_setting();
+                AppEffect::None
+            }
+            AppCommand::SettingsAdjustLeft => self.adjust_selected_setting(-1),
+            AppCommand::SettingsAdjustRight => self.adjust_selected_setting(1),
+            AppCommand::SettingsActivate => self.activate_selected_setting(),
+            AppCommand::SettingsEditorEdit(input) => {
+                self.edit_editor_setting(input);
+                AppEffect::None
+            }
+            AppCommand::CommitEditorSetting => self.commit_editor_setting(),
+            AppCommand::CancelEditorSetting => {
+                self.cancel_editor_setting();
+                AppEffect::None
+            }
+            AppCommand::ClearEditorSetting => self.clear_editor_setting(),
             AppCommand::RefreshDiskUsage => {
                 self.begin_disk_usage_scan();
                 AppEffect::RefreshDiskUsage
@@ -716,7 +941,7 @@ impl App {
         self.ensure_tree_selection_visible();
         self.clamp_output_scroll();
         self.status = format!("Tests pane width: {after}%");
-        AppEffect::SaveSettings(self.settings)
+        AppEffect::SaveSettings(self.settings.clone())
     }
 
     pub fn scroll_output_up(&mut self, amount: u16) {
@@ -1347,6 +1572,7 @@ mod tests {
             Tree::from_tests(test_rows(1)),
             AppSettings {
                 tree_width_percent: 45,
+                ..AppSettings::default()
             },
         );
 
@@ -1357,6 +1583,7 @@ mod tests {
             effect,
             AppEffect::SaveSettings(AppSettings {
                 tree_width_percent: 50,
+                ..AppSettings::default()
             })
         );
     }
@@ -1367,6 +1594,7 @@ mod tests {
             Tree::from_tests(test_rows(1)),
             AppSettings {
                 tree_width_percent: 25,
+                ..AppSettings::default()
             },
         );
 
@@ -1374,6 +1602,36 @@ mod tests {
 
         assert_eq!(app.settings.tree_width_percent, 25);
         assert_eq!(effect, AppEffect::None);
+    }
+
+    #[test]
+    fn settings_modal_updates_theme_and_accessibility_settings() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+        app.apply_command(AppCommand::OpenSettings);
+
+        app.global_settings.selected = SettingsField::Theme;
+        let effect = app.apply_command(AppCommand::SettingsAdjustRight);
+        assert_eq!(app.settings.theme_mode, config::ThemePreference::Dark);
+        assert_eq!(effect, AppEffect::SaveSettings(app.settings.clone()));
+
+        app.global_settings.selected = SettingsField::ColorBlindMode;
+        let effect = app.apply_command(AppCommand::SettingsActivate);
+        assert!(app.settings.color_blind_mode);
+        assert_eq!(effect, AppEffect::SaveSettings(app.settings.clone()));
+    }
+
+    #[test]
+    fn settings_modal_edits_editor_command() {
+        let mut app = App::new(Tree::from_tests(test_rows(1)));
+        app.apply_command(AppCommand::OpenSettings);
+        app.apply_command(AppCommand::SettingsActivate);
+        app.apply_command(AppCommand::SettingsEditorEdit(SearchEditorInput::char('i')));
+        app.apply_command(AppCommand::SettingsEditorEdit(SearchEditorInput::char('d')));
+
+        let effect = app.apply_command(AppCommand::CommitEditorSetting);
+
+        assert_eq!(app.settings.editor_command.as_deref(), Some("id"));
+        assert_eq!(effect, AppEffect::SaveSettings(app.settings.clone()));
     }
 
     #[test]

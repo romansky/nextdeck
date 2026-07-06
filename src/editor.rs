@@ -17,9 +17,10 @@ pub struct SourceLocation {
 }
 
 impl EditorConfig {
-    pub fn resolve(cli_editor: Option<String>) -> Self {
+    pub fn resolve(cli_editor: Option<String>, settings_editor: Option<String>) -> Self {
         let command = cli_editor
             .filter(|value| !value.trim().is_empty())
+            .or_else(|| settings_editor.filter(|value| !value.trim().is_empty()))
             .or_else(|| env_string("CARGO_TEST_TUI_EDITOR"))
             .or_else(|| env_string("VISUAL"))
             .or_else(|| env_string("EDITOR"))
