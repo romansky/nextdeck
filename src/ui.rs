@@ -8,11 +8,12 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, FocusPane, SettingsField},
+    app::{App, FocusPane},
     command::{CommandGroup, CommandInfo, command_infos},
     config,
     disk_usage::format_bytes,
     output_pane::SearchModalFocus,
+    settings::SettingsField,
     theme::Theme,
     tree::{NodeKind, TestNode, TestStatus},
 };
@@ -170,7 +171,7 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
             area,
             PanelChrome {
                 status: &status,
-                actions: output_actions(),
+                actions: discovery_error_actions(),
             },
             output_lines(app, theme, &text),
             true,
@@ -740,7 +741,7 @@ fn draw_output_panel(
 }
 
 fn tests_actions() -> &'static str {
-    "actions: [r]un [R]failed [o]pen-editor [u]refresh"
+    "actions: [r]un [R]failed [o]pen-editor [u]update"
 }
 
 fn info_actions() -> &'static str {
@@ -749,6 +750,10 @@ fn info_actions() -> &'static str {
 
 fn output_actions() -> &'static str {
     "actions: [/]search [n]ext [N]prev [o]pen-editor"
+}
+
+fn discovery_error_actions() -> &'static str {
+    "actions: [u]retry [/]search [n]ext [N]prev [o]pen-editor [q]quit"
 }
 
 fn info_status(app: &App) -> String {
@@ -1032,12 +1037,16 @@ mod tests {
     fn panel_actions_describe_local_commands() {
         assert_eq!(
             tests_actions(),
-            "actions: [r]un [R]failed [o]pen-editor [u]refresh"
+            "actions: [r]un [R]failed [o]pen-editor [u]update"
         );
         assert_eq!(info_actions(), "actions: [d]disk-refresh [D]cleanup");
         assert_eq!(
             output_actions(),
             "actions: [/]search [n]ext [N]prev [o]pen-editor"
+        );
+        assert_eq!(
+            discovery_error_actions(),
+            "actions: [u]retry [/]search [n]ext [N]prev [o]pen-editor [q]quit"
         );
     }
 

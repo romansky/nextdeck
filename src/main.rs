@@ -10,6 +10,7 @@ mod output;
 mod output_pane;
 mod queue;
 mod scroll;
+mod settings;
 mod source;
 mod runner;
 mod state;

@@ -15,6 +15,20 @@ pub struct DiskUsageEntry {
     pub bytes: u64,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DiskUsageState {
+    pub loading: bool,
+    pub snapshot: Option<DiskUsageSnapshot>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DiskCleanupState {
+    pub modal_open: bool,
+    pub running: bool,
+    pub last_result: Option<Result<(), String>>,
+}
+
 impl DiskUsageSnapshot {
     pub fn total_bytes(&self) -> u64 {
         self.entries.iter().map(|entry| entry.bytes).sum()
@@ -35,6 +49,60 @@ impl DiskUsageSnapshot {
             .map(|entry| entry.bytes)
             .sum::<u64>();
         format!("total {total}, target {target}, cargo {}", format_bytes(cargo))
+    }
+}
+
+impl DiskUsageState {
+    pub fn begin_scan(&mut self) {
+        self.loading = true;
+        self.error = None;
+    }
+
+    pub fn apply_result(&mut self, result: Result<DiskUsageSnapshot, String>) -> String {
+        self.loading = false;
+        match result {
+            Ok(snapshot) => {
+                let summary = snapshot.summary_label();
+                self.snapshot = Some(snapshot);
+                self.error = None;
+                format!("Disk usage: {summary}")
+            }
+            Err(error) => {
+                self.error = Some(error.clone());
+                format!("Disk usage failed: {error}")
+            }
+        }
+    }
+
+    pub fn summary_label(&self) -> String {
+        if self.loading {
+            return "scanning...".to_owned();
+        }
+        if self.error.is_some() {
+            return "scan failed".to_owned();
+        }
+        self.snapshot
+            .as_ref()
+            .map(DiskUsageSnapshot::summary_label)
+            .unwrap_or_else(|| "not scanned".to_owned())
+    }
+}
+
+impl DiskCleanupState {
+    pub fn begin_clean(&mut self) -> bool {
+        if self.running {
+            return false;
+        }
+        self.running = true;
+        self.last_result = None;
+        true
+    }
+
+    pub fn apply_result(&mut self, result: Result<(), String>) -> bool {
+        self.running = false;
+        let ok = result.is_ok();
+        self.last_result = Some(result);
+        ok
     }
 }
 

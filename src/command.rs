@@ -194,8 +194,8 @@ const COMMANDS: &[CommandInfo] = &[
         kind: CommandKind::RefreshTests,
         group: CommandGroup::Runs,
         keys: "u",
-        label: "refresh test list",
-        ticker: "refresh tests",
+        label: "update test list",
+        ticker: "update tests",
     },
     CommandInfo {
         kind: CommandKind::RunSelected,
@@ -468,6 +468,7 @@ pub struct CommandContext {
     pub disk_cleanup_modal: bool,
     pub settings_modal: bool,
     pub settings_editor_input: bool,
+    pub discovery_running: bool,
 }
 
 pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppCommand {
@@ -478,6 +479,9 @@ pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppComm
         }
         InputEvent::Terminal(Event::Key(key)) if is_stop_key(key.code, key.modifiers) => {
             AppCommand::StopRun
+        }
+        InputEvent::Terminal(Event::Key(key)) if context.discovery_running => {
+            command_for_discovery_running(key.code)
         }
         InputEvent::Terminal(Event::Key(key)) if context.settings_editor_input => {
             command_for_settings_editor_input(key.code, key.modifiers)
@@ -527,6 +531,13 @@ fn command_for_output_search_input(code: KeyCode, modifiers: KeyModifiers) -> Ap
 
 fn is_advanced_search_modifier(modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::SUPER)
+}
+
+fn command_for_discovery_running(code: KeyCode) -> AppCommand {
+    match code {
+        KeyCode::Char('q') | KeyCode::Esc => AppCommand::Quit,
+        _ => AppCommand::Noop,
+    }
 }
 
 fn command_for_settings_editor_input(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
@@ -620,6 +631,7 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) 
         KeyCode::Char('q') => AppCommand::Quit,
         code if is_stop_key(code, modifiers) => AppCommand::StopRun,
         code if is_help_key(code, modifiers) => AppCommand::ToggleHelp,
+        KeyCode::Char('u') => AppCommand::RefreshTests,
         KeyCode::Char(',') => AppCommand::OpenSettings,
         KeyCode::Char('d') => AppCommand::RefreshDiskUsage,
         KeyCode::Char('D') => AppCommand::OpenDiskCleanup,
@@ -646,7 +658,6 @@ fn command_for_tests_key(code: KeyCode) -> AppCommand {
         KeyCode::Left => AppCommand::MoveLeft,
         KeyCode::Right => AppCommand::MoveRight,
         KeyCode::Enter | KeyCode::Char(' ') => AppCommand::ToggleSelected,
-        KeyCode::Char('u') => AppCommand::RefreshTests,
         KeyCode::Char('p') => AppCommand::ToggleShowSuccess,
         KeyCode::Char('f') => AppCommand::ToggleShowFailed,
         KeyCode::Char('i') => AppCommand::ToggleShowIgnored,
@@ -795,6 +806,10 @@ mod tests {
             AppCommand::RefreshTests
         );
         assert_eq!(
+            command_for_key(KeyCode::Char('u'), KeyModifiers::NONE, CommandFocus::Output),
+            AppCommand::RefreshTests
+        );
+        assert_eq!(
             command_for_key(KeyCode::Char('p'), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::ToggleShowSuccess
         );
@@ -893,6 +908,21 @@ mod tests {
             command_for_input(&enter, context),
             AppCommand::CommitEditorSetting
         );
+    }
+
+    #[test]
+    fn discovery_running_blocks_normal_tui_commands() {
+        let context = CommandContext {
+            discovery_running: true,
+            ..CommandContext::default()
+        };
+        let down =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        assert_eq!(command_for_input(&down, context), AppCommand::Noop);
+
+        let quit =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)));
+        assert_eq!(command_for_input(&quit, context), AppCommand::Quit);
     }
 
     #[test]
