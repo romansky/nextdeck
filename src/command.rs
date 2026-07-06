@@ -462,14 +462,73 @@ pub enum CommandFocus {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CommandContext {
-    pub help_visible: bool,
-    pub focus: CommandFocus,
-    pub output_search_input: bool,
-    pub output_search_modal: bool,
-    pub disk_cleanup_modal: bool,
-    pub settings_modal: bool,
-    pub settings_open_with_input: bool,
-    pub discovery_running: bool,
+    pub mode: CommandMode,
+}
+
+impl CommandContext {
+    pub const fn normal(focus: CommandFocus) -> Self {
+        Self {
+            mode: CommandMode::Normal(focus),
+        }
+    }
+
+    pub const fn help() -> Self {
+        Self {
+            mode: CommandMode::Help,
+        }
+    }
+
+    pub const fn discovery_running() -> Self {
+        Self {
+            mode: CommandMode::DiscoveryRunning,
+        }
+    }
+
+    pub const fn settings(mode: SettingsCommandMode) -> Self {
+        Self {
+            mode: CommandMode::Settings(mode),
+        }
+    }
+
+    pub const fn disk_cleanup() -> Self {
+        Self {
+            mode: CommandMode::DiskCleanup,
+        }
+    }
+
+    pub const fn output_search(mode: OutputSearchCommandMode) -> Self {
+        Self {
+            mode: CommandMode::OutputSearch(mode),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandMode {
+    Normal(CommandFocus),
+    Help,
+    DiscoveryRunning,
+    Settings(SettingsCommandMode),
+    DiskCleanup,
+    OutputSearch(OutputSearchCommandMode),
+}
+
+impl Default for CommandMode {
+    fn default() -> Self {
+        Self::Normal(CommandFocus::default())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsCommandMode {
+    Browsing,
+    EditingOpenWith,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutputSearchCommandMode {
+    InlineInput,
+    Modal,
 }
 
 pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppCommand {
@@ -481,36 +540,36 @@ pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppComm
         InputEvent::Terminal(Event::Key(key)) if is_stop_key(key.code, key.modifiers) => {
             AppCommand::StopRun
         }
-        InputEvent::Terminal(Event::Key(key)) if context.discovery_running => {
-            command_for_discovery_running(key.code)
-        }
-        InputEvent::Terminal(Event::Key(key)) if context.settings_open_with_input => {
-            command_for_settings_open_with_input(key.code, key.modifiers)
-        }
-        InputEvent::Terminal(Event::Key(key)) if context.settings_modal => {
-            command_for_settings_modal(key.code)
-        }
-        InputEvent::Terminal(Event::Key(key)) if context.disk_cleanup_modal => {
-            command_for_disk_cleanup_modal(key.code)
-        }
-        InputEvent::Terminal(Event::Key(key)) if context.output_search_modal => {
-            command_for_output_search_modal(key.code, key.modifiers)
-        }
-        InputEvent::Terminal(Event::Key(key)) if context.output_search_input => {
-            command_for_output_search_input(key.code, key.modifiers)
-        }
-        InputEvent::Terminal(Event::Key(key)) if context.help_visible => {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => AppCommand::CloseHelp,
-                code if is_help_key(code, key.modifiers) => AppCommand::CloseHelp,
-                _ => AppCommand::Noop,
-            }
-        }
-        InputEvent::Terminal(Event::Key(key)) => {
-            command_for_key(key.code, key.modifiers, context.focus)
-        }
+        InputEvent::Terminal(Event::Key(key)) => command_for_mode(key.code, key.modifiers, context.mode),
         InputEvent::Terminal(_) => AppCommand::Noop,
         InputEvent::Error(error) => AppCommand::ReportStatus(format!("Input error: {error}")),
+    }
+}
+
+fn command_for_mode(code: KeyCode, modifiers: KeyModifiers, mode: CommandMode) -> AppCommand {
+    match mode {
+        CommandMode::DiscoveryRunning => command_for_discovery_running(code),
+        CommandMode::Settings(SettingsCommandMode::EditingOpenWith) => {
+            command_for_settings_open_with_input(code, modifiers)
+        }
+        CommandMode::Settings(SettingsCommandMode::Browsing) => command_for_settings_modal(code),
+        CommandMode::DiskCleanup => command_for_disk_cleanup_modal(code),
+        CommandMode::OutputSearch(OutputSearchCommandMode::Modal) => {
+            command_for_output_search_modal(code, modifiers)
+        }
+        CommandMode::OutputSearch(OutputSearchCommandMode::InlineInput) => {
+            command_for_output_search_input(code, modifiers)
+        }
+        CommandMode::Help => command_for_help(code, modifiers),
+        CommandMode::Normal(focus) => command_for_key(code, modifiers, focus),
+    }
+}
+
+fn command_for_help(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => AppCommand::CloseHelp,
+        code if is_help_key(code, modifiers) => AppCommand::CloseHelp,
+        _ => AppCommand::Noop,
     }
 }
 
@@ -804,21 +863,12 @@ mod tests {
         assert_eq!(
             command_for_input(
                 &event,
-                CommandContext {
-                    output_search_input: true,
-                    ..CommandContext::default()
-                }
+                CommandContext::output_search(OutputSearchCommandMode::InlineInput)
             ),
             AppCommand::StopRun
         );
         assert_eq!(
-            command_for_input(
-                &event,
-                CommandContext {
-                    help_visible: true,
-                    ..CommandContext::default()
-                }
-            ),
+            command_for_input(&event, CommandContext::help()),
             AppCommand::StopRun
         );
     }
@@ -889,10 +939,7 @@ mod tests {
 
     #[test]
     fn settings_modal_uses_settings_commands() {
-        let context = CommandContext {
-            settings_modal: true,
-            ..CommandContext::default()
-        };
+        let context = CommandContext::settings(SettingsCommandMode::Browsing);
         let next =
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         assert_eq!(command_for_input(&next, context), AppCommand::SettingsNext);
@@ -914,11 +961,7 @@ mod tests {
 
     #[test]
     fn settings_open_with_input_accepts_text_and_commit() {
-        let context = CommandContext {
-            settings_modal: true,
-            settings_open_with_input: true,
-            ..CommandContext::default()
-        };
+        let context = CommandContext::settings(SettingsCommandMode::EditingOpenWith);
         let char =
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)));
         assert_eq!(
@@ -936,11 +979,7 @@ mod tests {
 
     #[test]
     fn settings_open_with_input_ignores_modified_navigation() {
-        let context = CommandContext {
-            settings_modal: true,
-            settings_open_with_input: true,
-            ..CommandContext::default()
-        };
+        let context = CommandContext::settings(SettingsCommandMode::EditingOpenWith);
         let ctrl_left =
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)));
         let super_v =
@@ -952,10 +991,7 @@ mod tests {
 
     #[test]
     fn discovery_running_blocks_normal_tui_commands() {
-        let context = CommandContext {
-            discovery_running: true,
-            ..CommandContext::default()
-        };
+        let context = CommandContext::discovery_running();
         let down =
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         assert_eq!(command_for_input(&down, context), AppCommand::Noop);
@@ -967,10 +1003,7 @@ mod tests {
 
     #[test]
     fn disk_cleanup_modal_uses_cleanup_commands() {
-        let context = CommandContext {
-            disk_cleanup_modal: true,
-            ..CommandContext::default()
-        };
+        let context = CommandContext::disk_cleanup();
         let clean =
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)));
         assert_eq!(command_for_input(&clean, context), AppCommand::RunCargoClean);
@@ -1082,10 +1115,7 @@ mod tests {
 
     #[test]
     fn output_search_input_accepts_text_and_controls() {
-        let context = CommandContext {
-            output_search_input: true,
-            ..CommandContext::default()
-        };
+        let context = CommandContext::output_search(OutputSearchCommandMode::InlineInput);
         let text = InputEvent::Terminal(Event::Key(KeyEvent::new(
             KeyCode::Char('p'),
             KeyModifiers::NONE,
@@ -1156,10 +1186,7 @@ mod tests {
 
     #[test]
     fn output_search_modal_accepts_navigation_and_apply_keys() {
-        let context = CommandContext {
-            output_search_modal: true,
-            ..CommandContext::default()
-        };
+        let context = CommandContext::output_search(OutputSearchCommandMode::Modal);
 
         let tab = InputEvent::Terminal(Event::Key(KeyEvent::new(
             KeyCode::Tab,
@@ -1189,10 +1216,7 @@ mod tests {
 
     #[test]
     fn help_context_only_closes_on_close_keys() {
-        let context = CommandContext {
-            help_visible: true,
-            ..CommandContext::default()
-        };
+        let context = CommandContext::help();
         let event =
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         assert_eq!(command_for_input(&event, context), AppCommand::Noop);
