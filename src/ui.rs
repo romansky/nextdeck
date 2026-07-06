@@ -769,9 +769,6 @@ fn test_details_modal_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
         Line::styled("Manual", theme.title(true)),
         detail_line("cargo", selected_manual_command(app, node), theme.accent(), theme),
     ]);
-    if node.status == TestStatus::Running {
-        lines.push(Line::styled("Duration updates while the test is running.", theme.muted()));
-    }
     lines
 }
 
