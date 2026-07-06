@@ -484,6 +484,12 @@ impl CommandContext {
         }
     }
 
+    pub const fn discovery_error() -> Self {
+        Self {
+            mode: CommandMode::DiscoveryError,
+        }
+    }
+
     pub const fn settings(mode: SettingsCommandMode) -> Self {
         Self {
             mode: CommandMode::Settings(mode),
@@ -508,6 +514,7 @@ pub enum CommandMode {
     Normal(CommandFocus),
     Help,
     DiscoveryRunning,
+    DiscoveryError,
     Settings(SettingsCommandMode),
     DiskCleanup,
     OutputSearch(OutputSearchCommandMode),
@@ -516,6 +523,15 @@ pub enum CommandMode {
 impl Default for CommandMode {
     fn default() -> Self {
         Self::Normal(CommandFocus::default())
+    }
+}
+
+impl CommandMode {
+    pub const fn suppresses_pane_focus(self) -> bool {
+        !matches!(
+            self,
+            Self::Normal(_) | Self::OutputSearch(OutputSearchCommandMode::InlineInput)
+        )
     }
 }
 
@@ -540,7 +556,9 @@ pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppComm
         InputEvent::Terminal(Event::Key(key)) if is_stop_key(key.code, key.modifiers) => {
             AppCommand::StopRun
         }
-        InputEvent::Terminal(Event::Key(key)) => command_for_mode(key.code, key.modifiers, context.mode),
+        InputEvent::Terminal(Event::Key(key)) => {
+            command_for_mode(key.code, key.modifiers, context.mode)
+        }
         InputEvent::Terminal(_) => AppCommand::Noop,
         InputEvent::Error(error) => AppCommand::ReportStatus(format!("Input error: {error}")),
     }
@@ -549,6 +567,7 @@ pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppComm
 fn command_for_mode(code: KeyCode, modifiers: KeyModifiers, mode: CommandMode) -> AppCommand {
     match mode {
         CommandMode::DiscoveryRunning => command_for_discovery_running(code),
+        CommandMode::DiscoveryError => command_for_key(code, modifiers, CommandFocus::Output),
         CommandMode::Settings(SettingsCommandMode::EditingOpenWith) => {
             command_for_settings_open_with_input(code, modifiers)
         }
@@ -999,6 +1018,19 @@ mod tests {
         let quit =
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)));
         assert_eq!(command_for_input(&quit, context), AppCommand::Quit);
+    }
+
+    #[test]
+    fn discovery_error_uses_output_commands_but_suppresses_base_focus() {
+        let context = CommandContext::discovery_error();
+        let down =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        let search =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)));
+
+        assert!(context.mode.suppresses_pane_focus());
+        assert_eq!(command_for_input(&down, context), AppCommand::MoveDown);
+        assert_eq!(command_for_input(&search, context), AppCommand::StartOutputSearch);
     }
 
     #[test]

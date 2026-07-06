@@ -232,6 +232,9 @@ impl App {
         if self.show_help {
             return CommandContext::help();
         }
+        if self.discovery.error.is_some() {
+            return CommandContext::discovery_error();
+        }
         CommandContext::normal(match self.command_focus() {
             FocusPane::Tree => CommandFocus::Tests,
             FocusPane::Output => CommandFocus::Output,
@@ -1969,7 +1972,7 @@ mod tests {
             "first\nsecond\nneedle\nfourth".to_owned(),
         )));
 
-        assert_eq!(app.command_context().mode, CommandMode::Normal(CommandFocus::Output));
+        assert_eq!(app.command_context().mode, CommandMode::DiscoveryError);
         app.apply_command(AppCommand::MoveDown);
         assert_eq!(app.output_scroll, 1);
 
