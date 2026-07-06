@@ -26,7 +26,7 @@ pub struct AppLayout {
 }
 
 struct PanelChrome<'a> {
-    title: &'a str,
+    status: &'a str,
     actions: &'a str,
 }
 
@@ -101,9 +101,9 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
         .collect::<Vec<_>>();
 
     let focused = pane_focused(app, FocusPane::Tree);
-    let title = tests_title(app);
+    let status = tests_status(app);
     let list = List::new(items)
-        .block(theme.panel_block_with_actions(&title, Some(tests_actions()), focused))
+        .block(theme.panel_block(&status, Some(tests_actions()), focused))
         .highlight_style(theme.selected());
     frame.render_widget(Clear, area);
     frame.render_widget(list, area);
@@ -121,7 +121,7 @@ fn modal_visible(app: &App) -> bool {
         || app.discovery.error.is_some()
 }
 
-fn tests_title(app: &App) -> String {
+fn tests_status(app: &App) -> String {
     format!(
         "Tests <filters: {} {} {} {}>",
         filter_hint("pass", "p", app.tree.view_filter.show_success),
@@ -147,13 +147,13 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     if app.discovery.error.is_some() {
         let text = app.output_text();
         let page_size = area.height.saturating_sub(2).max(1);
-        let title = output_title_for("Discovery", app, &text, page_size, app.output_scroll);
+        let status = output_status_for("Discovery", app, &text, page_size, app.output_scroll);
         draw_output_panel(
             frame,
             theme,
             area,
             PanelChrome {
-                title: &title,
+                status: &status,
                 actions: output_actions(),
             },
             output_lines(app, theme, &text),
@@ -413,9 +413,10 @@ fn node_label(node: &TestNode) -> String {
 
 fn draw_details(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     let lines = selected_details(app, theme);
+    let status = info_status(app);
     let details = Paragraph::new(lines)
         .style(theme.text())
-        .block(theme.panel_block_with_actions("Info", Some(info_actions()), false))
+        .block(theme.panel_block(&status, Some(info_actions()), false))
         .wrap(Wrap { trim: false });
     frame.render_widget(Clear, area);
     frame.render_widget(details, area);
@@ -626,13 +627,13 @@ fn status_label(status: TestStatus) -> &'static str {
 fn draw_output(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     let text = app.output_text();
     let focused = pane_focused(app, FocusPane::Output);
-    let title = output_title(app, &text);
+    let status = output_status(app, &text);
     draw_output_panel(
         frame,
         theme,
         area,
         PanelChrome {
-            title: &title,
+            status: &status,
             actions: output_actions(),
         },
         output_lines(app, theme, &text),
@@ -655,8 +656,8 @@ fn draw_output_panel(
     let scroll = output_render_scroll_for_count(text_line_count, page_size, scroll);
     let output = Paragraph::new(lines)
         .style(theme.text())
-        .block(theme.panel_block_with_actions(
-            chrome.title,
+        .block(theme.panel_block(
+            chrome.status,
             Some(chrome.actions),
             focused,
         ))
@@ -678,11 +679,15 @@ fn output_actions() -> &'static str {
     "actions: [/]search [n]ext [N]prev [o]pen-editor"
 }
 
-fn output_title(app: &App, text: &str) -> String {
-    output_title_for("Output", app, text, app.output_page_size, app.output_scroll)
+fn info_status(app: &App) -> String {
+    format!("Info <disk: {}>", app.disk_usage.summary_label())
 }
 
-fn output_title_for(label: &str, app: &App, text: &str, page_size: u16, scroll: u16) -> String {
+fn output_status(app: &App, text: &str) -> String {
+    output_status_for("Output", app, text, app.output_page_size, app.output_scroll)
+}
+
+fn output_status_for(label: &str, app: &App, text: &str, page_size: u16, scroll: u16) -> String {
     let total = output_line_count(text);
     let search = output_search_title(app, text);
     let top = output_render_scroll(text, page_size, scroll) as usize;
@@ -891,37 +896,37 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn output_title_shows_all_when_text_fits() {
+    fn output_status_shows_all_when_text_fits() {
         let mut app = App::new(Tree::from_tests(Vec::new()));
         app.output_page_size = 5;
 
         assert_eq!(
-            output_title(&app, "one\ntwo"),
+            output_status(&app, "one\ntwo"),
             "Output <lines: 1-2/2> <search: [            ] 0/0 [n]ext [f]ilter:off [r]egex:off [c]ase-sensitive:off>"
         );
     }
 
     #[test]
-    fn output_title_shows_clamped_line_ranges() {
+    fn output_status_shows_clamped_line_ranges() {
         let mut app = App::new(Tree::from_tests(Vec::new()));
         app.output_page_size = 3;
         let text = "1\n2\n3\n4\n5\n6";
 
         app.output_scroll = 0;
         assert_eq!(
-            output_title(&app, text),
+            output_status(&app, text),
             "Output <lines: 1-3/6> <search: [            ] 0/0 [n]ext [f]ilter:off [r]egex:off [c]ase-sensitive:off>"
         );
 
         app.output_scroll = 2;
         assert_eq!(
-            output_title(&app, text),
+            output_status(&app, text),
             "Output <lines: 3-5/6> <search: [            ] 0/0 [n]ext [f]ilter:off [r]egex:off [c]ase-sensitive:off>"
         );
 
         app.output_scroll = 3;
         assert_eq!(
-            output_title(&app, text),
+            output_status(&app, text),
             "Output <lines: 4-6/6> <search: [            ] 0/0 [n]ext [f]ilter:off [r]egex:off [c]ase-sensitive:off>"
         );
     }
@@ -934,14 +939,21 @@ mod tests {
     }
 
     #[test]
-    fn tests_title_includes_focus_filter_hints() {
+    fn tests_status_includes_filter_hints() {
         let mut app = App::new(Tree::from_tests(Vec::new()));
         app.tree.view_filter.show_ignored = false;
 
         assert_eq!(
-            tests_title(&app),
+            tests_status(&app),
             "Tests <filters: [p]ass:on [f]ail:on [i]gnore:off [s]kip:on>"
         );
+    }
+
+    #[test]
+    fn info_status_includes_disk_state() {
+        let app = App::new(Tree::from_tests(Vec::new()));
+
+        assert_eq!(info_status(&app), "Info <disk: not scanned>");
     }
 
     #[test]
@@ -1076,14 +1088,14 @@ mod tests {
     }
 
     #[test]
-    fn output_title_includes_search_flags() {
+    fn output_status_includes_search_flags() {
         let mut app = App::new(Tree::from_tests(Vec::new()));
         app.output_page_size = 5;
         app.output_search.query = "panic".to_owned();
         app.output_search.filter = true;
 
         assert_eq!(
-            output_title(&app, "panic line"),
+            output_status(&app, "panic line"),
             "Output <lines: 1-1/1> <search: [panic       ] 0/1 [n]ext [f]ilter:on [r]egex:off [c]ase-sensitive:off>"
         );
     }
@@ -1111,13 +1123,13 @@ mod tests {
     }
 
     #[test]
-    fn output_title_shows_submit_and_advanced_hints_while_searching() {
+    fn output_status_shows_submit_and_advanced_hints_while_searching() {
         let mut app = App::new(Tree::from_tests(Vec::new()));
         app.output_search.draft_query = "panic".to_owned();
         app.output_search.input_active = true;
 
         assert_eq!(
-            output_title(&app, "panic line"),
+            output_status(&app, "panic line"),
             "Output <lines: 1-1/1> <search: [panic_      ] 0/0 [enter]submit [C+enter]advanced [n]ext [f]ilter:off [r]egex:off [c]ase-sensitive:off>"
         );
     }

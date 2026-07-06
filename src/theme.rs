@@ -82,14 +82,14 @@ impl Theme {
         }
     }
 
-    pub fn panel_block_with_actions<'a>(
+    pub fn panel_block<'a>(
         &self,
-        title: &'a str,
+        status: &'a str,
         actions: Option<&'a str>,
         focused: bool,
     ) -> Block<'a> {
         let block = Block::default()
-            .title(Line::styled(format!(" {title} "), self.title(focused)))
+            .title(Line::styled(format!(" {status} "), self.title(focused)))
             .borders(Borders::ALL)
             .border_style(self.border(focused));
         if let Some(actions) = actions {
