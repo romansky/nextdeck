@@ -24,6 +24,7 @@ pub enum AppCommand {
     MoveEnd,
     PageUp,
     PageDown,
+    ActivateSelected,
     NarrowTestsPane,
     WidenTestsPane,
     RefreshTests,
@@ -31,6 +32,7 @@ pub enum AppCommand {
     RunFailed,
     OpenSource,
     OpenOutput,
+    CloseTestDetails,
     OpenSettings,
     CloseSettings,
     SettingsNext,
@@ -98,6 +100,7 @@ pub enum CommandKind {
     ToggleFocus,
     MoveUpDown,
     MoveLeftRight,
+    ActivateSelected,
     ToggleSelected,
     MoveHomeEnd,
     PageUpDown,
@@ -163,9 +166,16 @@ const COMMANDS: &[CommandInfo] = &[
         ticker: "fold",
     },
     CommandInfo {
+        kind: CommandKind::ActivateSelected,
+        group: CommandGroup::Navigation,
+        keys: "Enter",
+        label: "open selected details",
+        ticker: "activate",
+    },
+    CommandInfo {
         kind: CommandKind::ToggleSelected,
         group: CommandGroup::Navigation,
-        keys: "Enter/Space",
+        keys: "Space",
         label: "toggle selected branch",
         ticker: "toggle",
     },
@@ -369,6 +379,7 @@ impl AppCommand {
             Self::ToggleFocus => Some(CommandKind::ToggleFocus),
             Self::MoveUp | Self::MoveDown => Some(CommandKind::MoveUpDown),
             Self::MoveLeft | Self::MoveRight => Some(CommandKind::MoveLeftRight),
+            Self::ActivateSelected => Some(CommandKind::ActivateSelected),
             Self::ToggleSelected => Some(CommandKind::ToggleSelected),
             Self::MoveHome | Self::MoveEnd => Some(CommandKind::MoveHomeEnd),
             Self::PageUp | Self::PageDown => Some(CommandKind::PageUpDown),
@@ -389,6 +400,7 @@ impl AppCommand {
             Self::SelectNextFailed | Self::SelectPreviousFailed => Some(CommandKind::SelectFailed),
             Self::StartOutputSearch => Some(CommandKind::StartOutputSearch),
             Self::OpenOutputSearchModal
+            | Self::CloseTestDetails
             | Self::CloseSettings
             | Self::SettingsNext
             | Self::SettingsPrevious
@@ -433,6 +445,7 @@ impl AppCommand {
             Self::OpenOutputSearchModal => Some("search modal"),
             Self::ApplyOutputSearch => Some("search apply"),
             Self::CancelOutputSearch => Some("search cancel"),
+            Self::CloseTestDetails => Some("close details"),
             Self::SearchModalNextControl => Some("search focus"),
             Self::SearchModalPreviousControl => Some("search focus"),
             Self::SearchModalActivate => Some("search action"),
@@ -490,6 +503,7 @@ pub enum InputMode {
     SettingsOpenWith,
     SettingsModal,
     DiskCleanupModal,
+    TestDetailsModal,
     OutputSearchModal,
     OutputSearchInline,
 }
@@ -501,6 +515,7 @@ pub enum OverlayMode {
     DiscoveryError,
     Settings,
     DiskCleanup,
+    TestDetails,
     OutputSearch,
 }
 
@@ -531,6 +546,7 @@ fn command_for_input_mode(
         InputMode::SettingsOpenWith => command_for_settings_open_with_input(code, modifiers),
         InputMode::SettingsModal => command_for_settings_modal(code),
         InputMode::DiskCleanupModal => command_for_disk_cleanup_modal(code),
+        InputMode::TestDetailsModal => command_for_test_details_modal(code),
         InputMode::OutputSearchModal => command_for_output_search_modal(code, modifiers),
         InputMode::OutputSearchInline => command_for_output_search_input(code, modifiers),
         InputMode::Help => command_for_help(code, modifiers),
@@ -601,6 +617,13 @@ fn command_for_disk_cleanup_modal(code: KeyCode) -> AppCommand {
         KeyCode::Esc => AppCommand::CloseDiskCleanup,
         KeyCode::Char('c') => AppCommand::RunCargoClean,
         KeyCode::Char('r') | KeyCode::Char('d') => AppCommand::RefreshDiskUsage,
+        _ => AppCommand::Noop,
+    }
+}
+
+fn command_for_test_details_modal(code: KeyCode) -> AppCommand {
+    match code {
+        KeyCode::Esc => AppCommand::CloseTestDetails,
         _ => AppCommand::Noop,
     }
 }
@@ -709,7 +732,8 @@ fn command_for_tests_key(code: KeyCode) -> AppCommand {
     match code {
         KeyCode::Left => AppCommand::MoveLeft,
         KeyCode::Right => AppCommand::MoveRight,
-        KeyCode::Enter | KeyCode::Char(' ') => AppCommand::ToggleSelected,
+        KeyCode::Enter => AppCommand::ActivateSelected,
+        KeyCode::Char(' ') => AppCommand::ToggleSelected,
         KeyCode::Char('p') => AppCommand::ToggleShowSuccess,
         KeyCode::Char('f') => AppCommand::ToggleShowFailed,
         KeyCode::Char('i') => AppCommand::ToggleShowIgnored,

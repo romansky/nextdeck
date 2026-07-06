@@ -40,6 +40,7 @@ pub struct App {
     pub output_search: OutputSearchState,
     pub focus: FocusPane,
     pub show_help: bool,
+    pub show_test_details: bool,
     pub tree_page_size: usize,
     pub output_page_size: u16,
     pub discovery: DiscoveryState,
@@ -152,6 +153,7 @@ impl App {
             output_search: OutputSearchState::default(),
             focus: FocusPane::Tree,
             show_help: false,
+            show_test_details: false,
             tree_page_size: 1,
             output_page_size: 1,
             discovery: DiscoveryState::default(),
@@ -221,6 +223,8 @@ impl App {
             Some(OverlayMode::DiskCleanup)
         } else if self.output_search.modal_open {
             Some(OverlayMode::OutputSearch)
+        } else if self.show_test_details {
+            Some(OverlayMode::TestDetails)
         } else if self.discovery.running {
             Some(OverlayMode::Discovery)
         } else if self.discovery.error.is_some() {
@@ -236,6 +240,7 @@ impl App {
             Some(OverlayMode::Settings) => InputMode::SettingsModal,
             Some(OverlayMode::DiskCleanup) => InputMode::DiskCleanupModal,
             Some(OverlayMode::OutputSearch) => InputMode::OutputSearchModal,
+            Some(OverlayMode::TestDetails) => InputMode::TestDetailsModal,
             Some(OverlayMode::Discovery) => InputMode::DiscoveryRunning,
             Some(OverlayMode::DiscoveryError) => InputMode::Normal(CommandFocus::Output),
             None if self.output_search.input_active => InputMode::OutputSearchInline,
@@ -269,6 +274,7 @@ impl App {
     }
 
     pub fn begin_discovery(&mut self) {
+        self.show_test_details = false;
         self.discovery = DiscoveryState {
             running: true,
             ticks: 0,
@@ -417,6 +423,18 @@ impl App {
                 };
                 self.resize_tests_pane(delta)
             }
+            SettingsField::TreeDuration => {
+                self.settings.tree_duration_mode = if direction < 0 {
+                    self.settings.tree_duration_mode.previous()
+                } else {
+                    self.settings.tree_duration_mode.next()
+                };
+                self.status = format!(
+                    "Tests time: {}",
+                    self.settings.tree_duration_mode.label()
+                );
+                self.save_settings_effect()
+            }
             SettingsField::StorageThreshold => {
                 let delta = if direction < 0 {
                     -(STORAGE_LOW_SPACE_THRESHOLD_STEP_GB as i16)
@@ -461,9 +479,10 @@ impl App {
                 AppEffect::None
             }
             SettingsField::ColorBlindMode => self.adjust_selected_setting(1),
-            SettingsField::TreeWidth | SettingsField::StorageThreshold | SettingsField::Theme => {
-                self.adjust_selected_setting(1)
-            }
+            SettingsField::TreeWidth
+            | SettingsField::TreeDuration
+            | SettingsField::StorageThreshold
+            | SettingsField::Theme => self.adjust_selected_setting(1),
         }
     }
 
@@ -547,6 +566,14 @@ impl App {
             }
             AppCommand::ToggleSelected => {
                 self.toggle_selected();
+                AppEffect::None
+            }
+            AppCommand::ActivateSelected => {
+                self.activate_selected();
+                AppEffect::None
+            }
+            AppCommand::CloseTestDetails => {
+                self.close_test_details();
                 AppEffect::None
             }
             AppCommand::MoveHome => {
@@ -781,6 +808,20 @@ impl App {
 
     pub fn toggle_selected(&mut self) {
         self.with_selection_reset(|tree| tree.toggle_selected());
+    }
+
+    pub fn activate_selected(&mut self) {
+        if self.tree.selected_node().is_none() {
+            self.status = "No selection".to_owned();
+            return;
+        }
+        self.show_test_details = true;
+        self.status = "Details opened".to_owned();
+    }
+
+    pub fn close_test_details(&mut self) {
+        self.show_test_details = false;
+        self.status = "Test details closed".to_owned();
     }
 
     pub fn expand_selected(&mut self) {

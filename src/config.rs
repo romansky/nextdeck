@@ -16,6 +16,34 @@ pub const STORAGE_LOW_SPACE_THRESHOLD_STEP_GB: u16 = 1;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum TreeDurationMode {
+    #[default]
+    Wall,
+    Aggregate,
+}
+
+impl TreeDurationMode {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Wall => "wall",
+            Self::Aggregate => "aggregate",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Wall => Self::Aggregate,
+            Self::Aggregate => Self::Wall,
+        }
+    }
+
+    pub const fn previous(self) -> Self {
+        self.next()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ThemePreference {
     #[default]
     Auto,
@@ -53,6 +81,7 @@ impl ThemePreference {
 #[serde(default)]
 pub struct AppSettings {
     pub tree_width_percent: u16,
+    pub tree_duration_mode: TreeDurationMode,
     #[serde(alias = "editor_command")]
     pub open_with_command: Option<String>,
     pub theme_mode: ThemePreference,
@@ -64,6 +93,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             tree_width_percent: DEFAULT_TREE_WIDTH_PERCENT,
+            tree_duration_mode: TreeDurationMode::Wall,
             open_with_command: None,
             theme_mode: ThemePreference::Auto,
             color_blind_mode: false,

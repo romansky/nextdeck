@@ -112,6 +112,53 @@ fn binary_nextest_args(package: &str, name: &str, kind: &str) -> Vec<String> {
     args
 }
 
+pub fn manual_test_command(test: &DiscoveredTest) -> String {
+    let mut args = vec![
+        "cargo".to_owned(),
+        "nextest".to_owned(),
+        "run".to_owned(),
+    ];
+    args.extend(binary_nextest_args(
+        &test.package,
+        &test.binary,
+        &test.binary_kind,
+    ));
+    if test.ignored {
+        args.extend(["--run-ignored".to_owned(), "only".to_owned()]);
+    }
+    args.push(test.full_name.clone());
+    shell_command(args)
+}
+
+pub fn manual_run_command(scope: &RunScope) -> String {
+    let mut args = vec![
+        "cargo".to_owned(),
+        "nextest".to_owned(),
+        "run".to_owned(),
+    ];
+    args.extend(scope.nextest_args());
+    shell_command(args)
+}
+
+fn shell_command(args: Vec<String>) -> String {
+    args.iter()
+        .map(|arg| shell_quote(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote(arg: &str) -> String {
+    if !arg.is_empty()
+        && arg.chars().all(|ch| {
+            ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '=')
+        })
+    {
+        arg.to_owned()
+    } else {
+        format!("'{}'", arg.replace('\'', "'\\''"))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RunEvent {
     RunMetadata {

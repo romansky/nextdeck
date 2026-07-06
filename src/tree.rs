@@ -5,7 +5,7 @@ use std::{
 
 use serde::Serialize;
 
-use crate::{output::TestOutput, state::StatusCounts};
+use crate::{config::TreeDurationMode, output::TestOutput, state::StatusCounts};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TestKey {
@@ -126,6 +126,8 @@ pub struct TestNode {
     pub status: TestStatus,
     pub output: TestOutput,
     pub started_at: Option<Instant>,
+    pub run_started_at: Option<Instant>,
+    pub finished_at: Option<Instant>,
     pub expanded: bool,
     pub children: Vec<TestNode>,
 }
@@ -139,29 +141,79 @@ impl TestNode {
             status: TestStatus::Pending,
             output: TestOutput::default(),
             started_at: None,
+            run_started_at: None,
+            finished_at: None,
             expanded: false,
             children: Vec::new(),
         }
     }
 
-    pub fn display_duration(&self) -> Option<Duration> {
+    pub fn display_duration(&self, mode: TreeDurationMode) -> Option<Duration> {
+        self.display_duration_at(mode, Instant::now())
+    }
+
+    fn display_duration_at(&self, mode: TreeDurationMode, now: Instant) -> Option<Duration> {
         if matches!(self.kind, NodeKind::Test(_)) {
-            return self.output.duration.or_else(|| {
-                (self.status == TestStatus::Running)
-                    .then(|| self.started_at.map(|started_at| started_at.elapsed()))
-                    .flatten()
-            });
+            return self.test_display_duration_at(now);
         }
 
+        match mode {
+            TreeDurationMode::Wall => self
+                .duration_span_at(now)
+                .map(|(started_at, finished_at)| finished_at.duration_since(started_at))
+                .or_else(|| self.aggregate_duration_at(now)),
+            TreeDurationMode::Aggregate => self.aggregate_duration_at(now),
+        }
+    }
+
+    fn test_display_duration_at(&self, now: Instant) -> Option<Duration> {
+        self.output.duration.or_else(|| {
+            (self.status == TestStatus::Running)
+                .then(|| self.started_at.map(|started_at| now.duration_since(started_at)))
+                .flatten()
+        })
+    }
+
+    fn aggregate_duration_at(&self, now: Instant) -> Option<Duration> {
         let mut total = Duration::ZERO;
         let mut has_duration = false;
         for child in &self.children {
-            if let Some(duration) = child.display_duration() {
+            if let Some(duration) = child.display_duration_at(TreeDurationMode::Aggregate, now) {
                 total += duration;
                 has_duration = true;
             }
         }
         has_duration.then_some(total)
+    }
+
+    fn duration_span_at(&self, now: Instant) -> Option<(Instant, Instant)> {
+        if matches!(self.kind, NodeKind::Test(_)) {
+            if self.status == TestStatus::Running {
+                return self.started_at.map(|started_at| (started_at, now));
+            }
+            let finished_at = self.finished_at?;
+            let started_at = self.run_started_at.or_else(|| {
+                self.output
+                    .duration
+                    .and_then(|duration| finished_at.checked_sub(duration))
+            })?;
+            return Some((started_at, finished_at));
+        }
+
+        let mut started_at = None;
+        let mut finished_at = None;
+        for child in &self.children {
+            let Some((child_started, child_finished)) = child.duration_span_at(now) else {
+                continue;
+            };
+            started_at = Some(
+                started_at.map_or(child_started, |current: Instant| current.min(child_started)),
+            );
+            finished_at = Some(
+                finished_at.map_or(child_finished, |current: Instant| current.max(child_finished)),
+            );
+        }
+        started_at.zip(finished_at)
     }
 }
 
@@ -340,6 +392,8 @@ impl Tree {
             if let NodeKind::Test(test) = &node.kind {
                 node.output = TestOutput::default();
                 node.started_at = None;
+                node.run_started_at = None;
+                node.finished_at = None;
                 if test.ignored {
                     node.status = TestStatus::Ignored;
                 } else if scope.matches_test(test) {
@@ -358,8 +412,11 @@ impl Tree {
                 && let NodeKind::Test(test) = &node.kind
                 && !test.ignored
             {
+                let now = Instant::now();
                 node.status = TestStatus::Running;
-                node.started_at = Some(Instant::now());
+                node.started_at = Some(now);
+                node.run_started_at = Some(now);
+                node.finished_at = None;
             }
         });
         self.recompute_statuses();
@@ -377,6 +434,7 @@ impl Tree {
             if node_matches(node, key) {
                 node.status = status;
                 node.started_at = None;
+                node.finished_at = Some(Instant::now());
                 let stdout = if stdout.is_empty() {
                     node.output.stdout.clone()
                 } else {
@@ -411,6 +469,8 @@ impl Tree {
             if node.status == TestStatus::Running {
                 node.status = TestStatus::Pending;
                 node.started_at = None;
+                node.run_started_at = None;
+                node.finished_at = None;
             }
         });
         self.recompute_statuses();

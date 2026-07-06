@@ -115,13 +115,6 @@ impl Theme {
         }
     }
 
-    pub fn modal_block<'a>(&self, title: &'a str) -> Block<'a> {
-        Block::default()
-            .title(Line::styled(format!(" {title} "), self.title(true)))
-            .borders(Borders::ALL)
-            .border_style(self.border(true))
-    }
-
     pub fn border(&self, focused: bool) -> Style {
         if focused {
             Style::default().fg(self.focused_border)

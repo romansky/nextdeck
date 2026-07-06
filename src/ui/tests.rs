@@ -1,6 +1,6 @@
     use super::*;
     use crate::disk_usage::{DiskUsageEntry, DiskUsageSnapshot};
-    use crate::tree::{DiscoveredTest, TestKey, Tree};
+    use crate::tree::{DiscoveredTest, TestKey, TestNode, TestStatus, Tree};
     use std::path::PathBuf;
 
     fn app_with_tree(tree: Tree) -> App {
@@ -144,9 +144,13 @@
     }
 
     #[test]
-    fn settings_modal_includes_storage_threshold() {
+    fn settings_modal_includes_storage_and_duration_settings() {
         let app = app_with_tree(Tree::from_tests(Vec::new()));
 
+        assert_eq!(
+            settings_value(&app, SettingsField::TreeDuration),
+            "wall"
+        );
         assert_eq!(
             settings_value(&app, SettingsField::StorageThreshold),
             "10 GiB"
@@ -174,9 +178,13 @@
     fn panel_actions_describe_local_commands() {
         assert_eq!(
             tests_actions(),
-            "actions: [r]un [R]failed [o]pen-editor [u]update"
+            "actions: [enter]details [r]un [R]failed [o]pen-editor [u]update"
         );
         assert_eq!(info_actions(), "actions: [d]disk-refresh [D]cleanup");
+        assert_eq!(
+            disk_cleanup_actions(),
+            "actions: [c]cargo-clean [r]refresh [esc]close"
+        );
         assert_eq!(
             output_actions(),
             "actions: [/]search [n]ext [N]prev [o]pen-editor"
@@ -204,6 +212,11 @@
         app.show_help = true;
         app.focus = FocusPane::Output;
         assert!(!pane_focused(&app, FocusPane::Output));
+
+        app.show_help = false;
+        app.show_test_details = true;
+        app.focus = FocusPane::Tree;
+        assert!(!pane_focused(&app, FocusPane::Tree));
     }
 
     #[test]
@@ -231,12 +244,13 @@
         assert_help_order(
             &text,
             &[
-                "toggle selected branch",
+                "open selected details",
                 "first or last row",
                 "collapse or expand",
                 "page active pane",
                 "narrow tests pane",
                 "widen tests pane",
+                "toggle selected branch",
                 "switch tree/output focus",
                 "move selection",
             ],
@@ -320,7 +334,10 @@
             ignored: false,
         }]);
 
-        assert_eq!(tree_leading_fields(0, &tree.root), "v [        ] ");
+        assert_eq!(
+            tree_leading_fields(0, &tree.root, config::TreeDurationMode::Wall),
+            "v [        ] "
+        );
     }
 
     #[test]
@@ -353,9 +370,112 @@
         let package = &tree.root.children[0];
         let module = &package.children[0];
         let test = &module.children[0];
-        assert_ne!(tree_leading_fields(1, package), "  > [        ] ");
-        assert_ne!(tree_leading_fields(2, module), "    > [        ] ");
-        assert_ne!(tree_leading_fields(3, test), "        [        ] ");
+        assert_ne!(
+            tree_leading_fields(1, package, config::TreeDurationMode::Wall),
+            "  > [        ] "
+        );
+        assert_ne!(
+            tree_leading_fields(2, module, config::TreeDurationMode::Wall),
+            "    > [        ] "
+        );
+        assert_ne!(
+            tree_leading_fields(3, test, config::TreeDurationMode::Wall),
+            "        [        ] "
+        );
+    }
+
+    #[test]
+    fn test_details_modal_includes_live_info_and_manual_command() {
+        let mut test = DiscoveredTest {
+            key: TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: "tests::case one".to_owned(),
+            },
+            package: "demo".to_owned(),
+            binary: "demo".to_owned(),
+            binary_kind: "lib".to_owned(),
+            cwd: PathBuf::from("."),
+            source_path: Some(PathBuf::from("src/lib.rs")),
+            module: Some("tests".to_owned()),
+            name: "case one".to_owned(),
+            full_name: "tests::case one".to_owned(),
+            status: TestStatus::Pending,
+            ignored: true,
+        };
+        let key = test.key.clone();
+        let mut app = app_with_tree(Tree::from_tests(vec![test.clone()]));
+        expand_all(&mut app.tree.root);
+        app.tree.finish_test(
+            &key,
+            TestStatus::Passed,
+            "hello".to_owned(),
+            String::new(),
+            Some(Duration::from_millis(250)),
+        );
+        app.tree.select_next();
+        app.tree.select_next();
+        app.tree.select_next();
+
+        let text = test_details_modal_lines(&app, &Theme::dark())
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("tests::case one"));
+        assert!(text.contains("status   passed"));
+        assert!(text.contains("duration 0.250s"));
+        assert!(text.contains("output   stdout 5 chars"));
+        assert!(text.contains(
+            "cargo    cargo nextest run -p demo --lib --run-ignored only 'tests::case one'"
+        ));
+        assert!(!text.contains("[esc] close"));
+
+        test.full_name = "tests::case_two".to_owned();
+        assert_eq!(
+            manual_test_command(&test),
+            "cargo nextest run -p demo --lib --run-ignored only tests::case_two"
+        );
+    }
+
+    #[test]
+    fn test_details_modal_for_parent_includes_scoped_run_command() {
+        let mut app = app_with_tree(Tree::from_tests(vec![DiscoveredTest {
+            key: TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: "tests::case".to_owned(),
+            },
+            package: "demo".to_owned(),
+            binary: "demo".to_owned(),
+            binary_kind: "lib".to_owned(),
+            cwd: PathBuf::from("."),
+            source_path: None,
+            module: Some("tests".to_owned()),
+            name: "case".to_owned(),
+            full_name: "tests::case".to_owned(),
+            status: TestStatus::Pending,
+            ignored: false,
+        }]));
+        app.tree.select_next();
+
+        let text = test_details_modal_lines(&app, &Theme::dark())
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("kind     package"));
+        assert!(text.contains("package  demo"));
+        assert!(text.contains("cargo    cargo nextest run -p demo"));
+    }
+
+    fn expand_all(node: &mut TestNode) {
+        node.expanded = true;
+        for child in &mut node.children {
+            expand_all(child);
+        }
     }
 
     #[test]

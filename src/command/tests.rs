@@ -36,6 +36,13 @@
         }
     }
 
+    const fn test_details_modal_context() -> CommandContext {
+        CommandContext {
+            input: InputMode::TestDetailsModal,
+            overlay: Some(OverlayMode::TestDetails),
+        }
+    }
+
     const fn output_search_modal_context() -> CommandContext {
         CommandContext {
             input: InputMode::OutputSearchModal,
@@ -175,6 +182,18 @@
     }
 
     #[test]
+    fn tests_focus_splits_enter_details_from_space_toggle() {
+        assert_eq!(
+            command_for_key(KeyCode::Enter, KeyModifiers::NONE, CommandFocus::Tests),
+            AppCommand::ActivateSelected
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char(' '), KeyModifiers::NONE, CommandFocus::Tests),
+            AppCommand::ToggleSelected
+        );
+    }
+
+    #[test]
     fn maps_disk_usage_keys_across_focus_modes() {
         assert_eq!(
             command_for_key(KeyCode::Char('d'), KeyModifiers::NONE, CommandFocus::Tests),
@@ -304,6 +323,22 @@
         let q =
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)));
         assert_eq!(command_for_input(&q, context), AppCommand::Noop);
+    }
+
+    #[test]
+    fn test_details_modal_closes_on_escape_only() {
+        let context = test_details_modal_context();
+        let event =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert_eq!(command_for_input(&event, context), AppCommand::CloseTestDetails);
+
+        for code in [KeyCode::Enter, KeyCode::Char('q'), KeyCode::Down] {
+            let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
+                code,
+                KeyModifiers::NONE,
+            )));
+            assert_eq!(command_for_input(&event, context), AppCommand::Noop);
+        }
     }
 
     #[test]

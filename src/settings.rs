@@ -16,6 +16,7 @@ pub enum SettingsField {
     #[default]
     OpenWith,
     TreeWidth,
+    TreeDuration,
     StorageThreshold,
     Theme,
     ColorBlindMode,
@@ -26,6 +27,7 @@ impl SettingsField {
         match self {
             Self::OpenWith => "open with",
             Self::TreeWidth => "tests width",
+            Self::TreeDuration => "tests time",
             Self::StorageThreshold => "low disk",
             Self::Theme => "theme",
             Self::ColorBlindMode => "color-blind",
@@ -35,7 +37,8 @@ impl SettingsField {
     pub const fn next(self) -> Self {
         match self {
             Self::OpenWith => Self::TreeWidth,
-            Self::TreeWidth => Self::StorageThreshold,
+            Self::TreeWidth => Self::TreeDuration,
+            Self::TreeDuration => Self::StorageThreshold,
             Self::StorageThreshold => Self::Theme,
             Self::Theme => Self::ColorBlindMode,
             Self::ColorBlindMode => Self::OpenWith,
@@ -46,7 +49,8 @@ impl SettingsField {
         match self {
             Self::OpenWith => Self::ColorBlindMode,
             Self::TreeWidth => Self::OpenWith,
-            Self::StorageThreshold => Self::TreeWidth,
+            Self::TreeDuration => Self::TreeWidth,
+            Self::StorageThreshold => Self::TreeDuration,
             Self::Theme => Self::StorageThreshold,
             Self::ColorBlindMode => Self::Theme,
         }

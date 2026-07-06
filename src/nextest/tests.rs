@@ -310,6 +310,59 @@
     }
 
     #[test]
+    fn manual_test_command_uses_native_target_flags_and_shell_quoting() {
+        let mut test = DiscoveredTest {
+            key: TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: "tests::case one".to_owned(),
+            },
+            package: "demo".to_owned(),
+            binary: "demo".to_owned(),
+            binary_kind: "lib".to_owned(),
+            cwd: PathBuf::from("."),
+            source_path: None,
+            module: Some("tests".to_owned()),
+            name: "case one".to_owned(),
+            full_name: "tests::case one".to_owned(),
+            status: TestStatus::Pending,
+            ignored: true,
+        };
+
+        assert_eq!(
+            manual_test_command(&test),
+            "cargo nextest run -p demo --lib --run-ignored only 'tests::case one'"
+        );
+
+        test.binary_kind = "test".to_owned();
+        test.binary = "integration".to_owned();
+        test.full_name = "tests::case_two".to_owned();
+        test.ignored = false;
+
+        assert_eq!(
+            manual_test_command(&test),
+            "cargo nextest run -p demo --test integration tests::case_two"
+        );
+    }
+
+    #[test]
+    fn manual_run_command_uses_scope_args() {
+        assert_eq!(manual_run_command(&RunScope::Workspace), "cargo nextest run");
+        assert_eq!(
+            manual_run_command(&RunScope::Package {
+                name: "demo".to_owned(),
+            }),
+            "cargo nextest run -p demo"
+        );
+        assert_eq!(
+            manual_run_command(&RunScope::Module {
+                path: "tests::scenario one".to_owned(),
+            }),
+            "cargo nextest run 'tests::scenario one'"
+        );
+    }
+
+    #[test]
     fn parses_sampled_libtest_json_plus_fixture() {
         let events = include_str!("../../tests/fixtures/libtest-json-plus.txt")
             .lines()

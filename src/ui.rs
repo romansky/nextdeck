@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
@@ -13,6 +13,7 @@ use crate::{
     command::{CommandGroup, CommandInfo, OverlayMode, command_infos},
     config,
     disk_usage::{StorageHealth, format_bytes, format_timestamp_utc},
+    nextest::{manual_run_command, manual_test_command},
     output_pane::SearchModalFocus,
     settings::SettingsField,
     symbols::bool_symbol,
@@ -31,6 +32,11 @@ pub struct AppLayout {
 struct PanelChrome<'a> {
     status: &'a str,
     actions: &'a str,
+}
+
+struct ModalChrome<'a> {
+    title: &'a str,
+    actions: Option<&'a str>,
 }
 
 pub fn layout(area: Rect, tree_width_percent: u16) -> AppLayout {
@@ -80,6 +86,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         }
         Some(OverlayMode::OutputSearch) => draw_output_search_modal(frame, app, theme),
         Some(OverlayMode::DiskCleanup) => draw_disk_cleanup_modal(frame, app, theme),
+        Some(OverlayMode::TestDetails) => draw_test_details_modal(frame, app, theme),
         Some(OverlayMode::Settings) => draw_global_settings_modal(frame, app, theme),
         Some(OverlayMode::Help) => draw_help(frame, app, theme),
         None => {}
@@ -101,6 +108,7 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
                 row.node,
                 index == selected,
                 app.running_test_spinner(),
+                app.settings.tree_duration_mode,
                 theme,
             )
         })
@@ -165,16 +173,15 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
             page_size,
             app.output_scroll,
         );
-        draw_output_panel(
+        draw_modal_output_lines(
             frame,
             theme,
             area,
-            PanelChrome {
-                status: &status,
-                actions: discovery_error_actions(),
+            ModalChrome {
+                title: &status,
+                actions: Some(discovery_error_actions()),
             },
             output_lines(app, theme, &output_view),
-            true,
             app.output_scroll,
         );
     } else {
@@ -196,27 +203,93 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
                 format!("Elapsed: {}s", app.discovery_elapsed_seconds()),
                 theme.text(),
             ),
-            Line::styled("Press q to quit.", theme.muted()),
         ];
-        let paragraph = Paragraph::new(lines)
-            .alignment(Alignment::Left)
-            .block(theme.modal_block("Discovery"))
-            .wrap(Wrap { trim: false });
-        frame.render_widget(Clear, area);
-        frame.render_widget(paragraph, area);
+        draw_modal_lines(
+            frame,
+            theme,
+            area,
+            ModalChrome {
+                title: "Discovery",
+                actions: Some("actions: [q]quit"),
+            },
+            lines,
+        );
     }
+}
+
+fn draw_test_details_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
+    let area = centered_rect(74, 72, frame.area());
+    draw_modal_lines(
+        frame,
+        theme,
+        area,
+        ModalChrome {
+            title: "Test Details",
+            actions: Some("actions: [esc]close"),
+        },
+        test_details_modal_lines(app, theme),
+    );
+}
+
+fn draw_modal_lines(
+    frame: &mut Frame<'_>,
+    theme: &Theme,
+    area: Rect,
+    chrome: ModalChrome<'_>,
+    lines: Vec<Line<'static>>,
+) {
+    let inner = draw_modal_shell(frame, theme, area, chrome);
+    let paragraph = Paragraph::new(lines)
+        .alignment(Alignment::Left)
+        .style(theme.text())
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
+}
+
+fn draw_modal_shell(
+    frame: &mut Frame<'_>,
+    theme: &Theme,
+    area: Rect,
+    chrome: ModalChrome<'_>,
+) -> Rect {
+    let block = theme.panel_block(chrome.title, chrome.actions, true);
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    inner
+}
+
+fn draw_modal_output_lines(
+    frame: &mut Frame<'_>,
+    theme: &Theme,
+    area: Rect,
+    chrome: ModalChrome<'_>,
+    lines: Vec<Line<'static>>,
+    scroll: u16,
+) {
+    let page_size = area.height.saturating_sub(2).max(1);
+    let text_line_count = lines.len().max(1);
+    let scroll = output_render_scroll_for_count(text_line_count, page_size, scroll);
+    let inner = draw_modal_shell(frame, theme, area, chrome);
+    let output = Paragraph::new(lines)
+        .style(theme.text())
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(output, inner);
 }
 
 fn draw_output_search_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let area = centered_rect(70, 70, frame.area());
     let search = &app.output_search;
-    frame.render_widget(Clear, area);
-    frame.render_widget(theme.modal_block("Output Search"), area);
-
-    let inner = area.inner(Margin {
-        horizontal: 2,
-        vertical: 1,
-    });
+    let inner = draw_modal_shell(
+        frame,
+        theme,
+        area,
+        ModalChrome {
+            title: "Output Search",
+            actions: Some("actions: [tab]focus [enter]activate [C+enter]apply [esc]cancel"),
+        },
+    );
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -293,12 +366,16 @@ fn draw_output_search_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
 
 fn draw_disk_cleanup_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let area = centered_rect(70, 62, frame.area());
-    let paragraph = Paragraph::new(disk_cleanup_lines(app, theme))
-        .alignment(Alignment::Left)
-        .block(theme.modal_block("Disk Cleanup"))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(Clear, area);
-    frame.render_widget(paragraph, area);
+    draw_modal_lines(
+        frame,
+        theme,
+        area,
+        ModalChrome {
+            title: "Disk Cleanup",
+            actions: Some(disk_cleanup_actions()),
+        },
+        disk_cleanup_lines(app, theme),
+    );
 }
 
 fn disk_cleanup_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
@@ -331,21 +408,6 @@ fn disk_cleanup_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
             "cargo clean removes this workspace's target directory.",
             theme.text(),
         ),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                if app.disk_cleanup.running {
-                    "[c] cargo clean..."
-                } else {
-                    "[c] cargo clean"
-                },
-                theme.text(),
-            ),
-            Span::raw("  "),
-            Span::styled("[r] refresh", theme.text()),
-            Span::raw("  "),
-            Span::styled("[esc]close", theme.text()),
-        ]),
     ]);
 
     if let Some(result) = &app.disk_cleanup.last_result {
@@ -363,11 +425,12 @@ fn disk_cleanup_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
 }
 
 fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
-    let area = centered_rect(72, 58, frame.area());
+    let area = centered_rect(72, 62, frame.area());
     let settings = &app.global_settings;
     let lines = vec![
         settings_line(app, SettingsField::OpenWith, theme),
         settings_line(app, SettingsField::TreeWidth, theme),
+        settings_line(app, SettingsField::TreeDuration, theme),
         settings_line(app, SettingsField::StorageThreshold, theme),
         settings_line(app, SettingsField::Theme, theme),
         settings_line(app, SettingsField::ColorBlindMode, theme),
@@ -377,13 +440,20 @@ fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     } else {
         "actions: [up/down]select [left/right]change [enter]edit/apply [esc]close"
     };
+    let inner = draw_modal_shell(
+        frame,
+        theme,
+        area,
+        ModalChrome {
+            title: "Settings",
+            actions: Some(actions),
+        },
+    );
     let paragraph = Paragraph::new(lines)
         .alignment(Alignment::Left)
         .style(theme.text())
-        .block(theme.panel_block("Settings", Some(actions), true))
         .wrap(Wrap { trim: false });
-    frame.render_widget(Clear, area);
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, inner);
 }
 
 fn settings_line(app: &App, field: SettingsField, theme: &Theme) -> Line<'static> {
@@ -408,6 +478,7 @@ fn settings_value(app: &App, field: SettingsField) -> String {
         }
         SettingsField::OpenWith => format!("[{}]", fit_line_content(app.settings.open_with_label(), 42)),
         SettingsField::TreeWidth => format!("{}%", app.settings.tree_width_percent),
+        SettingsField::TreeDuration => app.settings.tree_duration_mode.label().to_owned(),
         SettingsField::StorageThreshold => {
             format!("{} GiB", app.settings.storage_low_space_threshold_gb)
         }
@@ -445,6 +516,7 @@ fn tree_item<'a>(
     node: &TestNode,
     selected: bool,
     running_spinner: &str,
+    duration_mode: config::TreeDurationMode,
     theme: &Theme,
 ) -> ListItem<'a> {
     let row_style = if selected {
@@ -454,7 +526,7 @@ fn tree_item<'a>(
     };
     let status_style = theme.status(node.status, selected);
     ListItem::new(Line::from(vec![
-        Span::styled(tree_leading_fields(depth, node), row_style),
+        Span::styled(tree_leading_fields(depth, node, duration_mode), row_style),
         Span::styled(
             node_label(node, running_spinner),
             if selected { row_style } else { status_style },
@@ -462,12 +534,16 @@ fn tree_item<'a>(
     ]))
 }
 
-fn tree_leading_fields(depth: usize, node: &TestNode) -> String {
+fn tree_leading_fields(
+    depth: usize,
+    node: &TestNode,
+    duration_mode: config::TreeDurationMode,
+) -> String {
     format!(
         "{}{} {} ",
         "  ".repeat(depth),
         fold_marker(node),
-        duration_field(node.display_duration())
+        duration_field(node.display_duration(duration_mode))
     )
 }
 
@@ -538,7 +614,12 @@ fn selected_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
                 detail_line("kind", "package", theme.text(), theme),
                 detail_line("pkg", name.clone(), theme.accent(), theme),
                 detail_status_line(node.status, theme),
-                detail_line("duration", duration_label(node), theme.text(), theme),
+                detail_line(
+                    "duration",
+                    duration_label(node, app.settings.tree_duration_mode),
+                    theme.text(),
+                    theme,
+                ),
             ]);
         }
         NodeKind::Binary {
@@ -554,7 +635,12 @@ fn selected_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
                 detail_line("type", kind.clone(), theme.text(), theme),
                 detail_line("source", source, theme.text(), theme),
                 detail_status_line(node.status, theme),
-                detail_line("duration", duration_label(node), theme.text(), theme),
+                detail_line(
+                    "duration",
+                    duration_label(node, app.settings.tree_duration_mode),
+                    theme.text(),
+                    theme,
+                ),
             ]);
         }
         NodeKind::Module { path } => {
@@ -562,7 +648,12 @@ fn selected_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
                 detail_line("kind", "module", theme.text(), theme),
                 detail_line("module", path.clone(), theme.accent(), theme),
                 detail_status_line(node.status, theme),
-                detail_line("duration", duration_label(node), theme.text(), theme),
+                detail_line(
+                    "duration",
+                    duration_label(node, app.settings.tree_duration_mode),
+                    theme.text(),
+                    theme,
+                ),
             ]);
         }
         NodeKind::Test(test) => {
@@ -587,12 +678,141 @@ fn selected_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
                     theme.text(),
                     theme,
                 ),
-                detail_line("duration", duration_label(node), theme.text(), theme),
+                detail_line(
+                    "duration",
+                    duration_label(node, app.settings.tree_duration_mode),
+                    theme.text(),
+                    theme,
+                ),
             ]);
         }
     }
 
     lines
+}
+
+fn test_details_modal_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
+    let Some(node) = app.tree.selected_node() else {
+        return vec![Line::styled("No selection", theme.muted())];
+    };
+
+    let scope = app.selected_scope();
+    let counts = app.tree.status_counts_for_scope(&scope);
+    let mut lines = vec![
+        Line::styled(app.tree.selected_path(), theme.title(true)),
+        Line::from(""),
+        detail_line("kind", selected_kind_label(node), theme.text(), theme),
+        detail_status_line(node.status, theme),
+        detail_line(
+            "duration",
+            duration_label(node, app.settings.tree_duration_mode),
+            theme.text(),
+            theme,
+        ),
+        detail_line(
+            "tests",
+            status_counts_label(counts),
+            theme.text(),
+            theme,
+        ),
+    ];
+
+    match &node.kind {
+        NodeKind::Workspace => {}
+        NodeKind::Package { name } => {
+            lines.push(detail_line("package", name.clone(), theme.accent(), theme));
+        }
+        NodeKind::Binary {
+            package,
+            name,
+            kind,
+        } => {
+            lines.extend([
+                detail_line("package", package.clone(), theme.accent(), theme),
+                detail_line("binary", name.clone(), theme.text(), theme),
+                detail_line("target", kind.clone(), theme.text(), theme),
+                detail_line("source", first_source_path(node), theme.text(), theme),
+            ]);
+        }
+        NodeKind::Module { path } => {
+            lines.push(detail_line("module", path.clone(), theme.accent(), theme));
+            lines.push(detail_line("source", first_source_path(node), theme.text(), theme));
+        }
+        NodeKind::Test(test) => {
+            lines.extend([
+                detail_line("package", test.package.clone(), theme.accent(), theme),
+                detail_line("binary", test.binary.clone(), theme.text(), theme),
+                detail_line("target", test.binary_kind.clone(), theme.text(), theme),
+                detail_line(
+                    "module",
+                    test.module.clone().unwrap_or_else(|| "-".to_owned()),
+                    theme.text(),
+                    theme,
+                ),
+                detail_line("ignored", bool_label(test.ignored), theme.text(), theme),
+                detail_line(
+                    "source",
+                    test.source_path
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
+                    theme.text(),
+                    theme,
+                ),
+                detail_line("output", output_summary(node), theme.text(), theme),
+            ]);
+        }
+    }
+
+    lines.extend([
+        Line::from(""),
+        Line::styled("Manual", theme.title(true)),
+        detail_line("cargo", selected_manual_command(app, node), theme.accent(), theme),
+    ]);
+    if node.status == TestStatus::Running {
+        lines.push(Line::styled("Duration updates while the test is running.", theme.muted()));
+    }
+    lines
+}
+
+fn selected_kind_label(node: &TestNode) -> &'static str {
+    match &node.kind {
+        NodeKind::Workspace => "workspace",
+        NodeKind::Package { .. } => "package",
+        NodeKind::Binary { .. } => "target",
+        NodeKind::Module { .. } => "module",
+        NodeKind::Test(_) => "test",
+    }
+}
+
+fn status_counts_label(counts: crate::state::StatusCounts) -> String {
+    format!(
+        "{} pending, {} running, {} passed, {} failed, {} ignored, {} skipped",
+        counts.pending, counts.running, counts.passed, counts.failed, counts.ignored, counts.skipped
+    )
+}
+
+fn selected_manual_command(app: &App, node: &TestNode) -> String {
+    if let NodeKind::Test(test) = &node.kind {
+        manual_test_command(test)
+    } else {
+        manual_run_command(&app.selected_scope())
+    }
+}
+
+fn bool_label(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn output_summary(node: &TestNode) -> String {
+    let stdout_len = node.output.stdout.trim().len();
+    let stderr_len = node.output.stderr.trim().len();
+    match (stdout_len, stderr_len) {
+        (0, 0) => "none captured".to_owned(),
+        (_, 0) => format!("stdout {stdout_len} chars"),
+        (0, _) => format!("stderr {stderr_len} chars"),
+        (_, _) => format!("stdout {stdout_len} chars, stderr {stderr_len} chars"),
+    }
 }
 
 fn first_source_path(node: &TestNode) -> String {
@@ -742,8 +962,8 @@ fn detail_status_line(status: TestStatus, theme: &Theme) -> Line<'static> {
     )
 }
 
-fn duration_label(node: &TestNode) -> String {
-    node.display_duration()
+fn duration_label(node: &TestNode, duration_mode: config::TreeDurationMode) -> String {
+    node.display_duration(duration_mode)
         .map(format_duration)
         .unwrap_or_else(|| "-".to_owned())
 }
@@ -832,11 +1052,15 @@ fn draw_output_panel(
 }
 
 fn tests_actions() -> &'static str {
-    "actions: [r]un [R]failed [o]pen-editor [u]update"
+    "actions: [enter]details [r]un [R]failed [o]pen-editor [u]update"
 }
 
 fn info_actions() -> &'static str {
     "actions: [d]disk-refresh [D]cleanup"
+}
+
+fn disk_cleanup_actions() -> &'static str {
+    "actions: [c]cargo-clean [r]refresh [esc]close"
 }
 
 fn output_actions() -> &'static str {
@@ -1019,12 +1243,19 @@ fn footer_storage_status_style(app: &App, theme: &Theme) -> Style {
 fn draw_help(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let area = centered_rect(72, 96, frame.area());
     let text = help_text(theme, app.focus);
+    let inner = draw_modal_shell(
+        frame,
+        theme,
+        area,
+        ModalChrome {
+            title: "Help",
+            actions: Some("actions: [h/?/F1]close [esc]close [q]close"),
+        },
+    );
     let help = Paragraph::new(text)
         .alignment(Alignment::Left)
-        .style(theme.text())
-        .block(theme.modal_block("Help"));
-    frame.render_widget(Clear, area);
-    frame.render_widget(help, area);
+        .style(theme.text());
+    frame.render_widget(help, inner);
 }
 
 fn help_text(theme: &Theme, focus: FocusPane) -> Vec<Line<'static>> {

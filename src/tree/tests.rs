@@ -162,10 +162,42 @@
         let package = &tree.root.children[0];
         let module = &package.children[0];
         let test = &module.children[0];
-        assert!(tree.root.display_duration().is_some());
-        assert!(package.display_duration().is_some());
-        assert!(module.display_duration().is_some());
-        assert!(test.display_duration().is_some());
+        assert!(tree.root.display_duration(crate::config::TreeDurationMode::Wall).is_some());
+        assert!(package.display_duration(crate::config::TreeDurationMode::Wall).is_some());
+        assert!(module.display_duration(crate::config::TreeDurationMode::Wall).is_some());
+        assert!(test.display_duration(crate::config::TreeDurationMode::Wall).is_some());
+    }
+
+    #[test]
+    fn parent_duration_mode_can_use_wall_span_or_aggregate_sum() {
+        let mut tree = Tree::from_tests(vec![
+            discovered_test("demo::demo", "demo", "tests", "one"),
+            discovered_test("demo::demo", "demo", "tests", "two"),
+        ]);
+        let now = Instant::now();
+        set_finished_span(
+            &mut tree,
+            "tests::one",
+            now,
+            now + Duration::from_millis(20),
+            Duration::from_millis(20),
+        );
+        set_finished_span(
+            &mut tree,
+            "tests::two",
+            now + Duration::from_millis(10),
+            now + Duration::from_millis(30),
+            Duration::from_millis(20),
+        );
+
+        assert_eq!(
+            tree.root.display_duration_at(crate::config::TreeDurationMode::Wall, now),
+            Some(Duration::from_millis(30))
+        );
+        assert_eq!(
+            tree.root.display_duration_at(crate::config::TreeDurationMode::Aggregate, now),
+            Some(Duration::from_millis(40))
+        );
     }
 
     #[test]
@@ -634,7 +666,37 @@
         visit_mut(&mut tree.root, &mut |node| {
             if node_matches(node, key) {
                 node.status = status;
-                node.started_at = (status == TestStatus::Running).then(Instant::now);
+                let now = Instant::now();
+                node.started_at = (status == TestStatus::Running).then_some(now);
+                node.run_started_at = (status == TestStatus::Running).then_some(now);
+            }
+        });
+        tree.recompute_statuses();
+    }
+
+    fn set_finished_span(
+        tree: &mut Tree,
+        name: &str,
+        started_at: Instant,
+        finished_at: Instant,
+        duration: Duration,
+    ) {
+        set_tree_status(
+            tree,
+            &TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: name.to_owned(),
+            },
+            TestStatus::Passed,
+        );
+        visit_mut(&mut tree.root, &mut |node| {
+            if let NodeKind::Test(test) = &node.kind
+                && test.full_name == name
+            {
+                node.run_started_at = Some(started_at);
+                node.finished_at = Some(finished_at);
+                node.output.duration = Some(duration);
             }
         });
         tree.recompute_statuses();

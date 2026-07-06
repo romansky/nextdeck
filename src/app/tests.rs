@@ -44,6 +44,21 @@
     }
 
     #[test]
+    fn command_context_uses_test_details_modal_when_open() {
+        let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+
+        app.show_test_details = true;
+
+        assert_eq!(
+            app.command_context(),
+            CommandContext {
+                input: InputMode::TestDetailsModal,
+                overlay: Some(OverlayMode::TestDetails),
+            }
+        );
+    }
+
+    #[test]
     fn command_context_distinguishes_settings_browsing_from_text_input() {
         let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
 
@@ -109,6 +124,37 @@
     }
 
     #[test]
+    fn activate_selected_opens_details_for_test_rows() {
+        let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+        expand_all(&mut app.tree.root);
+        app.tree.select_next();
+        app.tree.select_next();
+        app.tree.select_next();
+
+        app.apply_command(AppCommand::ActivateSelected);
+
+        assert!(app.show_test_details);
+        assert_eq!(app.status, "Details opened");
+
+        app.apply_command(AppCommand::CloseTestDetails);
+
+        assert!(!app.show_test_details);
+    }
+
+    #[test]
+    fn activate_selected_opens_details_for_non_test_rows() {
+        let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+        expand_all(&mut app.tree.root);
+        app.tree.select_next();
+        let before = app.tree.visible_rows().len();
+
+        app.apply_command(AppCommand::ActivateSelected);
+
+        assert!(app.show_test_details);
+        assert_eq!(app.tree.visible_rows().len(), before);
+    }
+
+    #[test]
     fn resize_tests_pane_updates_settings_and_requests_save() {
         let mut app = App::with_settings(
             Tree::from_tests(test_rows(1)),
@@ -165,6 +211,15 @@
         let effect = app.apply_command(AppCommand::SettingsAdjustRight);
         assert_eq!(app.settings.storage_low_space_threshold_gb, 11);
         assert_eq!(app.status, "Low disk threshold: 11 GiB");
+        assert_eq!(effect, AppEffect::SaveSettings(app.settings.clone()));
+
+        app.global_settings.selected = SettingsField::TreeDuration;
+        let effect = app.apply_command(AppCommand::SettingsAdjustRight);
+        assert_eq!(
+            app.settings.tree_duration_mode,
+            config::TreeDurationMode::Aggregate
+        );
+        assert_eq!(app.status, "Tests time: aggregate");
         assert_eq!(effect, AppEffect::SaveSettings(app.settings.clone()));
     }
 

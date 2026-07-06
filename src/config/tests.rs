@@ -24,6 +24,16 @@
     }
 
     #[test]
+    fn defaults_tree_duration_mode_to_wall_time() {
+        assert_eq!(AppSettings::default().tree_duration_mode, TreeDurationMode::Wall);
+
+        let settings = serde_json::from_str::<AppSettings>(r#"{"tree_duration_mode":"aggregate"}"#)
+            .expect("settings");
+
+        assert_eq!(settings.tree_duration_mode, TreeDurationMode::Aggregate);
+    }
+
+    #[test]
     fn normalizes_empty_open_with_command() {
         let settings = AppSettings {
             open_with_command: Some("  ".to_owned()),
