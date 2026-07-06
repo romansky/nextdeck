@@ -6,7 +6,9 @@ use crate::{
     editor::SourceLocation,
     git_status::GitStatus,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
-    output_pane::{OutputSearchState, SearchDirection, SearchModalFocus},
+    output_pane::{
+        OutputSearchState, SearchDirection, SearchEditorInput, SearchEditorKey, SearchModalFocus,
+    },
     scroll,
     source,
     state::StatusCounts,
@@ -443,12 +445,8 @@ impl App {
                 self.open_output_search_modal();
                 AppEffect::None
             }
-            AppCommand::OutputSearchInput(char) => {
-                self.push_output_search_char(char);
-                AppEffect::None
-            }
-            AppCommand::OutputSearchBackspace => {
-                self.pop_output_search_char();
+            AppCommand::OutputSearchEdit(input) => {
+                self.edit_output_search(input);
                 AppEffect::None
             }
             AppCommand::ClearOutputSearch => {
@@ -975,38 +973,26 @@ impl App {
         self.status = output_search_prompt(&self.output_search);
     }
 
-    fn push_output_search_char(&mut self, char: char) {
+    fn edit_output_search(&mut self, input: SearchEditorInput) {
         if self.output_search.modal_open
             && self.output_search.modal_focus != SearchModalFocus::Query
         {
             return;
         }
         if self.output_search.input_active || self.output_search.modal_open {
-            self.output_search.draft_query.push(char);
-            self.status = output_search_prompt(&self.output_search);
-        }
-    }
-
-    fn pop_output_search_char(&mut self) {
-        if self.output_search.modal_open
-            && self.output_search.modal_focus != SearchModalFocus::Query
-        {
-            return;
-        }
-        if self.output_search.input_active || self.output_search.modal_open {
-            self.output_search.draft_query.pop();
+            self.output_search.edit_draft(input);
             self.status = output_search_prompt(&self.output_search);
         }
     }
 
     fn clear_output_search(&mut self) {
         if self.output_search.input_active || self.output_search.modal_open {
-            self.output_search.draft_query.clear();
+            self.output_search.clear_draft();
             self.status = "Output search draft cleared".to_owned();
             return;
         }
         self.output_search.sync_draft_from_applied();
-        self.output_search.draft_query.clear();
+        self.output_search.clear_draft();
         self.output_search.apply_draft();
         self.output_search.current_line = None;
         self.output_scroll = 0;
@@ -1047,8 +1033,15 @@ impl App {
 
     fn activate_output_search_modal_control(&mut self) {
         match self.output_search.modal_focus {
-            SearchModalFocus::Query => self.output_search.draft_query.push('\n'),
-            SearchModalFocus::Clear => self.output_search.draft_query.clear(),
+            SearchModalFocus::Query => {
+                self.output_search.edit_draft(SearchEditorInput::new(
+                    SearchEditorKey::Enter,
+                    false,
+                    false,
+                    false,
+                ));
+            }
+            SearchModalFocus::Clear => self.output_search.clear_draft(),
             SearchModalFocus::Apply => self.apply_output_search(),
             SearchModalFocus::Filter => {
                 self.output_search.draft_filter = !self.output_search.draft_filter;
@@ -1213,6 +1206,7 @@ fn run_summary_status(outcome: RunOutcome, counts: StatusCounts, exit_code: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output_pane::{SearchEditorInput, SearchEditorKey};
     use crate::tree::{DiscoveredTest, TestKey, TestStatus};
 
     #[test]
@@ -1602,13 +1596,14 @@ mod tests {
         app.output_page_size = 2;
 
         app.apply_command(AppCommand::StartOutputSearch);
-        app.apply_command(AppCommand::OutputSearchInput('p'));
-        app.apply_command(AppCommand::OutputSearchInput('x'));
-        app.apply_command(AppCommand::OutputSearchBackspace);
-        app.apply_command(AppCommand::OutputSearchInput('a'));
-        app.apply_command(AppCommand::OutputSearchInput('n'));
-        app.apply_command(AppCommand::OutputSearchInput('i'));
-        app.apply_command(AppCommand::OutputSearchInput('c'));
+        search_type(&mut app, "px");
+        app.apply_command(AppCommand::OutputSearchEdit(SearchEditorInput::new(
+            SearchEditorKey::Backspace,
+            false,
+            false,
+            false,
+        )));
+        search_type(&mut app, "anic");
         assert_eq!(app.output_search.query, "");
 
         app.apply_command(AppCommand::OpenOutputSearchModal);
@@ -1628,9 +1623,7 @@ mod tests {
         app.output_search.filter = true;
 
         app.apply_command(AppCommand::StartOutputSearch);
-        for char in "panic".chars() {
-            app.apply_command(AppCommand::OutputSearchInput(char));
-        }
+        search_type(&mut app, "panic");
 
         assert_eq!(app.output_search.query, "");
         assert!(app.output_text().contains("alpha"));
@@ -1647,9 +1640,7 @@ mod tests {
         let mut app = app_with_finished_output("case_01\ncase_aa\ncase_22", "");
 
         app.apply_command(AppCommand::StartOutputSearch);
-        for char in r"case_\d+".chars() {
-            app.apply_command(AppCommand::OutputSearchInput(char));
-        }
+        search_type(&mut app, r"case_\d+");
         app.apply_command(AppCommand::OpenOutputSearchModal);
         app.output_search.modal_focus = SearchModalFocus::Filter;
         app.apply_command(AppCommand::SearchModalActivate);
@@ -1667,8 +1658,7 @@ mod tests {
         let mut app = app_with_finished_output("zero\npanic\nok", "");
 
         app.apply_command(AppCommand::StartOutputSearch);
-        app.apply_command(AppCommand::OutputSearchInput('p'));
-        app.apply_command(AppCommand::OutputSearchInput('a'));
+        search_type(&mut app, "pa");
         app.apply_command(AppCommand::ApplyOutputSearch);
         assert_eq!(app.output_search.current_line, Some(2));
 
@@ -1696,13 +1686,42 @@ mod tests {
         assert_eq!(app.output_scroll, 1);
 
         app.apply_command(AppCommand::StartOutputSearch);
-        for char in "needle".chars() {
-            app.apply_command(AppCommand::OutputSearchInput(char));
-        }
+        search_type(&mut app, "needle");
         app.apply_command(AppCommand::ApplyOutputSearch);
 
         assert_eq!(app.output_search.current_line, Some(4));
         assert_eq!(app.status, "Output match 1/1 for 'needle'");
+    }
+
+    #[test]
+    fn output_search_editor_can_insert_at_cursor_and_apply() {
+        let mut app = app_with_finished_output("zero\npanic\nok", "");
+
+        app.apply_command(AppCommand::StartOutputSearch);
+        search_type(&mut app, "pnic");
+        app.apply_command(AppCommand::OutputSearchEdit(SearchEditorInput::new(
+            SearchEditorKey::Left,
+            false,
+            false,
+            false,
+        )));
+        app.apply_command(AppCommand::OutputSearchEdit(SearchEditorInput::new(
+            SearchEditorKey::Left,
+            false,
+            false,
+            false,
+        )));
+        app.apply_command(AppCommand::OutputSearchEdit(SearchEditorInput::new(
+            SearchEditorKey::Left,
+            false,
+            false,
+            false,
+        )));
+        search_type(&mut app, "a");
+        app.apply_command(AppCommand::ApplyOutputSearch);
+
+        assert_eq!(app.output_search.query, "panic");
+        assert_eq!(app.output_search.current_line, Some(2));
     }
 
     fn assert_selection_visible(app: &App) {
@@ -1760,6 +1779,12 @@ mod tests {
         app.tree.select_next();
         app.tree.select_next();
         app
+    }
+
+    fn search_type(app: &mut App, text: &str) {
+        for char in text.chars() {
+            app.apply_command(AppCommand::OutputSearchEdit(SearchEditorInput::char(char)));
+        }
     }
 
     fn select_visible_path(app: &mut App, path: &str) {

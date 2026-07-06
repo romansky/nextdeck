@@ -121,6 +121,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "tui-textarea",
 ]
 
 [[package]]
@@ -1107,6 +1108,16 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "tui-textarea"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a5318dd619ed73c52a9417ad19046724effc1287fb75cdcc4eca1d6ac1acbae"
+dependencies = [
+ "ratatui",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     text::{Line, Span},
-    widgets::{Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
 use crate::{
@@ -179,61 +179,85 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
 fn draw_output_search_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let area = centered_rect(70, 70, frame.area());
     let search = &app.output_search;
-    let mut lines = vec![Line::styled(
-        "Query",
-        modal_label_style(search.modal_focus == SearchModalFocus::Query, theme),
-    )];
+    frame.render_widget(Clear, area);
+    frame.render_widget(theme.modal_block("Output Search"), area);
 
-    let query_lines = search
-        .draft_query
-        .lines()
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    if query_lines.is_empty() {
-        lines.push(Line::styled("[            ]", theme.muted()));
+    let inner = area.inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(5),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(3),
+        ])
+        .split(inner);
+    let query_focused = search.modal_focus == SearchModalFocus::Query;
+
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            "Query",
+            modal_label_style(query_focused, theme),
+        )),
+        chunks[0],
+    );
+
+    let mut editor = search.editor.widget();
+    editor.set_style(theme.text());
+    editor.set_placeholder_text("Search output...");
+    editor.set_placeholder_style(theme.muted());
+    editor.set_cursor_line_style(if query_focused {
+        theme.selected()
     } else {
-        for line in query_lines.iter().take(6) {
-            lines.push(Line::styled(format!("[{line}]"), theme.text()));
-        }
-        if query_lines.len() > 6 {
-            lines.push(Line::styled("...", theme.muted()));
-        }
-    }
+        theme.text()
+    });
+    editor.set_cursor_style(if query_focused {
+        theme.selected()
+    } else {
+        theme.text()
+    });
+    editor.set_block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme.border(query_focused)),
+    );
+    frame.render_widget(&editor, chunks[1]);
 
-    lines.extend([
-        Line::from(""),
-        Line::from(vec![
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
             modal_button("Clear", search.modal_focus == SearchModalFocus::Clear, theme),
             Span::raw("  "),
             modal_button("Apply", search.modal_focus == SearchModalFocus::Apply, theme),
+        ])),
+        chunks[2],
+    );
+    frame.render_widget(
+        Paragraph::new(vec![
+            modal_checkbox(
+                "filter matching lines",
+                search.draft_filter,
+                search.modal_focus == SearchModalFocus::Filter,
+                theme,
+            ),
+            modal_checkbox(
+                "regex",
+                search.draft_regex,
+                search.modal_focus == SearchModalFocus::Regex,
+                theme,
+            ),
+            modal_checkbox(
+                "case-sensitive",
+                search.draft_case_sensitive,
+                search.modal_focus == SearchModalFocus::CaseSensitive,
+                theme,
+            ),
         ]),
-        Line::from(""),
-        modal_checkbox(
-            "filter matching lines",
-            search.draft_filter,
-            search.modal_focus == SearchModalFocus::Filter,
-            theme,
-        ),
-        modal_checkbox(
-            "regex",
-            search.draft_regex,
-            search.modal_focus == SearchModalFocus::Regex,
-            theme,
-        ),
-        modal_checkbox(
-            "case-sensitive",
-            search.draft_case_sensitive,
-            search.modal_focus == SearchModalFocus::CaseSensitive,
-            theme,
-        ),
-    ]);
-
-    let paragraph = Paragraph::new(lines)
-        .alignment(Alignment::Left)
-        .block(theme.modal_block("Output Search"))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(Clear, area);
-    frame.render_widget(paragraph, area);
+        chunks[4],
+    );
 }
 
 fn modal_label_style(active: bool, theme: &Theme) -> ratatui::style::Style {

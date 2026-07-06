@@ -25,3 +25,4 @@ terminal-colorsaurus = "1.0.3"
 tokio = { version = "1.48", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tui-textarea = { version = "0.7", default-features = false, features = ["no-backend"] }

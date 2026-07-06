@@ -1,11 +1,13 @@
 use regex::{Regex, RegexBuilder};
+use tui_textarea::{Input as TextAreaInput, Key as TextAreaKey, TextArea};
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct OutputSearchState {
     pub input_active: bool,
     pub modal_open: bool,
     pub query: String,
     pub draft_query: String,
+    pub editor: SearchEditor,
     pub filter: bool,
     pub draft_filter: bool,
     pub regex: bool,
@@ -88,6 +90,86 @@ pub enum SearchDirection {
     Previous,
 }
 
+#[derive(Clone, Debug)]
+pub struct SearchEditor {
+    textarea: TextArea<'static>,
+}
+
+impl Default for SearchEditor {
+    fn default() -> Self {
+        Self::from_text("")
+    }
+}
+
+impl SearchEditor {
+    pub fn from_text(text: &str) -> Self {
+        let mut textarea = TextArea::new(search_editor_lines(text));
+        textarea.set_max_histories(100);
+        textarea.set_tab_length(2);
+        Self { textarea }
+    }
+
+    pub fn set_text(&mut self, text: &str) {
+        *self = Self::from_text(text);
+    }
+
+    pub fn text(&self) -> String {
+        self.textarea.lines().join("\n")
+    }
+
+    pub fn clear(&mut self) {
+        self.set_text("");
+    }
+
+    pub fn input(&mut self, input: SearchEditorInput) -> bool {
+        self.textarea.input(TextAreaInput::from(input))
+    }
+
+    pub fn widget(&self) -> TextArea<'static> {
+        self.textarea.clone()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SearchEditorInput {
+    pub key: SearchEditorKey,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+}
+
+impl SearchEditorInput {
+    pub const fn new(key: SearchEditorKey, ctrl: bool, alt: bool, shift: bool) -> Self {
+        Self {
+            key,
+            ctrl,
+            alt,
+            shift,
+        }
+    }
+
+    pub const fn char(char: char) -> Self {
+        Self::new(SearchEditorKey::Char(char), false, false, false)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchEditorKey {
+    Char(char),
+    Backspace,
+    Enter,
+    Left,
+    Right,
+    Up,
+    Down,
+    Tab,
+    Delete,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+}
+
 impl OutputSearchState {
     pub fn view(&self, text: &str) -> SearchBoxView {
         SearchBoxView {
@@ -123,6 +205,7 @@ impl OutputSearchState {
 
     pub fn sync_draft_from_applied(&mut self) {
         self.draft_query = self.query.clone();
+        self.editor.set_text(&self.draft_query);
         self.draft_filter = self.filter;
         self.draft_regex = self.regex;
         self.draft_case_sensitive = self.case_sensitive;
@@ -133,6 +216,17 @@ impl OutputSearchState {
         self.filter = self.draft_filter;
         self.regex = self.draft_regex;
         self.case_sensitive = self.draft_case_sensitive;
+    }
+
+    pub fn clear_draft(&mut self) {
+        self.draft_query.clear();
+        self.editor.clear();
+    }
+
+    pub fn edit_draft(&mut self, input: SearchEditorInput) -> bool {
+        let changed = self.editor.input(input);
+        self.draft_query = self.editor.text();
+        changed
     }
 
     pub fn error(&self) -> Option<String> {
@@ -226,6 +320,44 @@ impl OutputSearchState {
             total: matches.len(),
         }))
     }
+}
+
+impl From<SearchEditorInput> for TextAreaInput {
+    fn from(input: SearchEditorInput) -> Self {
+        Self {
+            key: TextAreaKey::from(input.key),
+            ctrl: input.ctrl,
+            alt: input.alt,
+            shift: input.shift,
+        }
+    }
+}
+
+impl From<SearchEditorKey> for TextAreaKey {
+    fn from(key: SearchEditorKey) -> Self {
+        match key {
+            SearchEditorKey::Char(char) => Self::Char(char),
+            SearchEditorKey::Backspace => Self::Backspace,
+            SearchEditorKey::Enter => Self::Enter,
+            SearchEditorKey::Left => Self::Left,
+            SearchEditorKey::Right => Self::Right,
+            SearchEditorKey::Up => Self::Up,
+            SearchEditorKey::Down => Self::Down,
+            SearchEditorKey::Tab => Self::Tab,
+            SearchEditorKey::Delete => Self::Delete,
+            SearchEditorKey::Home => Self::Home,
+            SearchEditorKey::End => Self::End,
+            SearchEditorKey::PageUp => Self::PageUp,
+            SearchEditorKey::PageDown => Self::PageDown,
+        }
+    }
+}
+
+fn search_editor_lines(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    text.split('\n').map(ToOwned::to_owned).collect()
 }
 
 fn fit_search_content(content: &str, width: usize) -> String {

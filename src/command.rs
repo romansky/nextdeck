@@ -1,6 +1,9 @@
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 
-use crate::input::InputEvent;
+use crate::{
+    input::InputEvent,
+    output_pane::{SearchEditorInput, SearchEditorKey},
+};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum AppCommand {
@@ -35,8 +38,7 @@ pub enum AppCommand {
     SelectPreviousFailed,
     StartOutputSearch,
     OpenOutputSearchModal,
-    OutputSearchInput(char),
-    OutputSearchBackspace,
+    OutputSearchEdit(SearchEditorInput),
     ClearOutputSearch,
     ApplyOutputSearch,
     CancelOutputSearch,
@@ -349,8 +351,7 @@ impl AppCommand {
             | Self::SearchModalNextControl
             | Self::SearchModalPreviousControl
             | Self::SearchModalActivate => None,
-            Self::OutputSearchInput(_)
-            | Self::OutputSearchBackspace
+            Self::OutputSearchEdit(_)
             | Self::ClearOutputSearch
             | Self::CancelOutputSearch => None,
             Self::FindNextOutputMatch | Self::FindPreviousOutputMatch => {
@@ -374,8 +375,7 @@ impl AppCommand {
         match self {
             Self::Noop => None,
             Self::Resize => Some("resize"),
-            Self::OutputSearchInput(_) => Some("search text"),
-            Self::OutputSearchBackspace => Some("search erase"),
+            Self::OutputSearchEdit(_) => Some("search edit"),
             Self::ClearOutputSearch => Some("search clear"),
             Self::OpenOutputSearchModal => Some("search modal"),
             Self::ApplyOutputSearch => Some("search apply"),
@@ -438,14 +438,12 @@ fn command_for_output_search_input(code: KeyCode, modifiers: KeyModifiers) -> Ap
     match code {
         KeyCode::Esc => AppCommand::CancelOutputSearch,
         KeyCode::Enter => AppCommand::OpenOutputSearchModal,
-        KeyCode::Backspace => AppCommand::OutputSearchBackspace,
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
             AppCommand::ClearOutputSearch
         }
-        KeyCode::Char(char) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
-            AppCommand::OutputSearchInput(char)
-        }
-        _ => AppCommand::Noop,
+        _ => search_editor_input_for_key(code, modifiers)
+            .map(AppCommand::OutputSearchEdit)
+            .unwrap_or(AppCommand::Noop),
     }
 }
 
@@ -458,7 +456,6 @@ fn command_for_output_search_modal(code: KeyCode, modifiers: KeyModifiers) -> Ap
             AppCommand::ApplyOutputSearch
         }
         KeyCode::Enter => AppCommand::SearchModalActivate,
-        KeyCode::Backspace => AppCommand::OutputSearchBackspace,
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
             AppCommand::ClearOutputSearch
         }
@@ -468,11 +465,36 @@ fn command_for_output_search_modal(code: KeyCode, modifiers: KeyModifiers) -> Ap
         KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
             AppCommand::ToggleOutputRegex
         }
-        KeyCode::Char(char) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
-            AppCommand::OutputSearchInput(char)
-        }
-        _ => AppCommand::Noop,
+        _ => search_editor_input_for_key(code, modifiers)
+            .map(AppCommand::OutputSearchEdit)
+            .unwrap_or(AppCommand::Noop),
     }
+}
+
+fn search_editor_input_for_key(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> Option<SearchEditorInput> {
+    let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+    let alt = modifiers.contains(KeyModifiers::ALT);
+    let shift = modifiers.contains(KeyModifiers::SHIFT);
+    let key = match code {
+        KeyCode::Char(char) => SearchEditorKey::Char(char),
+        KeyCode::Backspace => SearchEditorKey::Backspace,
+        KeyCode::Enter => SearchEditorKey::Enter,
+        KeyCode::Left => SearchEditorKey::Left,
+        KeyCode::Right => SearchEditorKey::Right,
+        KeyCode::Up => SearchEditorKey::Up,
+        KeyCode::Down => SearchEditorKey::Down,
+        KeyCode::Tab => SearchEditorKey::Tab,
+        KeyCode::Delete => SearchEditorKey::Delete,
+        KeyCode::Home => SearchEditorKey::Home,
+        KeyCode::End => SearchEditorKey::End,
+        KeyCode::PageUp => SearchEditorKey::PageUp,
+        KeyCode::PageDown => SearchEditorKey::PageDown,
+        _ => return None,
+    };
+    Some(SearchEditorInput::new(key, ctrl, alt, shift))
 }
 
 fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) -> AppCommand {
@@ -783,14 +805,31 @@ mod tests {
         )));
         assert_eq!(
             command_for_input(&text, context),
-            AppCommand::OutputSearchInput('p')
+            AppCommand::OutputSearchEdit(SearchEditorInput::char('p'))
         );
 
         let backspace =
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
         assert_eq!(
             command_for_input(&backspace, context),
-            AppCommand::OutputSearchBackspace
+            AppCommand::OutputSearchEdit(SearchEditorInput::new(
+                SearchEditorKey::Backspace,
+                false,
+                false,
+                false,
+            ))
+        );
+
+        let left =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)));
+        assert_eq!(
+            command_for_input(&left, context),
+            AppCommand::OutputSearchEdit(SearchEditorInput::new(
+                SearchEditorKey::Left,
+                false,
+                false,
+                false,
+            ))
         );
 
         let clear = InputEvent::Terminal(Event::Key(KeyEvent::new(
