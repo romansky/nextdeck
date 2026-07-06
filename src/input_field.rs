@@ -1,9 +1,33 @@
-use crate::output_pane::{SearchEditorInput, SearchEditorKey};
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct InputField {
     text: String,
     cursor: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputFieldInput {
+    pub key: InputFieldKey,
+}
+
+impl InputFieldInput {
+    pub const fn new(key: InputFieldKey) -> Self {
+        Self { key }
+    }
+
+    pub const fn char(char: char) -> Self {
+        Self::new(InputFieldKey::Char(char))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputFieldKey {
+    Char(char),
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    Home,
+    End,
 }
 
 impl InputField {
@@ -21,21 +45,15 @@ impl InputField {
         self.cursor = 0;
     }
 
-    pub fn input(&mut self, input: SearchEditorInput) -> bool {
+    pub fn input(&mut self, input: InputFieldInput) -> bool {
         match input.key {
-            SearchEditorKey::Char(char) => self.insert_char(char),
-            SearchEditorKey::Backspace => self.backspace(),
-            SearchEditorKey::Delete => self.delete(),
-            SearchEditorKey::Left => self.move_left(),
-            SearchEditorKey::Right => self.move_right(),
-            SearchEditorKey::Home => self.move_home(),
-            SearchEditorKey::End => self.move_end(),
-            SearchEditorKey::Enter
-            | SearchEditorKey::Up
-            | SearchEditorKey::Down
-            | SearchEditorKey::Tab
-            | SearchEditorKey::PageUp
-            | SearchEditorKey::PageDown => false,
+            InputFieldKey::Char(char) => self.insert_char(char),
+            InputFieldKey::Backspace => self.backspace(),
+            InputFieldKey::Delete => self.delete(),
+            InputFieldKey::Left => self.move_left(),
+            InputFieldKey::Right => self.move_right(),
+            InputFieldKey::Home => self.move_home(),
+            InputFieldKey::End => self.move_end(),
         }
     }
 
@@ -162,13 +180,8 @@ mod tests {
     fn edits_at_cursor_position() {
         let mut input = InputField::default();
         input.set_text("idea");
-        input.input(SearchEditorInput::new(
-            SearchEditorKey::Left,
-            false,
-            false,
-            false,
-        ));
-        input.input(SearchEditorInput::char('X'));
+        input.input(InputFieldInput::new(InputFieldKey::Left));
+        input.input(InputFieldInput::char('X'));
 
         assert_eq!(input.text(), "ideXa");
         assert_eq!(input.view(8, true), "ideX_a  ");
@@ -178,24 +191,9 @@ mod tests {
     fn deletes_around_cursor() {
         let mut input = InputField::default();
         input.set_text("abcd");
-        input.input(SearchEditorInput::new(
-            SearchEditorKey::Left,
-            false,
-            false,
-            false,
-        ));
-        input.input(SearchEditorInput::new(
-            SearchEditorKey::Backspace,
-            false,
-            false,
-            false,
-        ));
-        input.input(SearchEditorInput::new(
-            SearchEditorKey::Delete,
-            false,
-            false,
-            false,
-        ));
+        input.input(InputFieldInput::new(InputFieldKey::Left));
+        input.input(InputFieldInput::new(InputFieldKey::Backspace));
+        input.input(InputFieldInput::new(InputFieldKey::Delete));
 
         assert_eq!(input.text(), "ab");
         assert_eq!(input.view(6, true), "ab_   ");
@@ -213,20 +211,10 @@ mod tests {
     fn home_and_end_move_cursor() {
         let mut input = InputField::default();
         input.set_text("idea");
-        input.input(SearchEditorInput::new(
-            SearchEditorKey::Home,
-            false,
-            false,
-            false,
-        ));
+        input.input(InputFieldInput::new(InputFieldKey::Home));
         assert_eq!(input.view(6, true), "_idea ");
 
-        input.input(SearchEditorInput::new(
-            SearchEditorKey::End,
-            false,
-            false,
-            false,
-        ));
+        input.input(InputFieldInput::new(InputFieldKey::End));
         assert_eq!(input.view(6, true), "idea_ ");
     }
 }

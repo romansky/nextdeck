@@ -6,6 +6,7 @@ use crate::{
     disk_usage::{DiskCleanupState, DiskUsageSnapshot, DiskUsageState},
     editor::SourceLocation,
     git_status::GitStatus,
+    input_field::InputFieldInput,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
     output_pane::{
         OutputSearchState, SearchDirection, SearchEditorInput, SearchEditorKey, SearchModalFocus,
@@ -337,7 +338,7 @@ impl App {
         self.status = "Editing open-with command".to_owned();
     }
 
-    fn edit_open_with_setting(&mut self, input: SearchEditorInput) {
+    fn edit_open_with_setting(&mut self, input: InputFieldInput) {
         self.global_settings.edit_open_with(input);
     }
 
@@ -1514,8 +1515,8 @@ mod tests {
         let mut app = App::new(Tree::from_tests(test_rows(1)));
         app.apply_command(AppCommand::OpenSettings);
         app.apply_command(AppCommand::SettingsActivate);
-        app.apply_command(AppCommand::SettingsOpenWithEdit(SearchEditorInput::char('i')));
-        app.apply_command(AppCommand::SettingsOpenWithEdit(SearchEditorInput::char('d')));
+        app.apply_command(AppCommand::SettingsOpenWithEdit(InputFieldInput::char('i')));
+        app.apply_command(AppCommand::SettingsOpenWithEdit(InputFieldInput::char('d')));
 
         let effect = app.apply_command(AppCommand::CommitOpenWithSetting);
 
@@ -1534,7 +1535,7 @@ mod tests {
         );
         app.apply_command(AppCommand::OpenSettings);
         app.apply_command(AppCommand::SettingsActivate);
-        app.apply_command(AppCommand::SettingsOpenWithEdit(SearchEditorInput::char('X')));
+        app.apply_command(AppCommand::SettingsOpenWithEdit(InputFieldInput::char('X')));
 
         let effect = app.apply_command(AppCommand::CommitOpenWithSetting);
 

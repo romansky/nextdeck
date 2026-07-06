@@ -2,6 +2,7 @@ use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::{
     input::InputEvent,
+    input_field::{InputFieldInput, InputFieldKey},
     output_pane::{SearchEditorInput, SearchEditorKey},
 };
 
@@ -37,7 +38,7 @@ pub enum AppCommand {
     SettingsAdjustLeft,
     SettingsAdjustRight,
     SettingsActivate,
-    SettingsOpenWithEdit(SearchEditorInput),
+    SettingsOpenWithEdit(InputFieldInput),
     CommitOpenWithSetting,
     CancelOpenWithSetting,
     ClearOpenWithSetting,
@@ -547,7 +548,7 @@ fn command_for_settings_open_with_input(code: KeyCode, modifiers: KeyModifiers) 
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
             AppCommand::ClearOpenWithSetting
         }
-        _ => search_editor_input_for_key(code, modifiers)
+        _ => input_field_input_for_key(code, modifiers)
             .map(AppCommand::SettingsOpenWithEdit)
             .unwrap_or(AppCommand::Noop),
     }
@@ -624,6 +625,29 @@ fn search_editor_input_for_key(
         _ => return None,
     };
     Some(SearchEditorInput::new(key, ctrl, alt, shift))
+}
+
+fn input_field_input_for_key(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> Option<InputFieldInput> {
+    let reserved_modifiers = KeyModifiers::CONTROL
+        | KeyModifiers::ALT
+        | KeyModifiers::SUPER
+        | KeyModifiers::HYPER
+        | KeyModifiers::META;
+    let has_reserved_modifier = modifiers.intersects(reserved_modifiers);
+    let key = match code {
+        KeyCode::Char(char) if !has_reserved_modifier => return Some(InputFieldInput::char(char)),
+        KeyCode::Backspace if modifiers.is_empty() => InputFieldKey::Backspace,
+        KeyCode::Delete if modifiers.is_empty() => InputFieldKey::Delete,
+        KeyCode::Left if modifiers.is_empty() => InputFieldKey::Left,
+        KeyCode::Right if modifiers.is_empty() => InputFieldKey::Right,
+        KeyCode::Home if modifiers.is_empty() => InputFieldKey::Home,
+        KeyCode::End if modifiers.is_empty() => InputFieldKey::End,
+        _ => return None,
+    };
+    Some(InputFieldInput::new(key))
 }
 
 fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) -> AppCommand {
@@ -899,7 +923,7 @@ mod tests {
             InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)));
         assert_eq!(
             command_for_input(&char, context),
-            AppCommand::SettingsOpenWithEdit(SearchEditorInput::char('i'))
+            AppCommand::SettingsOpenWithEdit(InputFieldInput::char('i'))
         );
 
         let enter =
@@ -908,6 +932,22 @@ mod tests {
             command_for_input(&enter, context),
             AppCommand::CommitOpenWithSetting
         );
+    }
+
+    #[test]
+    fn settings_open_with_input_ignores_modified_navigation() {
+        let context = CommandContext {
+            settings_modal: true,
+            settings_open_with_input: true,
+            ..CommandContext::default()
+        };
+        let ctrl_left =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)));
+        let super_v =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::SUPER)));
+
+        assert_eq!(command_for_input(&ctrl_left, context), AppCommand::Noop);
+        assert_eq!(command_for_input(&super_v, context), AppCommand::Noop);
     }
 
     #[test]

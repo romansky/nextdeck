@@ -1,7 +1,6 @@
 use crate::{
     config::AppSettings,
-    input_field::InputField,
-    output_pane::SearchEditorInput,
+    input_field::{InputField, InputFieldInput},
 };
 
 #[derive(Clone, Debug, Default)]
@@ -81,7 +80,7 @@ impl GlobalSettingsState {
         self.sync_open_with(settings);
     }
 
-    pub fn edit_open_with(&mut self, input: SearchEditorInput) {
+    pub fn edit_open_with(&mut self, input: InputFieldInput) {
         self.open_with.input(input);
     }
 
