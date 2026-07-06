@@ -82,11 +82,21 @@ impl Theme {
         }
     }
 
-    pub fn panel_block<'a>(&self, title: &'a str, focused: bool) -> Block<'a> {
-        Block::default()
+    pub fn panel_block_with_actions<'a>(
+        &self,
+        title: &'a str,
+        actions: Option<&'a str>,
+        focused: bool,
+    ) -> Block<'a> {
+        let block = Block::default()
             .title(Line::styled(format!(" {title} "), self.title(focused)))
             .borders(Borders::ALL)
-            .border_style(self.border(focused))
+            .border_style(self.border(focused));
+        if let Some(actions) = actions {
+            block.title_bottom(Line::styled(format!(" {actions} "), self.muted()))
+        } else {
+            block
+        }
     }
 
     pub fn modal_block<'a>(&self, title: &'a str) -> Block<'a> {

@@ -24,6 +24,11 @@ pub struct AppLayout {
     pub status: Rect,
 }
 
+struct PanelChrome<'a> {
+    title: &'a str,
+    actions: &'a str,
+}
+
 pub fn layout(area: Rect, tree_width_percent: u16) -> AppLayout {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -93,7 +98,7 @@ fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     let focused = pane_focused(app, FocusPane::Tree);
     let title = tests_title(app);
     let list = List::new(items)
-        .block(theme.panel_block(&title, focused))
+        .block(theme.panel_block_with_actions(&title, Some(tests_actions()), focused))
         .highlight_style(theme.selected());
     frame.render_widget(Clear, area);
     frame.render_widget(list, area);
@@ -141,7 +146,10 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
             frame,
             theme,
             area,
-            &title,
+            PanelChrome {
+                title: &title,
+                actions: output_actions(),
+            },
             output_lines(app, theme, &text),
             true,
             app.output_scroll,
@@ -333,7 +341,7 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     let lines = selected_details(app, theme);
     let details = Paragraph::new(lines)
         .style(theme.text())
-        .block(theme.panel_block("Info", false))
+        .block(theme.panel_block_with_actions("Info", Some(info_actions()), false))
         .wrap(Wrap { trim: false });
     frame.render_widget(Clear, area);
     frame.render_widget(details, area);
@@ -548,7 +556,10 @@ fn draw_output(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
         frame,
         theme,
         area,
-        &title,
+        PanelChrome {
+            title: &title,
+            actions: output_actions(),
+        },
         output_lines(app, theme, &text),
         focused,
         app.output_scroll,
@@ -559,7 +570,7 @@ fn draw_output_panel(
     frame: &mut Frame<'_>,
     theme: &Theme,
     area: Rect,
-    title: &str,
+    chrome: PanelChrome<'_>,
     lines: Vec<Line<'static>>,
     focused: bool,
     scroll: u16,
@@ -569,11 +580,27 @@ fn draw_output_panel(
     let scroll = output_render_scroll_for_count(text_line_count, page_size, scroll);
     let output = Paragraph::new(lines)
         .style(theme.text())
-        .block(theme.panel_block(title, focused))
+        .block(theme.panel_block_with_actions(
+            chrome.title,
+            Some(chrome.actions),
+            focused,
+        ))
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     frame.render_widget(Clear, area);
     frame.render_widget(output, area);
+}
+
+fn tests_actions() -> &'static str {
+    "actions: [r]un [R]failed [o]pen-editor [u]refresh"
+}
+
+fn info_actions() -> &'static str {
+    "actions: none"
+}
+
+fn output_actions() -> &'static str {
+    "actions: [/]search [n]ext [N]prev [o]pen-editor"
 }
 
 fn output_title(app: &App, text: &str) -> String {
@@ -839,6 +866,19 @@ mod tests {
         assert_eq!(
             tests_title(&app),
             "Tests <filters: [p]ass:on [f]ail:on [i]gnore:off [s]kip:on>"
+        );
+    }
+
+    #[test]
+    fn panel_actions_describe_local_commands() {
+        assert_eq!(
+            tests_actions(),
+            "actions: [r]un [R]failed [o]pen-editor [u]refresh"
+        );
+        assert_eq!(info_actions(), "actions: none");
+        assert_eq!(
+            output_actions(),
+            "actions: [/]search [n]ext [N]prev [o]pen-editor"
         );
     }
 
