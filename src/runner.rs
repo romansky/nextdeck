@@ -1,18 +1,19 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
 use crate::{
     app::{App, AppEffect},
     config::AppSettings,
-    command::{AppCommand, command_for_input},
+    command::{AppCommand, CommandContext, command_for_input},
     config,
     disk_usage,
     editor::EditorConfig,
     git_status,
-    input::InputSource,
+    input::{InputEvent, InputSource},
     nextest::{DiscoveryEvent, NextestClient, RunEvent, RunRequest},
     queue::{self, QueueEvent, QueueSender},
     terminal::AppTerminal,
@@ -73,6 +74,7 @@ async fn run_loop(
     mut queue_rx: queue::QueueReceiver,
 ) -> Result<()> {
     let mut run_control = None;
+    let mut pending_events = Vec::new();
     while !app.should_quit {
         let size = terminal.size()?;
         let layout = ui::layout(
@@ -84,15 +86,29 @@ async fn run_loop(
         let Some(event) = queue_rx.recv().await else {
             break;
         };
-        handle_queue_event(
+        pending_events.push(event);
+        drain_pending_events(&mut queue_rx, &mut pending_events);
+        handle_queue_events(
             app,
             &mut context,
             &mut run_on_start,
-            event,
+            &mut pending_events,
             &mut run_control,
         );
+        pending_events.clear();
     }
     Ok(())
+}
+
+const MAX_EVENTS_PER_FRAME: usize = 256;
+
+fn drain_pending_events(queue_rx: &mut queue::QueueReceiver, events: &mut Vec<QueueEvent>) {
+    while events.len() < MAX_EVENTS_PER_FRAME {
+        let Ok(event) = queue_rx.try_recv() else {
+            break;
+        };
+        events.push(event);
+    }
 }
 
 struct RunLoopContext<'a> {
@@ -101,6 +117,97 @@ struct RunLoopContext<'a> {
     editor: EditorConfig,
     cli_open_with: Option<String>,
     queue_tx: QueueSender,
+}
+
+fn handle_queue_events(
+    app: &mut App,
+    context: &mut RunLoopContext<'_>,
+    run_on_start: &mut bool,
+    events: &mut [QueueEvent],
+    run_control: &mut Option<RunControl>,
+) {
+    for index in 0..events.len() {
+        if should_skip_stale_event(events, index, app.command_context()) {
+            continue;
+        }
+        handle_queue_event(
+            app,
+            context,
+            run_on_start,
+            events[index].clone(),
+            run_control,
+        );
+        if app.should_quit {
+            break;
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LatestOnlyInput {
+    TerminalResize,
+    TestsPaneWidth,
+}
+
+fn should_skip_stale_event(
+    events: &[QueueEvent],
+    index: usize,
+    context: CommandContext,
+) -> bool {
+    let Some(class) = latest_only_event(&events[index], context) else {
+        return false;
+    };
+    match class {
+        LatestOnlyInput::TerminalResize => events[index + 1..]
+            .iter()
+            .any(|event| latest_only_event(event, context) == Some(class)),
+        LatestOnlyInput::TestsPaneWidth => events[index + 1..]
+            .iter()
+            .map(|event| latest_only_event(event, context))
+            .take_while(Option::is_some)
+            .any(|later| later == Some(class)),
+    }
+}
+
+fn latest_only_event(event: &QueueEvent, context: CommandContext) -> Option<LatestOnlyInput> {
+    match event {
+        QueueEvent::Input(input) => latest_only_input(input, context),
+        QueueEvent::Discovery(_)
+        | QueueEvent::CargoClean(_)
+        | QueueEvent::DiskUsage(_)
+        | QueueEvent::GitStatus(_)
+        | QueueEvent::Run(_)
+        | QueueEvent::Tick => None,
+    }
+}
+
+fn latest_only_input(input: &InputEvent, context: CommandContext) -> Option<LatestOnlyInput> {
+    match input {
+        InputEvent::Terminal(Event::Resize(_, _)) => Some(LatestOnlyInput::TerminalResize),
+        InputEvent::Terminal(Event::Key(key))
+            if key.kind == KeyEventKind::Press
+                && context_accepts_tests_pane_width(context)
+                && matches!(
+                    key.code,
+                    KeyCode::Left | KeyCode::Right | KeyCode::Char('[') | KeyCode::Char(']')
+                )
+                && (key.modifiers.contains(KeyModifiers::SHIFT)
+                    || matches!(key.code, KeyCode::Char('[') | KeyCode::Char(']'))) =>
+        {
+            Some(LatestOnlyInput::TestsPaneWidth)
+        }
+        InputEvent::Terminal(_) | InputEvent::Error(_) => None,
+    }
+}
+
+fn context_accepts_tests_pane_width(context: CommandContext) -> bool {
+    !context.help_visible
+        && !context.output_search_input
+        && !context.output_search_modal
+        && !context.disk_cleanup_modal
+        && !context.settings_modal
+        && !context.settings_open_with_input
+        && !context.discovery_running
 }
 
 fn handle_queue_event(
@@ -335,4 +442,106 @@ fn start_run(
     });
 
     Some(RunControl { stop_tx })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEvent;
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> QueueEvent {
+        QueueEvent::Input(InputEvent::Terminal(Event::Key(KeyEvent::new(
+            code, modifiers,
+        ))))
+    }
+
+    fn resize(width: u16, height: u16) -> QueueEvent {
+        QueueEvent::Input(InputEvent::Terminal(Event::Resize(width, height)))
+    }
+
+    #[test]
+    fn terminal_resize_events_keep_only_the_latest_pending_resize() {
+        let events = vec![resize(80, 24), QueueEvent::Tick, resize(120, 40)];
+
+        assert!(should_skip_stale_event(
+            &events,
+            0,
+            CommandContext::default()
+        ));
+        assert!(!should_skip_stale_event(
+            &events,
+            2,
+            CommandContext::default()
+        ));
+    }
+
+    #[test]
+    fn tests_pane_width_repeats_keep_only_the_latest_contiguous_intent() {
+        let events = vec![
+            key(KeyCode::Char(']'), KeyModifiers::NONE),
+            key(KeyCode::Right, KeyModifiers::SHIFT),
+            key(KeyCode::Char('q'), KeyModifiers::NONE),
+        ];
+
+        assert!(should_skip_stale_event(
+            &events,
+            0,
+            CommandContext::default()
+        ));
+        assert!(!should_skip_stale_event(
+            &events,
+            1,
+            CommandContext::default()
+        ));
+        assert!(!should_skip_stale_event(
+            &events,
+            2,
+            CommandContext::default()
+        ));
+    }
+
+    #[test]
+    fn tests_pane_width_coalescing_stops_at_semantic_input_boundaries() {
+        let events = vec![
+            key(KeyCode::Char(']'), KeyModifiers::NONE),
+            key(KeyCode::Tab, KeyModifiers::NONE),
+            key(KeyCode::Char(']'), KeyModifiers::NONE),
+        ];
+
+        assert!(!should_skip_stale_event(
+            &events,
+            0,
+            CommandContext::default()
+        ));
+    }
+
+    #[test]
+    fn text_input_contexts_do_not_treat_brackets_as_pane_resize() {
+        let events = vec![
+            key(KeyCode::Char(']'), KeyModifiers::NONE),
+            key(KeyCode::Char(']'), KeyModifiers::NONE),
+        ];
+        let context = CommandContext {
+            output_search_input: true,
+            ..CommandContext::default()
+        };
+
+        assert!(!should_skip_stale_event(&events, 0, context));
+        assert!(!should_skip_stale_event(&events, 1, context));
+    }
+
+    #[test]
+    fn modal_contexts_do_not_treat_shift_arrows_as_pane_resize() {
+        let events = vec![
+            key(KeyCode::Right, KeyModifiers::SHIFT),
+            key(KeyCode::Right, KeyModifiers::SHIFT),
+        ];
+        let context = CommandContext {
+            settings_modal: true,
+            ..CommandContext::default()
+        };
+
+        assert!(!should_skip_stale_event(&events, 0, context));
+        assert!(!should_skip_stale_event(&events, 1, context));
+    }
 }
