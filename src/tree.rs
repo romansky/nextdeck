@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{Component, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -188,7 +188,11 @@ pub struct Tree {
 
 impl Tree {
     pub fn from_tests(tests: Vec<DiscoveredTest>) -> Self {
-        let mut root = TestNode::new(NodeId::Workspace, "workspace", NodeKind::Workspace);
+        let mut root = TestNode::new(
+            NodeId::Workspace,
+            workspace_label(&tests),
+            NodeKind::Workspace,
+        );
         root.expanded = true;
         let mut tree = Self {
             root,
@@ -831,6 +835,43 @@ fn status_label(status: TestStatus) -> &'static str {
     }
 }
 
+fn workspace_label(tests: &[DiscoveredTest]) -> String {
+    let Some(path) = common_cwd(tests) else {
+        return "workspace".to_owned();
+    };
+    if path.as_os_str().is_empty() {
+        "workspace".to_owned()
+    } else {
+        path.display().to_string()
+    }
+}
+
+fn common_cwd(tests: &[DiscoveredTest]) -> Option<PathBuf> {
+    let mut iter = tests.iter();
+    let first = iter.next()?.cwd.clone();
+    let mut common = first.components().collect::<Vec<_>>();
+
+    for test in iter {
+        let other = test.cwd.components().collect::<Vec<_>>();
+        let shared_len = common
+            .iter()
+            .zip(other.iter())
+            .take_while(|(left, right)| left == right)
+            .count();
+        common.truncate(shared_len);
+    }
+
+    Some(components_to_path(&common))
+}
+
+fn components_to_path(components: &[Component<'_>]) -> PathBuf {
+    let mut path = PathBuf::new();
+    for component in components {
+        path.push(component.as_os_str());
+    }
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -865,6 +906,35 @@ mod tests {
     }
 
     #[test]
+    fn workspace_label_uses_discovered_cwd() {
+        let mut test = discovered_test("demo::demo", "demo", "tests", "works");
+        test.cwd = PathBuf::from("/Users/roman/Code/demo");
+
+        let tree = Tree::from_tests(vec![test]);
+
+        assert_eq!(tree.root.label, "/Users/roman/Code/demo");
+    }
+
+    #[test]
+    fn workspace_label_uses_common_cwd_for_multiple_packages() {
+        let mut first = discovered_test("app::app", "app", "tests", "works");
+        first.cwd = PathBuf::from("/Users/roman/Code/workspace/app");
+        let mut second = discovered_test("core::core", "core", "tests", "works");
+        second.cwd = PathBuf::from("/Users/roman/Code/workspace/core");
+
+        let tree = Tree::from_tests(vec![first, second]);
+
+        assert_eq!(tree.root.label, "/Users/roman/Code/workspace");
+    }
+
+    #[test]
+    fn empty_tree_keeps_workspace_label() {
+        let tree = Tree::from_tests(Vec::new());
+
+        assert_eq!(tree.root.label, "workspace");
+    }
+
+    #[test]
     fn initial_tree_shows_only_one_nested_level() {
         let mut tree = Tree::from_tests(vec![discovered_test(
             "demo::demo",
@@ -873,18 +943,15 @@ mod tests {
             "works",
         )]);
 
-        assert_eq!(visible_labels(&tree), vec!["workspace", "demo"]);
+        assert_eq!(visible_labels(&tree), vec![".", "demo"]);
 
         tree.select_next();
         tree.expand_selected();
-        assert_eq!(visible_labels(&tree), vec!["workspace", "demo", "outer"]);
+        assert_eq!(visible_labels(&tree), vec![".", "demo", "outer"]);
 
         tree.select_next();
         tree.expand_selected();
-        assert_eq!(
-            visible_labels(&tree),
-            vec!["workspace", "demo", "outer", "inner"]
-        );
+        assert_eq!(visible_labels(&tree), vec![".", "demo", "outer", "inner"]);
     }
 
     #[test]
@@ -900,15 +967,15 @@ mod tests {
             show_skipped: true,
         });
 
-        assert_eq!(visible_labels(&tree), vec!["workspace", "demo"]);
+        assert_eq!(visible_labels(&tree), vec![".", "demo"]);
 
         tree.select_next();
         tree.expand_selected();
-        assert_eq!(visible_labels(&tree), vec!["workspace", "demo", "tests"]);
+        assert_eq!(visible_labels(&tree), vec![".", "demo", "tests"]);
 
         tree.select_next();
         tree.expand_selected();
-        assert_eq!(visible_labels(&tree), vec!["workspace", "demo", "tests"]);
+        assert_eq!(visible_labels(&tree), vec![".", "demo", "tests"]);
         assert!(tree.selected_node().is_some_and(|node| node.expanded));
     }
 
