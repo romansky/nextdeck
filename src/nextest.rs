@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, fs,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -169,7 +169,9 @@ impl NextestClient {
         } else {
             env::current_dir().ok()?.join(manifest_path)
         };
-        manifest_path.parent().map(Path::to_path_buf)
+        manifest_path
+            .parent()
+            .map(|manifest_dir| cargo_project_root_for_manifest_dir(manifest_dir.to_path_buf()))
     }
 
     pub async fn discover(&self) -> Result<Vec<DiscoveredTest>> {
@@ -322,6 +324,28 @@ impl NextestClient {
         command.env("NEXTEST_EXPERIMENTAL_LIBTEST_JSON", "1");
         command
     }
+}
+
+fn cargo_project_root_for_manifest_dir(manifest_dir: PathBuf) -> PathBuf {
+    let mut root = None;
+    let mut current = Some(manifest_dir.as_path());
+    while let Some(dir) = current {
+        if manifest_has_workspace_table(&dir.join("Cargo.toml")) {
+            root = Some(dir.to_path_buf());
+        }
+        current = dir.parent();
+    }
+    root.unwrap_or(manifest_dir)
+}
+
+fn manifest_has_workspace_table(path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        let line = line.trim();
+        line == "[workspace]" || line.starts_with("[workspace.")
+    })
 }
 
 fn summary_to_tests(summary: TestListSummary) -> Vec<DiscoveredTest> {
@@ -499,6 +523,29 @@ mod tests {
         );
 
         assert_eq!(client.project_dir(), Some(PathBuf::from("/workspace/crates/demo")));
+    }
+
+    #[test]
+    fn project_dir_uses_workspace_root_for_nested_manifest() {
+        let root = env::temp_dir().join(format!(
+            "cargo-test-tui-nextest-project-dir-{}",
+            std::process::id()
+        ));
+        let package = root.join("crates/demo");
+        fs::create_dir_all(&package).expect("create package");
+        fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"crates/demo\"]\n")
+            .expect("write workspace manifest");
+        fs::write(package.join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n")
+            .expect("write package manifest");
+        let client = NextestClient::new(
+            Some(package.join("Cargo.toml")),
+            None,
+            Vec::new(),
+        );
+
+        assert_eq!(client.project_dir(), Some(root.clone()));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
