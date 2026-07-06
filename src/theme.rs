@@ -93,7 +93,10 @@ impl Theme {
             .borders(Borders::ALL)
             .border_style(self.border(focused));
         if let Some(actions) = actions {
-            block.title_bottom(Line::styled(format!(" {actions} "), self.muted()))
+            block.title_bottom(Line::styled(
+                format!(" {actions} "),
+                self.panel_actions(focused),
+            ))
         } else {
             block
         }
@@ -122,6 +125,10 @@ impl Theme {
         } else {
             Style::default().fg(self.muted)
         }
+    }
+
+    fn panel_actions(&self, focused: bool) -> Style {
+        self.title(focused)
     }
 
     pub fn text(&self) -> Style {
@@ -229,5 +236,13 @@ mod tests {
     #[test]
     fn light_palette_uses_terminal_background_for_footer() {
         assert_eq!(Theme::light().footer_bg, Color::Reset);
+    }
+
+    #[test]
+    fn panel_actions_follow_panel_focus_style() {
+        let theme = Theme::dark();
+
+        assert_eq!(theme.panel_actions(true), theme.title(true));
+        assert_eq!(theme.panel_actions(false), theme.title(false));
     }
 }
