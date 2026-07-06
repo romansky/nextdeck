@@ -11,6 +11,7 @@ use crate::{
     app::{App, FocusPane},
     command::{CommandGroup, CommandInfo, command_infos},
     config,
+    disk_usage::format_bytes,
     output_pane::SearchModalFocus,
     theme::Theme,
     tree::{NodeKind, TestNode, TestStatus},
@@ -78,6 +79,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         draw_output_search_modal(frame, app, theme);
     }
 
+    if app.disk_cleanup.modal_open {
+        draw_disk_cleanup_modal(frame, app, theme);
+    }
+
     if app.show_help {
         draw_help(frame, app, theme);
     }
@@ -111,6 +116,7 @@ fn pane_focused(app: &App, pane: FocusPane) -> bool {
 fn modal_visible(app: &App) -> bool {
     app.show_help
         || app.output_search.modal_open
+        || app.disk_cleanup.modal_open
         || app.is_discovering()
         || app.discovery.error.is_some()
 }
@@ -266,6 +272,74 @@ fn draw_output_search_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         ]),
         chunks[4],
     );
+}
+
+fn draw_disk_cleanup_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
+    let area = centered_rect(70, 62, frame.area());
+    let mut lines = vec![
+        Line::styled("Disk Usage", theme.title(false)),
+        Line::styled(app.disk_usage.summary_label(), theme.text()),
+        Line::from(""),
+    ];
+
+    if let Some(snapshot) = &app.disk_usage.snapshot {
+        for entry in &snapshot.entries {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<15}", entry.label), theme.muted()),
+                Span::styled(format!("{:>10}", format_bytes(entry.bytes)), theme.text()),
+                Span::raw("  "),
+                Span::styled(entry.path.display().to_string(), theme.muted()),
+            ]));
+        }
+    } else if app.disk_usage.loading {
+        lines.push(Line::styled("Scanning disk usage...", theme.muted()));
+    } else if let Some(error) = &app.disk_usage.error {
+        lines.push(Line::styled(error.clone(), theme.danger()));
+    } else {
+        lines.push(Line::styled("No disk usage snapshot yet.", theme.muted()));
+    }
+
+    lines.extend([
+        Line::from(""),
+        Line::styled("Cleanup", theme.title(false)),
+        Line::styled(
+            "cargo clean removes this workspace's target directory.",
+            theme.text(),
+        ),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                if app.disk_cleanup.running {
+                    "[c] cargo clean..."
+                } else {
+                    "[c] cargo clean"
+                },
+                theme.text(),
+            ),
+            Span::raw("  "),
+            Span::styled("[r] refresh", theme.text()),
+            Span::raw("  "),
+            Span::styled("[q] close", theme.text()),
+        ]),
+    ]);
+
+    if let Some(result) = &app.disk_cleanup.last_result {
+        lines.push(Line::from(""));
+        match result {
+            Ok(()) => lines.push(Line::styled("Last cleanup completed.", theme.success())),
+            Err(error) => lines.push(Line::styled(
+                format!("Last cleanup failed: {error}"),
+                theme.danger(),
+            )),
+        }
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .alignment(Alignment::Left)
+        .block(theme.modal_block("Disk Cleanup"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, area);
+    frame.render_widget(paragraph, area);
 }
 
 fn modal_label_style(active: bool, theme: &Theme) -> ratatui::style::Style {
@@ -469,6 +543,7 @@ fn run_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
             theme.text(),
             theme,
         ),
+        detail_line("disk", app.disk_usage.summary_label(), theme.text(), theme),
     ]
 }
 
@@ -596,7 +671,7 @@ fn tests_actions() -> &'static str {
 }
 
 fn info_actions() -> &'static str {
-    "actions: none"
+    "actions: [d]disk-refresh [D]cleanup"
 }
 
 fn output_actions() -> &'static str {
@@ -875,7 +950,7 @@ mod tests {
             tests_actions(),
             "actions: [r]un [R]failed [o]pen-editor [u]refresh"
         );
-        assert_eq!(info_actions(), "actions: none");
+        assert_eq!(info_actions(), "actions: [d]disk-refresh [D]cleanup");
         assert_eq!(
             output_actions(),
             "actions: [/]search [n]ext [N]prev [o]pen-editor"

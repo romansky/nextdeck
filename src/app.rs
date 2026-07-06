@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use crate::{
     command::{AppCommand, CommandContext, CommandFocus},
     config::{self, AppSettings, TREE_WIDTH_STEP_PERCENT},
+    disk_usage::DiskUsageSnapshot,
     editor::SourceLocation,
     git_status::GitStatus,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope},
@@ -37,6 +38,8 @@ pub struct App {
     pub output_page_size: u16,
     pub discovery: DiscoveryState,
     pub git_status: GitStatus,
+    pub disk_usage: DiskUsageState,
+    pub disk_cleanup: DiskCleanupState,
     pub run: RunState,
     pub settings: AppSettings,
 }
@@ -52,6 +55,35 @@ pub struct DiscoveryState {
     pub running: bool,
     pub ticks: usize,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DiskUsageState {
+    pub loading: bool,
+    pub snapshot: Option<DiskUsageSnapshot>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DiskCleanupState {
+    pub modal_open: bool,
+    pub running: bool,
+    pub last_result: Option<Result<(), String>>,
+}
+
+impl DiskUsageState {
+    pub fn summary_label(&self) -> String {
+        if self.loading {
+            return "scanning...".to_owned();
+        }
+        if self.error.is_some() {
+            return "scan failed".to_owned();
+        }
+        self.snapshot
+            .as_ref()
+            .map(DiskUsageSnapshot::summary_label)
+            .unwrap_or_else(|| "not scanned".to_owned())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -117,6 +149,8 @@ pub enum AppEffect {
     StopRun,
     OpenSource(SourceLocation),
     OpenOutput(OutputOpenRequest),
+    RefreshDiskUsage,
+    RunCargoClean,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -148,6 +182,8 @@ impl App {
             output_page_size: 1,
             discovery: DiscoveryState::default(),
             git_status: GitStatus::unknown(),
+            disk_usage: DiskUsageState::default(),
+            disk_cleanup: DiskCleanupState::default(),
             run: RunState::default(),
             settings: settings.normalized(),
         }
@@ -206,6 +242,7 @@ impl App {
             },
             output_search_input: self.output_search.input_active,
             output_search_modal: self.output_search.modal_open,
+            disk_cleanup_modal: self.disk_cleanup.modal_open,
         }
     }
 
@@ -262,6 +299,54 @@ impl App {
 
     pub fn apply_git_status(&mut self, git_status: GitStatus) {
         self.git_status = git_status;
+    }
+
+    pub fn begin_disk_usage_scan(&mut self) {
+        self.disk_usage.loading = true;
+        self.disk_usage.error = None;
+        self.status = "Scanning disk usage".to_owned();
+    }
+
+    pub fn apply_disk_usage(&mut self, result: Result<DiskUsageSnapshot, String>) {
+        self.disk_usage.loading = false;
+        match result {
+            Ok(snapshot) => {
+                let summary = snapshot.summary_label();
+                self.disk_usage.snapshot = Some(snapshot);
+                self.disk_usage.error = None;
+                self.status = format!("Disk usage: {summary}");
+            }
+            Err(error) => {
+                self.disk_usage.error = Some(error.clone());
+                self.status = format!("Disk usage failed: {error}");
+            }
+        }
+    }
+
+    pub fn begin_cargo_clean(&mut self) -> bool {
+        if self.disk_cleanup.running {
+            self.status = "cargo clean already running".to_owned();
+            return false;
+        }
+        self.disk_cleanup.running = true;
+        self.disk_cleanup.last_result = None;
+        self.status = "Running cargo clean".to_owned();
+        true
+    }
+
+    pub fn apply_cargo_clean(&mut self, result: Result<(), String>) -> bool {
+        self.disk_cleanup.running = false;
+        self.disk_cleanup.last_result = Some(result.clone());
+        match result {
+            Ok(()) => {
+                self.status = "cargo clean completed".to_owned();
+                true
+            }
+            Err(error) => {
+                self.status = format!("cargo clean failed: {error}");
+                false
+            }
+        }
     }
 
     pub fn is_discovering(&self) -> bool {
@@ -413,6 +498,27 @@ impl App {
             }
             AppCommand::OpenSource => self.open_source_effect(),
             AppCommand::OpenOutput => self.open_output_effect(),
+            AppCommand::RefreshDiskUsage => {
+                self.begin_disk_usage_scan();
+                AppEffect::RefreshDiskUsage
+            }
+            AppCommand::OpenDiskCleanup => {
+                self.disk_cleanup.modal_open = true;
+                self.status = "Disk cleanup opened".to_owned();
+                AppEffect::None
+            }
+            AppCommand::CloseDiskCleanup => {
+                self.disk_cleanup.modal_open = false;
+                self.status = "Disk cleanup closed".to_owned();
+                AppEffect::None
+            }
+            AppCommand::RunCargoClean => {
+                if self.begin_cargo_clean() {
+                    AppEffect::RunCargoClean
+                } else {
+                    AppEffect::None
+                }
+            }
             AppCommand::ToggleShowSuccess => {
                 self.toggle_show_success();
                 AppEffect::None

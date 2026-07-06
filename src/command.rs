@@ -30,6 +30,10 @@ pub enum AppCommand {
     RunFailed,
     OpenSource,
     OpenOutput,
+    RefreshDiskUsage,
+    OpenDiskCleanup,
+    CloseDiskCleanup,
+    RunCargoClean,
     ToggleShowSuccess,
     ToggleShowFailed,
     ToggleShowIgnored,
@@ -93,6 +97,8 @@ pub enum CommandKind {
     RunFailed,
     OpenSource,
     OpenOutput,
+    RefreshDiskUsage,
+    OpenDiskCleanup,
     ToggleShowSuccess,
     ToggleShowFailed,
     ToggleShowIgnored,
@@ -199,6 +205,20 @@ const COMMANDS: &[CommandInfo] = &[
         keys: "o",
         label: "open selected test source",
         ticker: "open source",
+    },
+    CommandInfo {
+        kind: CommandKind::RefreshDiskUsage,
+        group: CommandGroup::Global,
+        keys: "d",
+        label: "refresh disk usage",
+        ticker: "disk refresh",
+    },
+    CommandInfo {
+        kind: CommandKind::OpenDiskCleanup,
+        group: CommandGroup::Global,
+        keys: "D",
+        label: "open disk cleanup",
+        ticker: "disk cleanup",
     },
     CommandInfo {
         kind: CommandKind::SelectFailed,
@@ -340,6 +360,8 @@ impl AppCommand {
             Self::RunFailed => Some(CommandKind::RunFailed),
             Self::OpenSource => Some(CommandKind::OpenSource),
             Self::OpenOutput => Some(CommandKind::OpenOutput),
+            Self::RefreshDiskUsage => Some(CommandKind::RefreshDiskUsage),
+            Self::OpenDiskCleanup => Some(CommandKind::OpenDiskCleanup),
             Self::ToggleShowSuccess => Some(CommandKind::ToggleShowSuccess),
             Self::ToggleShowFailed => Some(CommandKind::ToggleShowFailed),
             Self::ToggleShowIgnored => Some(CommandKind::ToggleShowIgnored),
@@ -347,6 +369,8 @@ impl AppCommand {
             Self::SelectNextFailed | Self::SelectPreviousFailed => Some(CommandKind::SelectFailed),
             Self::StartOutputSearch => Some(CommandKind::StartOutputSearch),
             Self::OpenOutputSearchModal
+            | Self::CloseDiskCleanup
+            | Self::RunCargoClean
             | Self::ApplyOutputSearch
             | Self::SearchModalNextControl
             | Self::SearchModalPreviousControl
@@ -383,6 +407,7 @@ impl AppCommand {
             Self::SearchModalNextControl => Some("search focus"),
             Self::SearchModalPreviousControl => Some("search focus"),
             Self::SearchModalActivate => Some("search action"),
+            Self::RunCargoClean => Some("cargo clean"),
             Self::ReportStatus(_) => Some("status"),
             _ => self.info().map(|info| info.ticker),
         }
@@ -402,6 +427,7 @@ pub struct CommandContext {
     pub focus: CommandFocus,
     pub output_search_input: bool,
     pub output_search_modal: bool,
+    pub disk_cleanup_modal: bool,
 }
 
 pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppCommand {
@@ -412,6 +438,9 @@ pub fn command_for_input(event: &InputEvent, context: CommandContext) -> AppComm
         }
         InputEvent::Terminal(Event::Key(key)) if is_stop_key(key.code, key.modifiers) => {
             AppCommand::StopRun
+        }
+        InputEvent::Terminal(Event::Key(key)) if context.disk_cleanup_modal => {
+            command_for_disk_cleanup_modal(key.code)
         }
         InputEvent::Terminal(Event::Key(key)) if context.output_search_modal => {
             command_for_output_search_modal(key.code, key.modifiers)
@@ -452,6 +481,15 @@ fn command_for_output_search_input(code: KeyCode, modifiers: KeyModifiers) -> Ap
 
 fn is_advanced_search_modifier(modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::SUPER)
+}
+
+fn command_for_disk_cleanup_modal(code: KeyCode) -> AppCommand {
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => AppCommand::CloseDiskCleanup,
+        KeyCode::Char('c') => AppCommand::RunCargoClean,
+        KeyCode::Char('r') | KeyCode::Char('d') => AppCommand::RefreshDiskUsage,
+        _ => AppCommand::Noop,
+    }
 }
 
 fn command_for_output_search_modal(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
@@ -509,6 +547,8 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) 
         KeyCode::Char('q') => AppCommand::Quit,
         code if is_stop_key(code, modifiers) => AppCommand::StopRun,
         code if is_help_key(code, modifiers) => AppCommand::ToggleHelp,
+        KeyCode::Char('d') => AppCommand::RefreshDiskUsage,
+        KeyCode::Char('D') => AppCommand::OpenDiskCleanup,
         KeyCode::Tab => AppCommand::ToggleFocus,
         KeyCode::Up => AppCommand::MoveUp,
         KeyCode::Down => AppCommand::MoveDown,
@@ -707,6 +747,43 @@ mod tests {
         assert_eq!(
             command_for_key(KeyCode::Char('o'), KeyModifiers::NONE, CommandFocus::Tests),
             AppCommand::OpenSource
+        );
+    }
+
+    #[test]
+    fn maps_disk_usage_keys_across_focus_modes() {
+        assert_eq!(
+            command_for_key(KeyCode::Char('d'), KeyModifiers::NONE, CommandFocus::Tests),
+            AppCommand::RefreshDiskUsage
+        );
+        assert_eq!(
+            command_for_key(KeyCode::Char('D'), KeyModifiers::SHIFT, CommandFocus::Output),
+            AppCommand::OpenDiskCleanup
+        );
+    }
+
+    #[test]
+    fn disk_cleanup_modal_uses_cleanup_commands() {
+        let context = CommandContext {
+            disk_cleanup_modal: true,
+            ..CommandContext::default()
+        };
+        let clean =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)));
+        assert_eq!(command_for_input(&clean, context), AppCommand::RunCargoClean);
+
+        let refresh =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)));
+        assert_eq!(
+            command_for_input(&refresh, context),
+            AppCommand::RefreshDiskUsage
+        );
+
+        let close =
+            InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert_eq!(
+            command_for_input(&close, context),
+            AppCommand::CloseDiskCleanup
         );
     }
 

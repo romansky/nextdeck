@@ -8,6 +8,7 @@ use crate::{
     app::{App, AppEffect},
     command::{AppCommand, command_for_input},
     config,
+    disk_usage,
     editor::EditorConfig,
     git_status,
     input::InputSource,
@@ -33,6 +34,11 @@ pub async fn run(
         client.current_dir().map(ToOwned::to_owned),
         queue_tx.clone(),
     );
+    app.begin_disk_usage_scan();
+    let disk_usage = start_disk_usage(
+        client.current_dir().map(ToOwned::to_owned),
+        queue_tx.clone(),
+    );
     let input = InputSource::start(queue_tx.clone());
     let ticker = queue::start_ticker(queue_tx.clone(), Duration::from_millis(250));
     let result = run_loop(
@@ -50,6 +56,7 @@ pub async fn run(
     .await;
     discovery.abort();
     git_status.abort();
+    disk_usage.abort();
     ticker.abort();
     drop(input);
     result
@@ -116,6 +123,13 @@ fn handle_queue_event(
             if app.apply_discovery_event(event) && *run_on_start {
                 *run_on_start = false;
                 *run_control = start_run(app, client.clone(), RunRequest::default(), tx);
+            }
+        }
+        QueueEvent::DiskUsage(result) => app.apply_disk_usage(result),
+        QueueEvent::CargoClean(result) => {
+            if app.apply_cargo_clean(result) {
+                app.begin_disk_usage_scan();
+                start_disk_usage(client.current_dir().map(ToOwned::to_owned), tx);
             }
         }
         QueueEvent::GitStatus(git_status) => app.apply_git_status(git_status),
@@ -186,6 +200,12 @@ fn handle_effect(
                 app.status = format!("Failed to open output: {error}");
             }
         },
+        AppEffect::RefreshDiskUsage => {
+            start_disk_usage(client.current_dir().map(ToOwned::to_owned), tx);
+        }
+        AppEffect::RunCargoClean => {
+            start_cargo_clean(client.current_dir().map(ToOwned::to_owned), tx);
+        }
     }
 }
 
@@ -216,6 +236,42 @@ fn start_git_status(
                 break;
             }
         }
+    })
+}
+
+fn start_disk_usage(
+    cwd: Option<std::path::PathBuf>,
+    tx: QueueSender,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let result = disk_usage::load(cwd).await;
+        let _ = tx.send(QueueEvent::DiskUsage(result));
+    })
+}
+
+fn start_cargo_clean(
+    cwd: Option<std::path::PathBuf>,
+    tx: QueueSender,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut command = tokio::process::Command::new("cargo");
+        command.arg("clean");
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+        let result = match command.output().await {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                if stderr.is_empty() {
+                    Err(format!("cargo clean exited with {}", output.status))
+                } else {
+                    Err(stderr)
+                }
+            }
+            Err(error) => Err(format!("failed to run cargo clean: {error}")),
+        };
+        let _ = tx.send(QueueEvent::CargoClean(result));
     })
 }
 

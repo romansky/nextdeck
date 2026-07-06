@@ -3,6 +3,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::{
+    disk_usage::DiskUsageSnapshot,
     git_status::GitStatus,
     input::InputEvent,
     nextest::{DiscoveryEvent, RunEvent},
@@ -12,6 +13,8 @@ use crate::{
 pub enum QueueEvent {
     Input(InputEvent),
     Discovery(DiscoveryEvent),
+    CargoClean(Result<(), String>),
+    DiskUsage(Result<DiskUsageSnapshot, String>),
     GitStatus(GitStatus),
     Run(RunEvent),
     Tick,

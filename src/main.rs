@@ -1,6 +1,7 @@
 mod app;
 mod command;
 mod config;
+mod disk_usage;
 mod editor;
 mod git_status;
 mod input;
