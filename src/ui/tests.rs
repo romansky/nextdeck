@@ -58,6 +58,103 @@ fn fit_line_prefix_preserves_xtask_text_prefix() {
 }
 
 #[test]
+fn xtask_list_uses_auto_command_column_width() {
+    let theme = Theme::dark();
+    let mut xtasks = XtaskState::default();
+    xtasks.manifest = Some(crate::xtask::XtaskManifest {
+        schema_version: crate::xtask::SCHEMA_VERSION,
+        commands: vec![
+            xtask_command(
+                "tui-check",
+                "Run local TUI checks expected before publishing",
+            ),
+            xtask_command(
+                "tui-homebrew-formula",
+                "Generate a Homebrew formula from TUI release artifact checksums",
+            ),
+        ],
+    });
+    xtasks.loading = false;
+    xtasks.selected_command = 1;
+
+    let lines = xtask_list_lines(&xtasks, &theme, 96);
+    let selected = line_text(&lines[1]);
+
+    assert!(selected.starts_with("> tui-homebrew-formula Generate a Homebrew formula"));
+    assert!(selected.contains("release artifact checksums"));
+}
+
+#[test]
+fn xtask_list_caps_long_command_column_width() {
+    let theme = Theme::dark();
+    let mut xtasks = XtaskState::default();
+    xtasks.manifest = Some(crate::xtask::XtaskManifest {
+        schema_version: crate::xtask::SCHEMA_VERSION,
+        commands: vec![xtask_command(
+            "this-command-name-is-too-long-for-the-picker",
+            "Visible description still gets space",
+        )],
+    });
+    xtasks.loading = false;
+
+    let lines = xtask_list_lines(&xtasks, &theme, 50);
+    let text = line_text(&lines[0]);
+
+    assert!(text.starts_with("> this-command-name-is-too-lo... "));
+    assert!(text.contains("Visible descr"));
+}
+
+#[test]
+fn auto_column_layout_sizes_fixed_columns_and_flexes_last_column() {
+    let rows = vec![
+        vec!["  ", "short", "first description"],
+        vec!["  ", "longer-command", "second description"],
+    ];
+    let layout = AutoColumnLayout::compute(
+        &[
+            AutoColumn { max_width: Some(2) },
+            AutoColumn {
+                max_width: Some(30),
+            },
+            AutoColumn { max_width: None },
+        ],
+        &rows,
+        40,
+    );
+
+    assert_eq!(layout.widths, vec![2, 14, 22]);
+}
+
+#[test]
+fn auto_column_layout_caps_fixed_columns_before_flex_column() {
+    let rows = vec![vec![
+        "> ",
+        "very-very-very-long-command",
+        "description keeps the prefix",
+    ]];
+    let layout = AutoColumnLayout::compute(
+        &[
+            AutoColumn { max_width: Some(2) },
+            AutoColumn {
+                max_width: Some(12),
+            },
+            AutoColumn { max_width: None },
+        ],
+        &rows,
+        30,
+    );
+    let line = layout.row(&[
+        ("> ", Style::default()),
+        ("very-very-very-long-command", Style::default()),
+        ("description keeps the prefix", Style::default()),
+    ]);
+    let text = line_text(&line);
+
+    assert_eq!(layout.widths, vec![2, 12, 14]);
+    assert!(text.starts_with(">  very-very... descript"));
+}
+
+#[test]
 fn filter_hint_includes_toggle_key() {
     assert_eq!(filter_hint("pass", "p", true), "[p]ass:✓");
     assert_eq!(filter_hint("fail", "f", false), "[f]ail:✗");
@@ -188,7 +285,7 @@ fn footer_includes_run_and_storage_status_before_key() {
 fn panel_actions_describe_local_commands() {
     assert_eq!(
         tests_actions(),
-        "[enter]details [r]un [R]failed [o]pen-editor [u]update"
+        "[enter]details [e]vents [r]un [R]failed [o]pen-editor [u]update"
     );
     assert_eq!(info_actions(), "[d]disk-refresh [D]cleanup [x]tasks");
     assert_eq!(
@@ -618,6 +715,14 @@ fn help_line_index(lines: &[Line<'_>], label: &str) -> usize {
         .iter()
         .position(|line| line_text(line).contains(label))
         .expect("help line")
+}
+
+fn xtask_command(name: &str, about: &str) -> crate::xtask::XtaskCommandSpec {
+    crate::xtask::XtaskCommandSpec {
+        name: name.to_owned(),
+        about: Some(about.to_owned()),
+        args: Vec::new(),
+    }
 }
 
 fn line_text(line: &Line<'_>) -> String {

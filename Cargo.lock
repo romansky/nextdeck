@@ -689,6 +689,7 @@ dependencies = [
  "crossterm 0.29.0",
  "futures",
  "libc",
+ "nextdeck-test-events",
  "nextest-metadata",
  "ratatui",
  "regex",
@@ -699,6 +700,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tui-textarea",
+]
+
+[[package]]
+name = "nextdeck-test-events"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1434,7 +1444,7 @@ dependencies = [
  "anyhow",
  "clap",
  "flate2",
- "serde_json",
+ "nextdeck-test-events",
  "sha2",
  "tar",
 ]

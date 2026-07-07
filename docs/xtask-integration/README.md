@@ -73,14 +73,15 @@ Supported value types:
 Optional values that still match their default are omitted from the command
 line. Required values are validated before running.
 
-## Clap-Friendly Snippet
+## Clap-Friendly Integration
 
-This keeps the integration explicit and stable while the actual task
-implementation can continue using Clap normally.
+The helper crate can generate this metadata from a normal Clap command tree.
+Call the macro before `Cli::parse()` so `cargo xtask nextdeck-info --format json`
+is handled before Clap rejects the synthetic command.
 
 ```rust
 use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -90,11 +91,6 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    #[command(about = "Print nextdeck xtask integration metadata")]
-    NextdeckInfo {
-        #[arg(long, value_enum, default_value_t = InfoFormat::Json)]
-        format: InfoFormat,
-    },
     #[command(about = "Build release artifacts")]
     Release {
         #[arg(long)]
@@ -104,39 +100,10 @@ enum Command {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum InfoFormat {
-    Json,
-}
-
 fn main() -> Result<()> {
+    nextdeck_test_events::xtask_clap_info!(Cli);
+
     match Cli::parse().command {
-        Command::NextdeckInfo { format: InfoFormat::Json } => {
-            let manifest = serde_json::json!({
-                "schema_version": 1,
-                "commands": [{
-                    "name": "release",
-                    "about": "Build release artifacts",
-                    "args": [
-                        {
-                            "name": "allow-dirty",
-                            "long": "allow-dirty",
-                            "help": "Allow a dirty worktree",
-                            "value": { "type": "bool", "default": false }
-                        },
-                        {
-                            "name": "version",
-                            "long": "version",
-                            "help": "Release version",
-                            "value": { "type": "string" }
-                        }
-                    ]
-                }]
-            });
-            serde_json::to_writer_pretty(std::io::stdout(), &manifest)?;
-            println!();
-            Ok(())
-        }
         Command::Release { allow_dirty, version } => {
             // Existing release implementation.
             let _ = (allow_dirty, version);
@@ -145,6 +112,18 @@ fn main() -> Result<()> {
     }
 }
 ```
+
+Cargo dependency:
+
+```toml
+[dependencies]
+nextdeck-test-events = { version = "0.1", features = ["xtask-clap"] }
+```
+
+The Clap helper covers the simple shapes Nextdeck can render today: named
+booleans, single string values, numeric values with numeric defaults, and enums
+from `ValueEnum` or possible values. Positional, repeated, and variadic args are
+intentionally omitted from the generated metadata.
 
 ## Nextdeck UI
 

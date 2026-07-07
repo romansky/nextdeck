@@ -20,6 +20,7 @@ use crate::{
     },
     settings::SettingsField,
     symbols::bool_symbol,
+    test_events::{TestEventRunLog, TestEventsFocus, TestEventsState},
     theme::Theme,
     tree::{NodeKind, TestNode, TestStatus},
     xtask::{XtaskArgValue, XtaskDetailFocus, XtaskState, XtaskValueSpec},
@@ -54,6 +55,77 @@ struct OutputPaneContent {
 struct ModalChrome<'a> {
     title: &'a str,
     actions: Option<&'a str>,
+}
+
+const XTASK_COMMAND_NAME_MAX_WIDTH: usize = 30;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AutoColumn {
+    max_width: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AutoColumnLayout {
+    widths: Vec<usize>,
+}
+
+impl AutoColumnLayout {
+    fn compute(columns: &[AutoColumn], rows: &[Vec<&str>], total_width: usize) -> Self {
+        if columns.is_empty() || total_width == 0 {
+            return Self {
+                widths: vec![0; columns.len()],
+            };
+        }
+
+        let separators = columns.len().saturating_sub(1).min(total_width);
+        let available = total_width.saturating_sub(separators);
+        let mut widths = vec![0; columns.len()];
+        let flex_index = columns.len() - 1;
+
+        for index in 0..flex_index {
+            let content_width = rows
+                .iter()
+                .filter_map(|row| row.get(index))
+                .map(|value| value.chars().count())
+                .max()
+                .unwrap_or_default();
+            widths[index] = content_width.min(columns[index].max_width.unwrap_or(content_width));
+        }
+
+        let fixed_sum: usize = widths[..flex_index].iter().sum();
+        if fixed_sum > available {
+            let mut remaining = available;
+            for width in &mut widths[..flex_index] {
+                *width = (*width).min(remaining);
+                remaining = remaining.saturating_sub(*width);
+            }
+        }
+
+        let fixed_sum: usize = widths[..flex_index].iter().sum();
+        widths[flex_index] = available.saturating_sub(fixed_sum);
+
+        Self { widths }
+    }
+
+    fn row(&self, cells: &[(&str, Style)]) -> Line<'static> {
+        let mut spans = Vec::new();
+        for (index, width) in self.widths.iter().copied().enumerate() {
+            if width > 0 {
+                let (content, style) = cells.get(index).copied().unwrap_or(("", Style::default()));
+                spans.push(Span::styled(fit_line_prefix(content, width), style));
+            }
+            if index + 1 < self.widths.len() && self.widths[index + 1..].iter().any(|w| *w > 0) {
+                spans.push(Span::styled(
+                    " ",
+                    cells
+                        .get(index)
+                        .map(|(_, style)| *style)
+                        .unwrap_or_default(),
+                ));
+            }
+        }
+        Line::from(spans)
+    }
 }
 
 pub fn layout(area: Rect, tree_width_percent: u16) -> AppLayout {
@@ -100,6 +172,16 @@ pub fn xtask_output_page_size(area: Rect) -> u16 {
     output_area.height.saturating_sub(2).max(1)
 }
 
+pub fn test_events_output_page_size(area: Rect) -> u16 {
+    let modal_area = centered_rect(88, 82, area);
+    let inner = modal_area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let output_area = test_events_output_area(inner);
+    output_area.height.saturating_sub(2).max(1)
+}
+
 pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let app_layout = layout(frame.area(), app.settings.tree_width_percent);
     draw_tree(frame, app, theme, app_layout.tree);
@@ -116,12 +198,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         }
         Some(OverlayMode::DiskCleanup) => draw_disk_cleanup_modal(frame, app, theme),
         Some(OverlayMode::Xtasks) => draw_xtasks_modal(frame, app, theme),
+        Some(OverlayMode::TestEvents) => draw_test_events_modal(frame, app, theme),
         Some(OverlayMode::TestDetails) => draw_test_details_modal(frame, app, theme),
         Some(OverlayMode::Settings) => draw_global_settings_modal(frame, app, theme),
         Some(OverlayMode::Help) => draw_help(frame, app, theme),
         None => {}
     }
     if app.xtasks.modal_open && app.xtasks.output.search.modal_open {
+        draw_output_search_modal(frame, app.active_output_search(), theme);
+    }
+    if app.test_events.modal_open && app.test_events.output.search.modal_open {
         draw_output_search_modal(frame, app.active_output_search(), theme);
     }
 }
@@ -489,12 +575,151 @@ fn draw_xtasks_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     if app.xtasks.detail_open {
         draw_xtask_detail_frame(frame, app, theme, inner);
     } else {
-        let paragraph = Paragraph::new(xtask_list_lines(&app.xtasks, theme))
+        let content_width = inner.width as usize;
+        let paragraph = Paragraph::new(xtask_list_lines(&app.xtasks, theme, content_width))
             .alignment(Alignment::Left)
             .style(theme.text())
             .wrap(Wrap { trim: false });
         frame.render_widget(paragraph, inner);
     }
+}
+
+fn draw_test_events_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
+    let area = centered_rect(88, 82, frame.area());
+    let inner = draw_modal_shell(
+        frame,
+        theme,
+        area,
+        ModalChrome {
+            title: "Test Events",
+            actions: Some(test_events_actions(&app.test_events)),
+        },
+    );
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(34),
+            Constraint::Length(1),
+            Constraint::Percentage(66),
+        ])
+        .split(inner);
+    draw_test_event_runs_panel(
+        frame,
+        theme,
+        chunks[0],
+        &app.test_events,
+        app.test_events.focus == TestEventsFocus::Runs,
+    );
+    frame.render_widget(Clear, chunks[1]);
+    draw_test_event_output_panel(
+        frame,
+        app,
+        theme,
+        test_events_output_area(inner),
+        app.test_events.focus == TestEventsFocus::Events,
+    );
+}
+
+fn test_events_output_area(area: Rect) -> Rect {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(34),
+            Constraint::Length(1),
+            Constraint::Percentage(66),
+        ])
+        .split(area);
+    chunks[2]
+}
+
+fn draw_test_event_runs_panel(
+    frame: &mut Frame<'_>,
+    theme: &Theme,
+    area: Rect,
+    test_events: &TestEventsState,
+    focused: bool,
+) {
+    let block = theme.panel_block("Runs", Some("[up/down]select [tab]events"), focused);
+    let inner = block.inner(area);
+    let content_width = inner.width.max(1) as usize;
+    let paragraph = Paragraph::new(test_event_run_lines(
+        test_events,
+        theme,
+        content_width,
+        focused,
+    ))
+    .style(theme.text())
+    .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    frame.render_widget(paragraph, inner);
+}
+
+fn test_event_run_lines(
+    test_events: &TestEventsState,
+    theme: &Theme,
+    content_width: usize,
+    focused: bool,
+) -> Vec<Line<'static>> {
+    if test_events.runs.is_empty() {
+        return vec![
+            Line::styled("No runs yet.", theme.muted()),
+            Line::from(""),
+            Line::styled("Run tests from NextDeck to collect events.", theme.text()),
+        ];
+    }
+    test_events
+        .runs
+        .iter()
+        .enumerate()
+        .map(|(index, run)| {
+            test_event_run_line(index, run, test_events, theme, content_width, focused)
+        })
+        .collect()
+}
+
+fn test_event_run_line(
+    index: usize,
+    run: &TestEventRunLog,
+    test_events: &TestEventsState,
+    theme: &Theme,
+    content_width: usize,
+    focused: bool,
+) -> Line<'static> {
+    let selected = index == test_events.selected_run;
+    let marker = if selected { ">" } else { " " };
+    let style = if focused && selected {
+        theme.selected()
+    } else {
+        theme.text()
+    };
+    let label = format!(
+        "{marker} {:<8} {:>4} {}",
+        run.status,
+        run.events.len(),
+        run.scope
+    );
+    Line::styled(fit_line_prefix(&label, content_width), style)
+}
+
+fn draw_test_event_output_panel(
+    frame: &mut Frame<'_>,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    focused: bool,
+) {
+    draw_output_pane(
+        frame,
+        theme,
+        area,
+        OutputPaneRender {
+            state: &app.test_events.output,
+            source_text: app.test_events.output_text(),
+            label: "Events".to_owned(),
+            focused,
+        },
+    );
 }
 
 fn xtask_modal_title(xtasks: &XtaskState) -> String {
@@ -506,7 +731,11 @@ fn xtask_modal_title(xtasks: &XtaskState) -> String {
     "Xtasks".to_owned()
 }
 
-fn xtask_list_lines(xtasks: &XtaskState, theme: &Theme) -> Vec<Line<'static>> {
+fn xtask_list_lines(
+    xtasks: &XtaskState,
+    theme: &Theme,
+    content_width: usize,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if xtasks.loading {
         lines.push(Line::styled(
@@ -539,18 +768,47 @@ fn xtask_list_lines(xtasks: &XtaskState, theme: &Theme) -> Vec<Line<'static>> {
         return lines;
     }
 
+    let rows = manifest
+        .commands
+        .iter()
+        .enumerate()
+        .map(|(index, command)| {
+            vec![
+                if index == xtasks.selected_command {
+                    ">"
+                } else {
+                    " "
+                },
+                command.name.as_str(),
+                command.about.as_deref().unwrap_or(""),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let layout = AutoColumnLayout::compute(
+        &[
+            AutoColumn { max_width: Some(1) },
+            AutoColumn {
+                max_width: Some(XTASK_COMMAND_NAME_MAX_WIDTH),
+            },
+            AutoColumn { max_width: None },
+        ],
+        &rows,
+        content_width,
+    );
+
     for (index, command) in manifest.commands.iter().enumerate() {
         let selected = index == xtasks.selected_command;
-        let marker = if selected { ">" } else { " " };
         let style = if selected {
             theme.selected()
         } else {
             theme.text()
         };
         let about = command.about.as_deref().unwrap_or("");
-        lines.push(Line::from(vec![
-            Span::styled(format!("{marker} {:<18}", command.name), style),
-            Span::styled(fit_line_content(about, 46), style),
+        let marker = if selected { ">" } else { " " };
+        lines.push(layout.row(&[
+            (marker, style),
+            (command.name.as_str(), style),
+            (about, style),
         ]));
     }
 
@@ -1202,6 +1460,12 @@ fn run_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
         detail_line("build", build_duration_label(app), theme.text(), theme),
         detail_line("tests", test_duration_label(app), theme.text(), theme),
         detail_line(
+            "events",
+            app.test_events.counter_label(),
+            theme.accent(),
+            theme,
+        ),
+        detail_line(
             "progress",
             format!("{finished}/{total}"),
             theme.text(),
@@ -1435,7 +1699,7 @@ fn draw_output_panel(
 }
 
 fn tests_actions() -> &'static str {
-    "[enter]details [r]un [R]failed [o]pen-editor [u]update"
+    "[enter]details [e]vents [r]un [R]failed [o]pen-editor [u]update"
 }
 
 fn info_actions() -> &'static str {
@@ -1448,6 +1712,13 @@ fn disk_cleanup_actions() -> &'static str {
 
 fn output_actions() -> &'static str {
     "[/]search [n]ext [N]prev [o]pen-editor"
+}
+
+fn test_events_actions(test_events: &TestEventsState) -> &'static str {
+    match test_events.focus {
+        TestEventsFocus::Runs => "[esc]close [tab]events [up/down]run",
+        TestEventsFocus::Events => "[esc]close [tab]runs [/]search [n/N]match [s]snap",
+    }
 }
 
 fn discovery_error_actions() -> &'static str {

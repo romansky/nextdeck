@@ -4,6 +4,7 @@ use crate::{
     input::InputEvent,
     input_field::{InputFieldInput, InputFieldKey},
     output_pane::{SearchEditorInput, SearchEditorKey},
+    test_events::TestEventsFocus,
     xtask::XtaskDetailFocus,
 };
 
@@ -48,6 +49,17 @@ pub enum AppCommand {
     OpenDiskCleanup,
     CloseDiskCleanup,
     RunCargoClean,
+    OpenTestEvents,
+    CloseTestEvents,
+    ToggleTestEventsFocus,
+    TestEventsNextRun,
+    TestEventsPreviousRun,
+    TestEventsOutputLineUp,
+    TestEventsOutputLineDown,
+    TestEventsOutputPageUp,
+    TestEventsOutputPageDown,
+    TestEventsOutputTop,
+    TestEventsOutputBottom,
     OpenXtasks,
     CloseXtasks,
     RefreshXtasks,
@@ -140,6 +152,7 @@ pub enum CommandKind {
     OpenXtasks,
     RefreshDiskUsage,
     OpenDiskCleanup,
+    OpenTestEvents,
     ToggleShowSuccess,
     ToggleShowFailed,
     ToggleShowIgnored,
@@ -267,6 +280,13 @@ const COMMANDS: &[CommandInfo] = &[
         keys: "D",
         label: "open disk cleanup",
         ticker: "disk cleanup",
+    },
+    CommandInfo {
+        kind: CommandKind::OpenTestEvents,
+        group: CommandGroup::Runs,
+        keys: "e",
+        label: "open test events",
+        ticker: "events",
     },
     CommandInfo {
         kind: CommandKind::OpenXtasks,
@@ -427,6 +447,7 @@ impl AppCommand {
             Self::OpenXtasks => Some(CommandKind::OpenXtasks),
             Self::RefreshDiskUsage => Some(CommandKind::RefreshDiskUsage),
             Self::OpenDiskCleanup => Some(CommandKind::OpenDiskCleanup),
+            Self::OpenTestEvents => Some(CommandKind::OpenTestEvents),
             Self::ToggleShowSuccess => Some(CommandKind::ToggleShowSuccess),
             Self::ToggleShowFailed => Some(CommandKind::ToggleShowFailed),
             Self::ToggleShowIgnored => Some(CommandKind::ToggleShowIgnored),
@@ -447,6 +468,16 @@ impl AppCommand {
             | Self::CancelOpenWithSetting
             | Self::CloseDiskCleanup
             | Self::RunCargoClean
+            | Self::CloseTestEvents
+            | Self::ToggleTestEventsFocus
+            | Self::TestEventsNextRun
+            | Self::TestEventsPreviousRun
+            | Self::TestEventsOutputLineUp
+            | Self::TestEventsOutputLineDown
+            | Self::TestEventsOutputPageUp
+            | Self::TestEventsOutputPageDown
+            | Self::TestEventsOutputTop
+            | Self::TestEventsOutputBottom
             | Self::CloseXtasks
             | Self::RefreshXtasks
             | Self::OpenSelectedXtask
@@ -512,6 +543,15 @@ impl AppCommand {
             Self::CommitOpenWithSetting => Some("settings save"),
             Self::CancelOpenWithSetting => Some("settings cancel"),
             Self::RunCargoClean => Some("cargo clean"),
+            Self::CloseTestEvents => Some("events close"),
+            Self::ToggleTestEventsFocus => Some("events focus"),
+            Self::TestEventsNextRun | Self::TestEventsPreviousRun => Some("events run"),
+            Self::TestEventsOutputLineUp
+            | Self::TestEventsOutputLineDown
+            | Self::TestEventsOutputPageUp
+            | Self::TestEventsOutputPageDown
+            | Self::TestEventsOutputTop
+            | Self::TestEventsOutputBottom => Some("events output"),
             Self::CloseXtasks => Some("xtasks close"),
             Self::RefreshXtasks => Some("xtasks refresh"),
             Self::OpenSelectedXtask => Some("xtasks open"),
@@ -580,6 +620,7 @@ pub enum InputMode {
     XtaskInput,
     XtaskModal,
     XtaskCommandModal(XtaskDetailFocus),
+    TestEventsModal(TestEventsFocus),
     TestDetailsModal,
     OutputSearchModal,
     OutputSearchInline,
@@ -593,6 +634,7 @@ pub enum OverlayMode {
     Settings,
     DiskCleanup,
     Xtasks,
+    TestEvents,
     TestDetails,
     OutputSearch,
 }
@@ -625,6 +667,7 @@ fn command_for_input_mode(code: KeyCode, modifiers: KeyModifiers, input: InputMo
         InputMode::XtaskCommandModal(focus) => {
             command_for_xtask_command_modal(code, modifiers, focus)
         }
+        InputMode::TestEventsModal(focus) => command_for_test_events_modal(code, modifiers, focus),
         InputMode::TestDetailsModal => command_for_test_details_modal(code),
         InputMode::OutputSearchModal => command_for_output_search_modal(code, modifiers),
         InputMode::OutputSearchInline => command_for_output_search_input(code, modifiers),
@@ -770,6 +813,53 @@ fn command_for_xtask_output(code: KeyCode, modifiers: KeyModifiers) -> AppComman
     }
 }
 
+fn command_for_test_events_modal(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    focus: TestEventsFocus,
+) -> AppCommand {
+    match code {
+        KeyCode::Esc => AppCommand::CloseTestEvents,
+        KeyCode::Tab | KeyCode::BackTab => AppCommand::ToggleTestEventsFocus,
+        _ => match focus {
+            TestEventsFocus::Runs => command_for_test_event_runs(code),
+            TestEventsFocus::Events => command_for_test_event_output(code, modifiers),
+        },
+    }
+}
+
+fn command_for_test_event_runs(code: KeyCode) -> AppCommand {
+    match code {
+        KeyCode::Up => AppCommand::TestEventsPreviousRun,
+        KeyCode::Down => AppCommand::TestEventsNextRun,
+        KeyCode::Enter | KeyCode::Right => AppCommand::ToggleTestEventsFocus,
+        _ => AppCommand::Noop,
+    }
+}
+
+fn command_for_test_event_output(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+    match code {
+        KeyCode::Left => AppCommand::ToggleTestEventsFocus,
+        KeyCode::Up => AppCommand::TestEventsOutputLineUp,
+        KeyCode::Down => AppCommand::TestEventsOutputLineDown,
+        KeyCode::PageUp => AppCommand::TestEventsOutputPageUp,
+        KeyCode::PageDown => AppCommand::TestEventsOutputPageDown,
+        KeyCode::Home => AppCommand::TestEventsOutputTop,
+        KeyCode::End => AppCommand::TestEventsOutputBottom,
+        KeyCode::Char('/') => AppCommand::StartOutputSearch,
+        KeyCode::Char('n') => AppCommand::FindNextOutputMatch,
+        KeyCode::Char('N') => AppCommand::FindPreviousOutputMatch,
+        KeyCode::Char('f') => AppCommand::ToggleOutputFilter,
+        KeyCode::Char('s') => AppCommand::ToggleOutputSnap,
+        KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
+            AppCommand::ToggleOutputRegex
+        }
+        KeyCode::Char('c') => AppCommand::ToggleOutputCaseSensitive,
+        KeyCode::Char('o') => AppCommand::OpenOutput,
+        _ => AppCommand::Noop,
+    }
+}
+
 fn command_for_test_details_modal(code: KeyCode) -> AppCommand {
     match code {
         KeyCode::Esc => AppCommand::CloseTestDetails,
@@ -855,6 +945,7 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) 
         KeyCode::Char('u') => AppCommand::RefreshTests,
         KeyCode::Char(',') => AppCommand::OpenSettings,
         KeyCode::Char('x') => AppCommand::OpenXtasks,
+        KeyCode::Char('e') if focus == CommandFocus::Tests => AppCommand::OpenTestEvents,
         KeyCode::Char('d') => AppCommand::RefreshDiskUsage,
         KeyCode::Char('D') => AppCommand::OpenDiskCleanup,
         KeyCode::Tab => AppCommand::ToggleFocus,

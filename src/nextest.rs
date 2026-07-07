@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use nextdeck_test_events::TestEvent;
 use nextest_metadata::{FilterMatch, TestListSummary};
 use serde::Deserialize;
 use serde_json::Value;
@@ -257,6 +258,10 @@ pub enum RunEvent {
         stdout: String,
         stderr: String,
     },
+    TestEvent {
+        run_id: String,
+        event: TestEvent,
+    },
     RunnerOutput(String),
     RunnerFinished {
         exit_code: Option<i32>,
@@ -330,6 +335,7 @@ impl NextestClient {
         request: RunRequest,
         tx: mpsc::Sender<RunEvent>,
         mut stop_rx: mpsc::UnboundedReceiver<()>,
+        test_events_path: Option<PathBuf>,
     ) -> Result<()> {
         let arg_sets = request.scope.nextest_arg_sets();
         let total_runs = arg_sets.len();
@@ -345,7 +351,10 @@ impl NextestClient {
                     .await;
             }
 
-            match self.run_once(scope_args, &tx, &mut stop_rx).await? {
+            match self
+                .run_once(scope_args, &tx, &mut stop_rx, test_events_path.as_ref())
+                .await?
+            {
                 RunProcessOutcome::Finished(status) => {
                     if !status.success() && exit_code == Some(0) {
                         exit_code = status.code().or(Some(1));
@@ -367,8 +376,9 @@ impl NextestClient {
         scope_args: Vec<String>,
         tx: &mpsc::Sender<RunEvent>,
         stop_rx: &mut mpsc::UnboundedReceiver<()>,
+        test_events_path: Option<&PathBuf>,
     ) -> Result<RunProcessOutcome> {
-        let mut command = self.run_command(scope_args);
+        let mut command = self.run_command(scope_args, test_events_path);
         configure_run_command(&mut command);
         let mut child = command
             .kill_on_drop(true)
@@ -478,7 +488,7 @@ impl NextestClient {
         command
     }
 
-    fn run_command(&self, scope_args: Vec<String>) -> Command {
+    fn run_command(&self, scope_args: Vec<String>, test_events_path: Option<&PathBuf>) -> Command {
         let mut command = Command::new("cargo");
         if let Some(path) = &self.current_dir {
             command.current_dir(path);
@@ -505,6 +515,9 @@ impl NextestClient {
         command.args(&self.passthrough_args);
         command.args(scope_args);
         command.env("NEXTEST_EXPERIMENTAL_LIBTEST_JSON", "1");
+        if let Some(path) = test_events_path {
+            command.env(nextdeck_test_events::ENV_VAR, path);
+        }
         command
     }
 }

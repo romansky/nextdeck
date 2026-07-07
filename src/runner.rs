@@ -18,6 +18,7 @@ use crate::{
     queue::{self, QueueEvent, QueueSender},
     request::RequestId,
     terminal::AppTerminal,
+    test_events,
     theme::Theme,
     ui,
     xtask::{self, XtaskEvent, XtaskRunRequest},
@@ -73,10 +74,13 @@ async fn run_loop(
         );
         let xtask_output_page_size =
             ui::xtask_output_page_size(Rect::new(0, 0, size.width, size.height));
+        let test_events_output_page_size =
+            ui::test_events_output_page_size(Rect::new(0, 0, size.width, size.height));
         app.prepare_frame(
             layout.tree.height,
             layout.output.height,
             xtask_output_page_size,
+            test_events_output_page_size,
         );
         terminal.draw(|frame| ui::draw(frame, app, &context.theme))?;
         let Some(event) = queue_rx.recv().await else {
@@ -538,11 +542,28 @@ fn start_run(
     };
 
     start_disk_usage(client.project_dir(), disk_usage_request_id, tx.clone());
+    let test_event_run = match test_events::create_run_file() {
+        Ok(run) => {
+            app.begin_test_event_run(run.clone());
+            Some(run)
+        }
+        Err(error) => {
+            app.status = format!("Running without test events: {error:#}");
+            None
+        }
+    };
 
     let (run_tx, mut run_rx) = mpsc::channel::<RunEvent>(queue::APP_EVENT_QUEUE_CAPACITY);
     let (stop_tx, stop_rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
-        if let Err(error) = client.run(request, run_tx.clone(), stop_rx).await {
+        let tailer = test_event_run
+            .as_ref()
+            .map(|run| test_events::start_tailer(run.id.clone(), run.path.clone(), run_tx.clone()));
+        let test_events_path = test_event_run.as_ref().map(|run| run.path.clone());
+        if let Err(error) = client
+            .run(request, run_tx.clone(), stop_rx, test_events_path)
+            .await
+        {
             let _ = run_tx
                 .send(RunEvent::RunnerOutput(format!(
                     "nextest failed to start: {error}"
@@ -551,6 +572,9 @@ fn start_run(
             let _ = run_tx
                 .send(RunEvent::RunnerFinished { exit_code: None })
                 .await;
+        }
+        if let Some(tailer) = tailer {
+            tailer.stop().await;
         }
     });
 

@@ -8,14 +8,16 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use flate2::{Compression, write::GzEncoder};
 use sha2::{Digest, Sha256};
 use tar::Builder as TarBuilder;
 
-const APP_PACKAGE: &str = "nextdeck";
-const APP_BINARY: &str = "nextdeck";
+const TUI_PACKAGE: &str = "nextdeck";
+const TUI_BINARY: &str = "nextdeck";
+const LIB_PACKAGE: &str = "nextdeck-test-events";
 const DIST_DIR: &str = "target/dist";
+const LOCAL_PUBLISH_DIR: &str = "target/local-publish";
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Local project automation")]
@@ -26,35 +28,18 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum XtaskCommand {
-    #[command(about = "Print nextdeck xtask integration metadata")]
-    NextdeckInfo {
-        #[arg(long, value_enum, default_value_t = XtaskInfoFormat::Json)]
-        format: XtaskInfoFormat,
-    },
-    #[command(about = "Run local checks expected before publishing")]
-    Check {
+    #[command(about = "Run local TUI checks expected before publishing")]
+    TuiCheck {
         #[arg(long, help = "Allow cargo package to run with a dirty worktree")]
         allow_dirty: bool,
     },
-    #[command(about = "Create a local .crate package in target/package")]
-    Package {
+    #[command(about = "Package and install the verified TUI package locally")]
+    TuiPublishLocal {
         #[arg(long, help = "Allow packaging with a dirty worktree")]
         allow_dirty: bool,
     },
-    #[command(about = "Install the app locally from the current workspace")]
-    InstallPath,
-    #[command(about = "Install the app locally from the generated .crate package")]
-    InstallPackage {
-        #[arg(long, help = "Allow packaging with a dirty worktree first")]
-        allow_dirty: bool,
-    },
-    #[command(about = "Package and install the verified package locally")]
-    PublishLocal {
-        #[arg(long, help = "Allow packaging with a dirty worktree")]
-        allow_dirty: bool,
-    },
-    #[command(about = "Build, archive, checksum, and sign a release artifact")]
-    Release {
+    #[command(about = "Build, archive, checksum, and sign a TUI release artifact")]
+    TuiRelease {
         #[arg(
             long,
             help = "Release version. Defaults to the root Cargo.toml version"
@@ -72,8 +57,8 @@ enum XtaskCommand {
         )]
         github_repo: Option<String>,
     },
-    #[command(about = "Generate a Homebrew formula from release artifact checksums")]
-    HomebrewFormula {
+    #[command(about = "Generate a Homebrew formula from TUI release artifact checksums")]
+    TuiHomebrewFormula {
         #[arg(
             long,
             help = "Formula version. Defaults to the root Cargo.toml version"
@@ -90,41 +75,55 @@ enum XtaskCommand {
         #[arg(long, help = "Output formula path")]
         output: PathBuf,
     },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum XtaskInfoFormat {
-    Json,
+    #[command(about = "Run local checks for the nextdeck-test-events crate")]
+    LibCheck {
+        #[arg(long, help = "Allow cargo package to run with a dirty worktree")]
+        allow_dirty: bool,
+    },
+    #[command(about = "Create a verified nextdeck-test-events package")]
+    LibPackage {
+        #[arg(long, help = "Allow packaging with a dirty worktree")]
+        allow_dirty: bool,
+    },
+    #[command(
+        about = "Publish nextdeck-test-events locally and smoke-test it from another project"
+    )]
+    LibPublishLocal {
+        #[arg(long, help = "Allow packaging with a dirty worktree")]
+        allow_dirty: bool,
+    },
+    #[command(about = "Run crates.io publish wiring for nextdeck-test-events")]
+    LibPush {
+        #[arg(long, help = "Allow publishing with a dirty worktree")]
+        allow_dirty: bool,
+        #[arg(
+            long,
+            help = "Actually publish instead of running cargo publish --dry-run"
+        )]
+        execute: bool,
+    },
 }
 
 fn main() -> Result<()> {
+    nextdeck_test_events::xtask_clap_info!(Cli);
+
     let cli = Cli::parse();
     let workspace = workspace_root()?;
 
     match cli.command {
-        XtaskCommand::NextdeckInfo { format } => nextdeck_info(format),
-        XtaskCommand::Check { allow_dirty } => check(&workspace, allow_dirty),
-        XtaskCommand::Package { allow_dirty } => {
-            let artifact = package(&workspace, allow_dirty)?;
+        XtaskCommand::TuiCheck { allow_dirty } => tui_check(&workspace, allow_dirty),
+        XtaskCommand::TuiPublishLocal { allow_dirty } => {
+            let artifact = package_crate(&workspace, TUI_PACKAGE, allow_dirty)?;
             println!("Packaged {}", artifact.crate_path.display());
-            Ok(())
+            install_tui_crate(&workspace, &artifact.unpacked_dir)
         }
-        XtaskCommand::InstallPath => install_path(&workspace),
-        XtaskCommand::InstallPackage { allow_dirty } => {
-            let artifact = package(&workspace, allow_dirty)?;
-            install_crate(&workspace, &artifact.unpacked_dir)
-        }
-        XtaskCommand::PublishLocal { allow_dirty } => {
-            let artifact = package(&workspace, allow_dirty)?;
-            install_crate(&workspace, &artifact.unpacked_dir)
-        }
-        XtaskCommand::Release {
+        XtaskCommand::TuiRelease {
             version,
             target,
             allow_dirty,
             skip_sign,
             github_repo,
-        } => release(
+        } => tui_release(
             &workspace,
             version,
             target,
@@ -132,135 +131,58 @@ fn main() -> Result<()> {
             skip_sign,
             github_repo,
         ),
-        XtaskCommand::HomebrewFormula {
+        XtaskCommand::TuiHomebrewFormula {
             version,
             github_repo,
             dist_dir,
             output,
-        } => homebrew_formula(&workspace, version, &github_repo, &dist_dir, &output),
-    }
-}
-
-fn nextdeck_info(format: XtaskInfoFormat) -> Result<()> {
-    match format {
-        XtaskInfoFormat::Json => {
-            let manifest = serde_json::json!({
-                "schema_version": 1,
-                "commands": [
-                    {
-                        "name": "check",
-                        "about": "Run local checks expected before publishing",
-                        "args": [
-                            bool_arg("allow-dirty", "Allow cargo package to run with a dirty worktree")
-                        ]
-                    },
-                    {
-                        "name": "package",
-                        "about": "Create a local .crate package in target/package",
-                        "args": [
-                            bool_arg("allow-dirty", "Allow packaging with a dirty worktree")
-                        ]
-                    },
-                    {
-                        "name": "install-path",
-                        "about": "Install the app locally from the current workspace",
-                        "args": []
-                    },
-                    {
-                        "name": "install-package",
-                        "about": "Install the app locally from the generated .crate package",
-                        "args": [
-                            bool_arg("allow-dirty", "Allow packaging with a dirty worktree first")
-                        ]
-                    },
-                    {
-                        "name": "publish-local",
-                        "about": "Package and install the verified package locally",
-                        "args": [
-                            bool_arg("allow-dirty", "Allow packaging with a dirty worktree")
-                        ]
-                    },
-                    {
-                        "name": "release",
-                        "about": "Build, archive, checksum, and sign a release artifact",
-                        "args": [
-                            string_arg("version", false, "Release version. Defaults to the root Cargo.toml version"),
-                            string_arg("target", false, "Rust target triple. Defaults to the host target"),
-                            bool_arg("allow-dirty", "Allow release artifacts with a dirty worktree"),
-                            bool_arg("skip-sign", "Create artifacts without cosign signatures"),
-                            string_arg("github-repo", false, "GitHub repository as owner/repo, used to generate a Homebrew formula")
-                        ]
-                    },
-                    {
-                        "name": "homebrew-formula",
-                        "about": "Generate a Homebrew formula from release artifact checksums",
-                        "args": [
-                            string_arg("version", false, "Formula version. Defaults to the root Cargo.toml version"),
-                            string_arg("github-repo", true, "GitHub repository as owner/repo"),
-                            string_arg_with_default("dist-dir", "target/dist", "Directory containing *.tar.gz.sha256 files"),
-                            string_arg("output", true, "Output formula path")
-                        ]
-                    }
-                ]
-            });
-            serde_json::to_writer_pretty(std::io::stdout(), &manifest)?;
-            println!();
+        } => tui_homebrew_formula(&workspace, version, &github_repo, &dist_dir, &output),
+        XtaskCommand::LibCheck { allow_dirty } => lib_check(&workspace, allow_dirty),
+        XtaskCommand::LibPackage { allow_dirty } => {
+            let artifact = package_crate(&workspace, LIB_PACKAGE, allow_dirty)?;
+            println!("Packaged {}", artifact.crate_path.display());
             Ok(())
         }
+        XtaskCommand::LibPublishLocal { allow_dirty } => lib_publish_local(&workspace, allow_dirty),
+        XtaskCommand::LibPush {
+            allow_dirty,
+            execute,
+        } => lib_push(&workspace, allow_dirty, execute),
     }
 }
 
-fn bool_arg(name: &str, help: &str) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "long": name,
-        "help": help,
-        "value": { "type": "bool", "default": false }
-    })
+fn tui_check(workspace: &Path, allow_dirty: bool) -> Result<()> {
+    run(workspace, "cargo", ["fmt", "--all", "--check"])?;
+    run(workspace, "cargo", ["test", "-p", TUI_PACKAGE])?;
+    package_crate(workspace, TUI_PACKAGE, allow_dirty)?;
+    Ok(())
 }
 
-fn string_arg(name: &str, required: bool, help: &str) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "long": name,
-        "required": required,
-        "help": help,
-        "value": { "type": "string" }
-    })
-}
-
-fn string_arg_with_default(name: &str, default: &str, help: &str) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "long": name,
-        "help": help,
-        "value": { "type": "string", "default": default }
-    })
-}
-
-fn check(workspace: &Path, allow_dirty: bool) -> Result<()> {
+fn lib_check(workspace: &Path, allow_dirty: bool) -> Result<()> {
     run(workspace, "cargo", ["fmt", "--all", "--check"])?;
     run(
         workspace,
         "cargo",
-        ["test", "--workspace", "--exclude", "xtask"],
+        ["test", "-p", LIB_PACKAGE, "--features", "xtask-clap"],
     )?;
-    package(workspace, allow_dirty)?;
+    package_crate(workspace, LIB_PACKAGE, allow_dirty)?;
     Ok(())
 }
 
 #[derive(Debug)]
 struct PackageArtifact {
+    package: String,
+    version: String,
     crate_path: PathBuf,
     unpacked_dir: PathBuf,
 }
 
-fn package(workspace: &Path, allow_dirty: bool) -> Result<PackageArtifact> {
-    let version = package_version(workspace)?;
-    let package_verify_target = workspace.join("target/package-verify");
+fn package_crate(workspace: &Path, package: &str, allow_dirty: bool) -> Result<PackageArtifact> {
+    let version = package_version(workspace, package)?;
+    let package_verify_target = workspace.join("target/package-verify").join(package);
     let package_dir = package_verify_target.join("package");
-    let crate_path = package_dir.join(format!("{APP_PACKAGE}-{version}.crate"));
-    let unpacked_dir = package_dir.join(format!("{APP_PACKAGE}-{version}"));
+    let crate_path = package_dir.join(format!("{package}-{version}.crate"));
+    let unpacked_dir = package_dir.join(format!("{package}-{version}"));
     let package_verify_target = package_verify_target
         .to_str()
         .context("package verify target path is not UTF-8")?
@@ -268,7 +190,7 @@ fn package(workspace: &Path, allow_dirty: bool) -> Result<PackageArtifact> {
     let mut args = vec![
         "package".to_owned(),
         "-p".to_owned(),
-        APP_PACKAGE.to_owned(),
+        package.to_owned(),
         "--locked".to_owned(),
         "--target-dir".to_owned(),
         package_verify_target,
@@ -288,23 +210,16 @@ fn package(workspace: &Path, allow_dirty: bool) -> Result<PackageArtifact> {
         );
     }
     Ok(PackageArtifact {
+        package: package.to_owned(),
+        version,
         crate_path,
         unpacked_dir,
     })
 }
 
-fn install_path(workspace: &Path) -> Result<()> {
-    run(
-        workspace,
-        "cargo",
-        ["install", "--path", ".", "--locked", "--force"],
-    )?;
-    verify_local_install()
-}
-
-fn install_crate(workspace: &Path, crate_path: &Path) -> Result<()> {
-    let install_dir = isolated_package_dir(crate_path)?;
-    copy_dir(crate_path, &install_dir)?;
+fn install_tui_crate(workspace: &Path, package_dir: &Path) -> Result<()> {
+    let install_dir = isolated_package_dir(TUI_PACKAGE, package_dir)?;
+    copy_dir(package_dir, &install_dir)?;
     let crate_arg = install_dir
         .to_str()
         .with_context(|| format!("package path is not UTF-8: {}", install_dir.display()))?;
@@ -316,11 +231,11 @@ fn install_crate(workspace: &Path, crate_path: &Path) -> Result<()> {
     verify_local_install()
 }
 
-fn isolated_package_dir(crate_path: &Path) -> Result<PathBuf> {
-    let package_name = crate_path
+fn isolated_package_dir(package: &str, package_dir: &Path) -> Result<PathBuf> {
+    let package_name = package_dir
         .file_name()
         .context("verified package directory has no file name")?;
-    let root = env::temp_dir().join(format!("{APP_PACKAGE}-publish-local"));
+    let root = env::temp_dir().join(format!("{package}-publish-local"));
     let install_dir = root.join(package_name);
 
     if install_dir.exists() {
@@ -331,6 +246,119 @@ fn isolated_package_dir(crate_path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("creating isolated package root {}", root.display()))?;
 
     Ok(install_dir)
+}
+
+fn lib_publish_local(workspace: &Path, allow_dirty: bool) -> Result<()> {
+    let artifact = package_crate(workspace, LIB_PACKAGE, allow_dirty)?;
+    let local_dir = workspace
+        .join(LOCAL_PUBLISH_DIR)
+        .join(format!("{}-{}", artifact.package, artifact.version));
+    if local_dir.exists() {
+        fs::remove_dir_all(&local_dir)
+            .with_context(|| format!("removing old local package {}", local_dir.display()))?;
+    }
+    copy_dir(&artifact.unpacked_dir, &local_dir)?;
+    smoke_test_local_lib(workspace, &local_dir)?;
+    println!("Packaged {}", artifact.crate_path.display());
+    println!("Local package {}", local_dir.display());
+    println!(
+        "Use from another project with: {} = {{ path = \"{}\" }}",
+        LIB_PACKAGE,
+        toml_escape_path(&local_dir)
+    );
+    Ok(())
+}
+
+fn lib_push(workspace: &Path, allow_dirty: bool, execute: bool) -> Result<()> {
+    if !execute {
+        println!("Dry-running crates.io publish; pass --execute to publish for real.");
+    }
+
+    let mut args = vec![
+        "publish".to_owned(),
+        "-p".to_owned(),
+        LIB_PACKAGE.to_owned(),
+        "--locked".to_owned(),
+    ];
+    if allow_dirty {
+        args.push("--allow-dirty".to_owned());
+    }
+    if !execute {
+        args.push("--dry-run".to_owned());
+    }
+    run(workspace, "cargo", args)
+}
+
+fn smoke_test_local_lib(workspace: &Path, local_crate: &Path) -> Result<()> {
+    let project_dir = workspace
+        .join(LOCAL_PUBLISH_DIR)
+        .join(format!("{LIB_PACKAGE}-smoke"));
+    if project_dir.exists() {
+        fs::remove_dir_all(&project_dir)
+            .with_context(|| format!("removing old smoke project {}", project_dir.display()))?;
+    }
+    fs::create_dir_all(project_dir.join("src"))
+        .with_context(|| format!("creating smoke project {}", project_dir.display()))?;
+
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            "[workspace]\n\n[package]\nname = \"nextdeck-test-events-smoke\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{} = {{ path = \"{}\", features = [\"xtask-clap\"] }}\nclap = {{ version = \"4.5\", features = [\"derive\"] }}\nserde_json = \"1.0\"\n",
+            LIB_PACKAGE,
+            toml_escape_path(local_crate)
+        ),
+    )
+    .with_context(|| format!("writing {}", project_dir.join("Cargo.toml").display()))?;
+    fs::write(
+        project_dir.join("src/lib.rs"),
+        r#"use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    #[command(about = "Run checks")]
+    Check {
+        #[arg(long)]
+        allow_dirty: bool,
+    },
+}
+
+#[test]
+fn emits_events_and_xtask_metadata() {
+    let path = std::env::temp_dir().join("nextdeck-test-events-smoke.jsonl");
+    let _ = std::fs::remove_file(&path);
+    std::env::set_var(nextdeck_test_events::ENV_VAR, &path);
+    nextdeck_test_events::event!("smoke"; "kind" => "local");
+    std::env::remove_var(nextdeck_test_events::ENV_VAR);
+
+    let events = std::fs::read_to_string(&path).expect("event file");
+    assert!(events.contains("\"message\":\"smoke\""));
+
+    let mut metadata = Vec::new();
+    let handled = nextdeck_test_events::xtask::handle_nextdeck_info_from::<Cli, _, _, _>(
+        ["xtask", "nextdeck-info", "--format", "json"],
+        &mut metadata,
+    )
+    .expect("nextdeck metadata");
+    assert!(handled);
+    let metadata = String::from_utf8(metadata).expect("utf8");
+    assert!(metadata.contains("\"name\": \"check\""));
+    assert!(metadata.contains("\"long\": \"allow-dirty\""));
+}
+"#,
+    )
+    .with_context(|| format!("writing {}", project_dir.join("src/lib.rs").display()))?;
+
+    run(&project_dir, "cargo", ["test", "--quiet"])
+}
+
+fn toml_escape_path(path: &Path) -> String {
+    path.display().to_string().replace('\\', "\\\\")
 }
 
 fn copy_dir(from: &Path, to: &Path) -> Result<()> {
@@ -364,7 +392,7 @@ fn verify_local_install() -> Result<()> {
         );
     }
 
-    let path_binary = find_on_path(APP_BINARY);
+    let path_binary = find_on_path(TUI_BINARY);
     let installed = fs::canonicalize(&installed)
         .with_context(|| format!("canonicalizing installed binary {}", installed.display()))?;
     let version = command_stdout(&installed, ["--version"])?;
@@ -375,10 +403,10 @@ fn verify_local_install() -> Result<()> {
         Some(path_binary) => {
             let path_binary = fs::canonicalize(&path_binary)
                 .with_context(|| format!("canonicalizing PATH binary {}", path_binary.display()))?;
-            println!("PATH resolves {APP_BINARY} to {}", path_binary.display());
+            println!("PATH resolves {TUI_BINARY} to {}", path_binary.display());
             if path_binary != installed {
                 bail!(
-                    "PATH resolves {APP_BINARY} to {}, not the freshly installed binary at {}",
+                    "PATH resolves {TUI_BINARY} to {}, not the freshly installed binary at {}",
                     path_binary.display(),
                     installed.display()
                 );
@@ -386,7 +414,7 @@ fn verify_local_install() -> Result<()> {
         }
         None => {
             bail!(
-                "{APP_BINARY} was installed at {}, but no {APP_BINARY} executable was found on PATH",
+                "{TUI_BINARY} was installed at {}, but no {TUI_BINARY} executable was found on PATH",
                 installed.display()
             );
         }
@@ -395,7 +423,7 @@ fn verify_local_install() -> Result<()> {
     Ok(())
 }
 
-fn release(
+fn tui_release(
     workspace: &Path,
     version: Option<String>,
     target: Option<String>,
@@ -403,7 +431,7 @@ fn release(
     skip_sign: bool,
     github_repo: Option<String>,
 ) -> Result<()> {
-    let package_version = package_version(workspace)?;
+    let package_version = package_version(workspace, TUI_PACKAGE)?;
     let version = version.unwrap_or(package_version.clone());
     if version != package_version {
         bail!(
@@ -421,7 +449,7 @@ fn release(
         [
             "build",
             "-p",
-            APP_PACKAGE,
+            TUI_PACKAGE,
             "--release",
             "--locked",
             "--target",
@@ -433,7 +461,7 @@ fn release(
         .join("target")
         .join(&target)
         .join("release")
-        .join(exe_name(APP_BINARY));
+        .join(exe_name(TUI_BINARY));
     if !binary.exists() {
         bail!("expected release binary at {}", binary.display());
     }
@@ -463,21 +491,21 @@ fn release(
     Ok(())
 }
 
-fn homebrew_formula(
+fn tui_homebrew_formula(
     workspace: &Path,
     version: Option<String>,
     github_repo: &str,
     dist_dir: &Path,
     output: &Path,
 ) -> Result<()> {
-    let version = version.unwrap_or(package_version(workspace)?);
+    let version = version.unwrap_or(package_version(workspace, TUI_PACKAGE)?);
     write_homebrew_formula(&version, github_repo, dist_dir, output)?;
     println!("Wrote Homebrew formula {}", output.display());
     Ok(())
 }
 
 fn release_asset_stem(version: &str, target: &str) -> String {
-    format!("{APP_BINARY}-v{version}-{target}")
+    format!("{TUI_BINARY}-v{version}-{target}")
 }
 
 fn create_release_archive(
@@ -496,7 +524,7 @@ fn create_release_archive(
     let encoder = GzEncoder::new(archive, Compression::default());
     let mut tar = TarBuilder::new(encoder);
 
-    tar.append_path_with_name(binary, format!("{asset_stem}/{}", exe_name(APP_BINARY)))
+    tar.append_path_with_name(binary, format!("{asset_stem}/{}", exe_name(TUI_BINARY)))
         .with_context(|| format!("adding binary {}", binary.display()))?;
 
     let readme = workspace.join("README.md");
@@ -645,7 +673,7 @@ fn write_homebrew_formula(
     )?;
     if !wrote_any {
         bail!(
-            "no release checksums found in {}; run `cargo xtask release` first or download release artifacts",
+            "no release checksums found in {}; run `cargo xtask tui-release` first or download release artifacts",
             dist_dir.display()
         );
     }
@@ -763,7 +791,7 @@ fn cargo_install_bin_path() -> Result<PathBuf> {
         let home = env::var_os("HOME").context("HOME is not set and CARGO_HOME is not set")?;
         PathBuf::from(home).join(".cargo")
     };
-    Ok(root.join("bin").join(exe_name(APP_BINARY)))
+    Ok(root.join("bin").join(exe_name(TUI_BINARY)))
 }
 
 fn find_on_path(binary: &str) -> Option<PathBuf> {
@@ -817,9 +845,10 @@ where
     String::from_utf8(output.stdout).with_context(|| format!("{program} stdout was not UTF-8"))
 }
 
-fn package_version(workspace: &Path) -> Result<String> {
-    let cargo_toml = fs::read_to_string(workspace.join("Cargo.toml"))
-        .context("reading root Cargo.toml for package version")?;
+fn package_version(workspace: &Path, package: &str) -> Result<String> {
+    let manifest = package_manifest(workspace, package)?;
+    let cargo_toml = fs::read_to_string(&manifest)
+        .with_context(|| format!("reading {} for package version", manifest.display()))?;
     let mut in_package = false;
     for line in cargo_toml.lines() {
         let trimmed = line.trim();
@@ -834,7 +863,15 @@ fn package_version(workspace: &Path) -> Result<String> {
         }
     }
 
-    bail!("could not find [package] version in root Cargo.toml")
+    bail!("could not find [package] version in {}", manifest.display())
+}
+
+fn package_manifest(workspace: &Path, package: &str) -> Result<PathBuf> {
+    match package {
+        TUI_PACKAGE => Ok(workspace.join("Cargo.toml")),
+        LIB_PACKAGE => Ok(workspace.join(LIB_PACKAGE).join("Cargo.toml")),
+        _ => bail!("unknown package {package}"),
+    }
 }
 
 fn workspace_root() -> Result<PathBuf> {

@@ -516,6 +516,7 @@ async fn run_output_fixture(filter: &str, passthrough_args: Vec<String>) -> Vec<
             },
             tx,
             stop_rx,
+            None,
         )
         .await
         .expect("run output fixture");

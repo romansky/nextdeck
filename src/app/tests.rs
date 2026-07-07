@@ -2,11 +2,13 @@ use super::*;
 use crate::command::command_for_input;
 use crate::input::InputEvent;
 use crate::output_pane::{SearchEditorInput, SearchEditorKey};
+use crate::test_events::TestEventRun;
 use crate::tree::{DiscoveredTest, TestKey, TestStatus};
 use crate::xtask::{
     SCHEMA_VERSION, XtaskArgSpec, XtaskCommandSpec, XtaskDetailFocus, XtaskManifest, XtaskValueSpec,
 };
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use nextdeck_test_events::{Level, TestEvent};
 
 fn app_with_tree(tree: Tree) -> App {
     App::with_settings(tree, AppSettings::default())
@@ -251,6 +253,57 @@ fn xtask_command_frame_uses_dedicated_output_search_modes() {
 }
 
 #[test]
+fn test_events_modal_opens_from_tests_focus_and_uses_dedicated_output_search() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    app.begin_test_event_run(TestEventRun {
+        id: "run-1".to_owned(),
+        path: std::path::PathBuf::from("/tmp/run-1.jsonl"),
+    });
+    app.apply_run_event(RunEvent::TestEvent {
+        run_id: "run-1".to_owned(),
+        event: TestEvent::new(Level::Info, "cache hit").with_target("artifact-cache"),
+    });
+
+    assert_eq!(app.test_events.counter_label(), "1•");
+
+    let effect = app.apply_command(AppCommand::OpenTestEvents);
+
+    assert_eq!(effect, AppEffect::None);
+    assert!(app.test_events.modal_open);
+    assert_eq!(app.test_events.counter_label(), "1");
+    assert_eq!(
+        app.command_context(),
+        CommandContext {
+            input: InputMode::TestEventsModal(crate::test_events::TestEventsFocus::Runs),
+            overlay: Some(OverlayMode::TestEvents),
+        }
+    );
+
+    app.apply_command(AppCommand::ToggleTestEventsFocus);
+    app.apply_command(AppCommand::StartOutputSearch);
+    search_type(&mut app, "cache");
+    app.apply_command(AppCommand::ApplyOutputSearch);
+
+    assert_eq!(app.test_events.output.search.query, "cache");
+    assert_eq!(app.main_output.search.query, "");
+    assert!(app.test_events.output_text().contains("cache hit"));
+}
+
+#[test]
+fn test_events_run_finishes_with_run_result_label() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    assert!(app.begin_run(&RunRequest::default()).is_some());
+    app.begin_test_event_run(TestEventRun {
+        id: "run-1".to_owned(),
+        path: std::path::PathBuf::from("/tmp/run-1.jsonl"),
+    });
+
+    app.apply_run_event(RunEvent::RunnerFinished { exit_code: Some(0) });
+
+    assert_eq!(app.test_events.runs[0].status, "passed");
+}
+
+#[test]
 fn xtask_detail_close_cancels_output_search_interaction() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
     app.xtasks.set_manifest(sample_xtask_manifest());
@@ -397,7 +450,7 @@ fn xtask_detail_close_returns_to_command_picker() {
 fn tree_scroll_follows_selection_past_viewport() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(30)));
     expand_all(&mut app.tree.root);
-    app.set_viewport_sizes(7, 7, 1);
+    app.set_viewport_sizes(7, 7, 1, 1);
 
     for _ in 0..20 {
         app.select_next();
@@ -411,11 +464,11 @@ fn tree_scroll_follows_selection_past_viewport() {
 fn tree_scroll_reclamps_when_viewport_height_changes() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(30)));
     expand_all(&mut app.tree.root);
-    app.set_viewport_sizes(16, 7, 1);
+    app.set_viewport_sizes(16, 7, 1, 1);
     app.select_last();
     assert_selection_visible(&app);
 
-    app.set_viewport_sizes(5, 7, 1);
+    app.set_viewport_sizes(5, 7, 1, 1);
     assert_selection_visible(&app);
 }
 
@@ -1170,7 +1223,7 @@ fn output_search_clear_keeps_input_active_and_resets_match() {
 #[test]
 fn discovery_error_uses_output_scroll_and_search() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(3)));
-    app.set_viewport_sizes(5, 5, 1);
+    app.set_viewport_sizes(5, 5, 1, 1);
 
     app.apply_discovery_event(
         app.discovery.request_id,

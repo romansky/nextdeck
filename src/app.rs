@@ -17,6 +17,7 @@ use crate::{
     settings::{GlobalSettingsState, SettingsField},
     source,
     state::StatusCounts,
+    test_events::{TestEventRun, TestEventsFocus, TestEventsState},
     tree::{DiscoveredTest, NodeId, NodeKind, SelectionChange, TestNode, TestViewFilter, Tree},
     xtask::{XtaskEvent, XtaskRunRequest, XtaskState},
 };
@@ -31,6 +32,7 @@ pub enum FocusPane {
 enum OutputPaneId {
     Main,
     Xtask,
+    TestEvents,
 }
 
 pub struct App {
@@ -51,6 +53,7 @@ pub struct App {
     pub disk_usage: DiskUsageState,
     pub disk_cleanup: DiskCleanupState,
     pub xtasks: XtaskState,
+    pub test_events: TestEventsState,
     pub global_settings: GlobalSettingsState,
     pub run: RunState,
     pub settings: AppSettings,
@@ -165,6 +168,7 @@ impl App {
             disk_usage: DiskUsageState::default(),
             disk_cleanup: DiskCleanupState::default(),
             xtasks: XtaskState::default(),
+            test_events: TestEventsState::default(),
             global_settings: GlobalSettingsState::default(),
             run: RunState::default(),
             settings: settings.normalized(),
@@ -198,13 +202,23 @@ impl App {
         tree_height: u16,
         output_height: u16,
         xtask_output_height: u16,
+        test_events_output_height: u16,
     ) {
-        self.set_viewport_sizes(tree_height, output_height, xtask_output_height);
+        self.set_viewport_sizes(
+            tree_height,
+            output_height,
+            xtask_output_height,
+            test_events_output_height,
+        );
         let line_count = self.output_text().lines().count().max(1);
         self.set_output_line_count(line_count);
         if self.xtasks.detail_open {
             let line_count = self.xtasks.output_text().lines().count().max(1);
             self.xtasks.output.set_line_count(line_count);
+        }
+        if self.test_events.modal_open {
+            let line_count = self.test_events.output_text().lines().count().max(1);
+            self.test_events.output.set_line_count(line_count);
         }
     }
 
@@ -213,11 +227,15 @@ impl App {
         tree_height: u16,
         output_height: u16,
         xtask_output_height: u16,
+        test_events_output_height: u16,
     ) {
         self.tree_page_size = tree_height.saturating_sub(2).max(1) as usize;
         self.main_output
             .set_page_size(output_height.saturating_sub(2).max(1));
         self.xtasks.output.set_page_size(xtask_output_height);
+        self.test_events
+            .output
+            .set_page_size(test_events_output_height);
         self.ensure_tree_selection_visible();
         self.clamp_output_scroll();
     }
@@ -255,6 +273,8 @@ impl App {
             Some(OverlayMode::DiskCleanup)
         } else if self.xtasks.modal_open {
             Some(OverlayMode::Xtasks)
+        } else if self.test_events.modal_open {
+            Some(OverlayMode::TestEvents)
         } else if self.main_output.search.modal_open {
             Some(OverlayMode::OutputSearch)
         } else if self.show_test_details {
@@ -284,6 +304,13 @@ impl App {
                 InputMode::XtaskCommandModal(self.xtasks.detail_focus)
             }
             Some(OverlayMode::Xtasks) => InputMode::XtaskModal,
+            Some(OverlayMode::TestEvents) if self.test_events.output.search.modal_open => {
+                InputMode::OutputSearchModal
+            }
+            Some(OverlayMode::TestEvents) if self.test_events.output.search.input_active => {
+                InputMode::OutputSearchInline
+            }
+            Some(OverlayMode::TestEvents) => InputMode::TestEventsModal(self.test_events.focus),
             Some(OverlayMode::OutputSearch) => InputMode::OutputSearchModal,
             Some(OverlayMode::TestDetails) => InputMode::TestDetailsModal,
             Some(OverlayMode::Discovery) => InputMode::DiscoveryRunning,
@@ -318,6 +345,7 @@ impl App {
     pub fn begin_discovery(&mut self) -> RequestId {
         let request_id = self.discovery.request_id.next();
         self.show_test_details = false;
+        self.test_events.close();
         self.discovery = DiscoveryState {
             request_id,
             running: true,
@@ -792,6 +820,60 @@ impl App {
                     AppEffect::None
                 }
             }
+            AppCommand::OpenTestEvents => {
+                self.open_test_events();
+                AppEffect::None
+            }
+            AppCommand::CloseTestEvents => {
+                self.close_test_events();
+                AppEffect::None
+            }
+            AppCommand::ToggleTestEventsFocus => {
+                self.test_events.toggle_focus();
+                self.status = match self.test_events.focus {
+                    TestEventsFocus::Runs => "Test event runs focused".to_owned(),
+                    TestEventsFocus::Events => "Test events focused".to_owned(),
+                };
+                AppEffect::None
+            }
+            AppCommand::TestEventsNextRun => {
+                self.test_events.select_next_run();
+                AppEffect::None
+            }
+            AppCommand::TestEventsPreviousRun => {
+                self.test_events.select_previous_run();
+                AppEffect::None
+            }
+            AppCommand::TestEventsOutputLineUp => {
+                self.test_events.focus_events();
+                self.test_events.scroll_output_line_up();
+                AppEffect::None
+            }
+            AppCommand::TestEventsOutputLineDown => {
+                self.test_events.focus_events();
+                self.test_events.scroll_output_line_down();
+                AppEffect::None
+            }
+            AppCommand::TestEventsOutputPageUp => {
+                self.test_events.focus_events();
+                self.test_events.scroll_output_page_up();
+                AppEffect::None
+            }
+            AppCommand::TestEventsOutputPageDown => {
+                self.test_events.focus_events();
+                self.test_events.scroll_output_page_down();
+                AppEffect::None
+            }
+            AppCommand::TestEventsOutputTop => {
+                self.test_events.focus_events();
+                self.test_events.scroll_output_top();
+                AppEffect::None
+            }
+            AppCommand::TestEventsOutputBottom => {
+                self.test_events.focus_events();
+                self.test_events.scroll_output_bottom();
+                AppEffect::None
+            }
             AppCommand::OpenXtasks => {
                 self.xtasks.open();
                 self.status = "Xtasks opened".to_owned();
@@ -1256,6 +1338,10 @@ impl App {
                 self.tree.append_test_output(&key, stdout, stderr);
                 None
             }
+            RunEvent::TestEvent { run_id, event } => {
+                self.test_events.append_event(&run_id, event);
+                None
+            }
             RunEvent::RunnerOutput(line) => {
                 self.tree.append_runner_output(line);
                 None
@@ -1279,6 +1365,7 @@ impl App {
             } else {
                 run_outcome(exit_code, counts)
             };
+            self.test_events.finish_active_run(self.run_result_label());
             self.status = run_summary_status(self.run.outcome, counts, exit_code);
         }
     }
@@ -1381,9 +1468,15 @@ impl App {
         self.xtasks.modal_open && self.xtasks.detail_open
     }
 
+    fn test_events_output_active(&self) -> bool {
+        self.test_events.modal_open
+    }
+
     fn active_output_pane(&self) -> OutputPaneId {
         if self.xtask_output_active() {
             OutputPaneId::Xtask
+        } else if self.test_events_output_active() {
+            OutputPaneId::TestEvents
         } else {
             OutputPaneId::Main
         }
@@ -1393,6 +1486,7 @@ impl App {
         match output {
             OutputPaneId::Main => &self.main_output,
             OutputPaneId::Xtask => &self.xtasks.output,
+            OutputPaneId::TestEvents => &self.test_events.output,
         }
     }
 
@@ -1400,6 +1494,7 @@ impl App {
         match output {
             OutputPaneId::Main => &mut self.main_output,
             OutputPaneId::Xtask => &mut self.xtasks.output,
+            OutputPaneId::TestEvents => &mut self.test_events.output,
         }
     }
 
@@ -1417,6 +1512,7 @@ impl App {
         match output {
             OutputPaneId::Main => self.output_source_text(),
             OutputPaneId::Xtask => self.xtasks.output_text(),
+            OutputPaneId::TestEvents => self.test_events.output_text(),
         }
     }
 
@@ -1440,6 +1536,11 @@ impl App {
                 .selected_command()
                 .map(|command| format!("Xtask: {}", command.name))
                 .unwrap_or_else(|| "Xtask".to_owned()),
+            OutputPaneId::TestEvents => self
+                .test_events
+                .selected_run()
+                .map(|run| format!("Test events: {}", run.id))
+                .unwrap_or_else(|| "Test events".to_owned()),
         }
     }
 
@@ -1515,6 +1616,20 @@ impl App {
         self.reset_output_for_source_change();
     }
 
+    pub fn begin_test_event_run(&mut self, run: TestEventRun) {
+        self.test_events.begin_run(run, self.run.scope.label());
+    }
+
+    pub fn open_test_events(&mut self) {
+        self.test_events.open();
+        self.status = "Test events opened".to_owned();
+    }
+
+    pub fn close_test_events(&mut self) {
+        self.test_events.close();
+        self.status = "Test events closed".to_owned();
+    }
+
     fn reset_output_for_source_change(&mut self) {
         self.main_output.reset_for_source_change();
     }
@@ -1574,8 +1689,10 @@ impl App {
         let output = self.active_output_pane();
         if output == OutputPaneId::Main {
             self.focus = FocusPane::Output;
-        } else {
+        } else if output == OutputPaneId::Xtask {
             self.xtasks.focus_output();
+        } else {
+            self.test_events.focus_events();
         }
         self.disable_output_snap(output);
         self.status = {

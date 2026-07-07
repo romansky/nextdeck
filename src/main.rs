@@ -18,6 +18,7 @@ mod source;
 mod state;
 mod symbols;
 mod terminal;
+mod test_events;
 mod theme;
 mod tree;
 mod ui;
