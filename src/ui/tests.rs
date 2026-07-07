@@ -13,10 +13,7 @@ fn output_status_shows_all_when_text_fits() {
     app.main_output.page_size = 5;
     let text = "one\ntwo";
 
-    assert_eq!(
-        app.main_output.status("Output", text),
-        "Output <#1-2/2 [s]nap:✓>"
-    );
+    assert_eq!(app.main_output.status("Output", text), "Output <#1-2/2>");
 }
 
 #[test]
@@ -26,24 +23,15 @@ fn output_status_shows_clamped_line_ranges() {
     let text = "1\n2\n3\n4\n5\n6";
 
     app.main_output.scroll = 0;
-    assert_eq!(
-        app.main_output.status("Output", text),
-        "Output <#1-3/6 [s]nap:✓>"
-    );
+    assert_eq!(app.main_output.status("Output", text), "Output <#1-3/6>");
 
     app.main_output.scroll = 2;
     app.main_output.follow = false;
-    assert_eq!(
-        app.main_output.status("Output", text),
-        "Output <#3-5/6 [s]nap:✗>"
-    );
+    assert_eq!(app.main_output.status("Output", text), "Output <#3-5/6>");
 
     app.main_output.scroll = 3;
     app.main_output.follow = true;
-    assert_eq!(
-        app.main_output.status("Output", text),
-        "Output <#4-6/6 [s]nap:✓>"
-    );
+    assert_eq!(app.main_output.status("Output", text), "Output <#4-6/6>");
 }
 
 #[test]
@@ -308,12 +296,12 @@ fn panel_actions_describe_local_commands() {
         "[c]cargo-clean [r]refresh [esc]close"
     );
     assert_eq!(
-        output_actions("[/]search<[            ]>"),
-        "[/]search<[            ]> [o]pen-editor"
+        output_actions("[/]search<[            ]>", true),
+        "[/]search<[            ]> [s]nap:✓ [o]pen-editor"
     );
     assert_eq!(
-        discovery_error_actions("[/]search<[            ]> [o]pen-editor"),
-        "[u]retry [/]search<[            ]> [o]pen-editor [q]quit"
+        discovery_error_actions("[/]search<[            ]> [s]nap:✗ [o]pen-editor"),
+        "[u]retry [/]search<[            ]> [s]nap:✗ [o]pen-editor [q]quit"
     );
 }
 

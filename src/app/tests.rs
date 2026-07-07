@@ -1229,6 +1229,30 @@ fn output_search_input_opens_modal_then_apply_finds_match() {
 }
 
 #[test]
+fn output_search_reopen_places_cursor_at_end_of_existing_query() {
+    let mut app = app_with_finished_output("zero\nstdo\nok", "");
+
+    app.apply_command(AppCommand::StartOutputSearch);
+    search_type(&mut app, "stde");
+    app.apply_command(AppCommand::ApplyOutputSearch);
+    app.apply_command(AppCommand::StartOutputSearch);
+
+    app.apply_command(AppCommand::OutputSearchEdit(SearchEditorInput::new(
+        SearchEditorKey::Backspace,
+        false,
+        false,
+        false,
+    )));
+    assert_eq!(app.main_output.search.draft_query, "std");
+
+    search_type(&mut app, "o");
+    app.apply_command(AppCommand::ApplyOutputSearch);
+
+    assert_eq!(app.main_output.search.query, "stdo");
+    assert_eq!(app.main_output.search.current_line, Some(1));
+}
+
+#[test]
 fn output_search_draft_does_not_filter_until_applied() {
     let mut app = app_with_finished_output("alpha\npanic\nomega", "");
     app.main_output.search.filter = true;

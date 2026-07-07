@@ -144,6 +144,7 @@ pub struct XtaskRunOutput {
     pub command_line: String,
     pub success: bool,
     pub exit_code: Option<i32>,
+    pub combined: String,
     pub stdout: String,
     pub stderr: String,
 }
@@ -315,6 +316,7 @@ impl XtaskState {
                     return false;
                 }
                 if let Some(output) = &mut self.last_run {
+                    append_bounded_text(&mut output.combined, &chunk.text);
                     match chunk.stream {
                         XtaskOutputStream::Stdout => {
                             append_bounded_text(&mut output.stdout, &chunk.text);
@@ -333,7 +335,16 @@ impl XtaskState {
                 }
                 self.running = false;
                 match result {
-                    Ok(output) => {
+                    Ok(mut output) => {
+                        if let Some(live_output) = &self.last_run
+                            && live_output.command_line == output.command_line
+                        {
+                            output.combined = live_output.combined.clone();
+                        }
+                        if output.combined.is_empty() {
+                            output.combined =
+                                combined_output_fallback(&output.stdout, &output.stderr);
+                        }
                         self.error = None;
                         self.last_run = Some(output);
                     }
@@ -351,7 +362,7 @@ impl XtaskState {
             .selected_command
             .min(manifest.commands.len().saturating_sub(1));
         self.selected_arg = 0;
-        self.values = default_values(&manifest);
+        self.values = values_for_manifest(&manifest, &self.values);
         self.manifest = Some(manifest);
         self.detail_open = false;
         self.detail_focus = XtaskDetailFocus::Parameters;
@@ -493,6 +504,7 @@ impl XtaskState {
             command_line,
             success: false,
             exit_code: None,
+            combined: String::new(),
             stdout: String::new(),
             stderr: String::new(),
         });
@@ -621,8 +633,7 @@ impl XtaskState {
                 }
                 text.push('\n');
             }
-            append_output_text_section(&mut text, "stdout", &output.stdout);
-            append_output_text_section(&mut text, "stderr", &output.stderr);
+            text.push_str(&output.combined);
         }
         if text.trim().is_empty() {
             "Run the selected xtask to see output here.".to_owned()
@@ -693,6 +704,7 @@ pub async fn run_streaming(
         command_line,
         success: status.success(),
         exit_code: status.code(),
+        combined: String::new(),
         stdout,
         stderr,
     })
@@ -747,18 +759,14 @@ where
     Ok(text)
 }
 
-fn append_output_text_section(text: &mut String, title: &str, content: &str) {
-    let content = content.trim_end();
-    if content.is_empty() {
-        return;
+fn combined_output_fallback(stdout: &str, stderr: &str) -> String {
+    let mut combined = String::new();
+    append_bounded_text(&mut combined, stdout);
+    if !combined.is_empty() && !combined.ends_with('\n') && !stderr.is_empty() {
+        append_bounded_text(&mut combined, "\n");
     }
-    if !text.ends_with("\n\n") {
-        text.push('\n');
-    }
-    text.push_str(title);
-    text.push('\n');
-    text.push_str(content);
-    text.push('\n');
+    append_bounded_text(&mut combined, stderr);
+    combined
 }
 
 fn default_values(manifest: &XtaskManifest) -> BTreeMap<String, BTreeMap<String, XtaskArgValue>> {
@@ -776,6 +784,44 @@ fn default_values(manifest: &XtaskManifest) -> BTreeMap<String, BTreeMap<String,
             )
         })
         .collect()
+}
+
+fn values_for_manifest(
+    manifest: &XtaskManifest,
+    previous: &BTreeMap<String, BTreeMap<String, XtaskArgValue>>,
+) -> BTreeMap<String, BTreeMap<String, XtaskArgValue>> {
+    let mut values = default_values(manifest);
+    for command in &manifest.commands {
+        let Some(previous_args) = previous.get(&command.name) else {
+            continue;
+        };
+        let Some(next_args) = values.get_mut(&command.name) else {
+            continue;
+        };
+        for arg in &command.args {
+            let Some(previous_value) = previous_args.get(&arg.name) else {
+                continue;
+            };
+            if xtask_value_matches_spec(previous_value, &arg.value) {
+                next_args.insert(arg.name.clone(), previous_value.clone());
+            }
+        }
+    }
+    values
+}
+
+fn xtask_value_matches_spec(value: &XtaskArgValue, spec: &XtaskValueSpec) -> bool {
+    match (value, spec) {
+        (XtaskArgValue::Bool(_), XtaskValueSpec::Bool { .. }) => true,
+        (XtaskArgValue::Number(value), XtaskValueSpec::Number { .. }) => {
+            value.trim().is_empty() || value.parse::<i64>().is_ok()
+        }
+        (XtaskArgValue::String(_), XtaskValueSpec::String { .. }) => true,
+        (XtaskArgValue::Enum(value), XtaskValueSpec::Enum { values, .. }) => {
+            values.iter().any(|allowed| allowed == value)
+        }
+        _ => false,
+    }
 }
 
 fn append_arg(args: &mut Vec<String>, spec: &XtaskArgSpec, value: &XtaskArgValue) -> Result<()> {

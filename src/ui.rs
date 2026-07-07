@@ -1951,7 +1951,7 @@ fn output_pane_content(theme: &Theme, output: OutputPaneRender<'_>) -> OutputPan
     let search_actions = output.state.search_actions(&output.source_text);
     OutputPaneContent {
         status: output.state.status(&output.label, &output_view.text),
-        actions: output_actions(&search_actions),
+        actions: output_actions(&search_actions, output.state.follow),
         lines: output_lines(&output.state.search, theme, &output_view),
         scroll: output.state.scroll,
     }
@@ -1990,14 +1990,17 @@ fn disk_cleanup_actions() -> &'static str {
     "[c]cargo-clean [r]refresh [esc]close"
 }
 
-fn output_actions(search_actions: &str) -> String {
-    format!("{search_actions} [o]pen-editor")
+fn output_actions(search_actions: &str, follow: bool) -> String {
+    format!(
+        "{search_actions} [s]nap:{} [o]pen-editor",
+        bool_symbol(follow)
+    )
 }
 
 fn test_events_actions(test_events: &TestEventsState) -> &'static str {
     match test_events.focus {
         TestEventsFocus::Runs => "[esc]close [tab]events [up/down]run",
-        TestEventsFocus::Events => "[esc]close [tab]runs [/]search [n/N]match [s]snap",
+        TestEventsFocus::Events => "[esc]close [tab]runs [/]search [n/N]match",
     }
 }
 

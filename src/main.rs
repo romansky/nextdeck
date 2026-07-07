@@ -26,7 +26,12 @@ mod tree;
 mod ui;
 mod xtask;
 
-use std::{fs::OpenOptions, io, path::PathBuf, sync::Mutex};
+use std::{
+    fs::OpenOptions,
+    io::{self, Write as _},
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 use anyhow::{Context, Result};
 use app::App;
@@ -98,6 +103,7 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let debug_log_path = init_tracing(cli.debug)?;
+    let _debug_log_exit_notice = DebugLogExitNotice::new(debug_log_path.clone());
     if let Some(path) = debug_log_path.as_ref() {
         tracing::debug!(path = %path.display(), "debug logging enabled");
     }
@@ -165,4 +171,42 @@ fn init_tracing(debug: bool) -> Result<Option<PathBuf>> {
 
 fn debug_env_filter() -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("nextdeck=debug"))
+}
+
+struct DebugLogExitNotice {
+    path: Option<PathBuf>,
+}
+
+impl DebugLogExitNotice {
+    fn new(path: Option<PathBuf>) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for DebugLogExitNotice {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.as_ref() {
+            let _ = writeln!(io::stderr(), "{}", debug_log_exit_message(path));
+        }
+    }
+}
+
+fn debug_log_exit_message(path: &Path) -> String {
+    format!(
+        "nextdeck debug log: {}\nbefore sharing, scrub the log for PII or other sensitive data",
+        path.display()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_log_exit_message_includes_path() {
+        assert_eq!(
+            debug_log_exit_message(Path::new("/tmp/nextdeck-debug.log")),
+            "nextdeck debug log: /tmp/nextdeck-debug.log\nbefore sharing, scrub the log for PII or other sensitive data"
+        );
+    }
 }

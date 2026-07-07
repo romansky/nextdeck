@@ -1,5 +1,5 @@
 use regex::{Regex, RegexBuilder};
-use tui_textarea::{Input as TextAreaInput, Key as TextAreaKey, TextArea};
+use tui_textarea::{CursorMove, Input as TextAreaInput, Key as TextAreaKey, TextArea};
 
 use crate::{scroll, symbols::bool_symbol};
 
@@ -49,11 +49,7 @@ impl OutputPaneState {
         let top = self.render_scroll(text) as usize;
         let visible = self.page_size.max(1) as usize;
         let bottom = top.saturating_add(visible).min(total);
-        format!(
-            "{label} <#{}-{bottom}/{total} [s]nap:{}>",
-            top + 1,
-            bool_symbol(self.follow)
-        )
+        format!("{label} <#{}-{bottom}/{total}>", top + 1)
     }
 
     pub fn search_actions(&self, source_text: &str) -> String {
@@ -265,6 +261,7 @@ impl SearchEditor {
         let mut textarea = TextArea::new(search_editor_lines(text));
         textarea.set_max_histories(100);
         textarea.set_tab_length(2);
+        textarea.move_cursor(CursorMove::End);
         Self { textarea }
     }
 

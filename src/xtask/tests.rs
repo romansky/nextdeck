@@ -164,6 +164,62 @@ fn rejects_unknown_enum_defaults() {
 }
 
 #[test]
+fn manifest_refresh_preserves_session_arg_values() {
+    let mut state = XtaskState::default();
+    state.set_manifest(sample_manifest());
+    state.adjust_selected_arg(1);
+    state.select_next_arg();
+    state.begin_edit_selected_arg();
+    state.edit_input(InputFieldInput::char('1'));
+    state.edit_input(InputFieldInput::char('.'));
+    state.edit_input(InputFieldInput::char('2'));
+    state.edit_input(InputFieldInput::char('.'));
+    state.edit_input(InputFieldInput::char('3'));
+    state.commit_edit().expect("commit version");
+    state.select_next_arg();
+    state.adjust_selected_arg(1);
+    state.select_next_arg();
+    state.adjust_selected_arg(1);
+
+    state.set_manifest(sample_manifest());
+
+    let request = state.run_request().expect("run request");
+    assert_eq!(
+        request.args,
+        vec![
+            "--allow-dirty",
+            "--version",
+            "1.2.3",
+            "--retries",
+            "2",
+            "--profile",
+            "release"
+        ]
+    );
+}
+
+#[test]
+fn manifest_refresh_drops_values_that_no_longer_match_spec() {
+    let mut state = XtaskState::default();
+    state.set_manifest(sample_manifest());
+    state.select_next_arg();
+    state.select_next_arg();
+    state.select_next_arg();
+    state.adjust_selected_arg(1);
+
+    let mut manifest = sample_manifest();
+    if let XtaskValueSpec::Enum { values, default } = &mut manifest.commands[0].args[3].value {
+        *values = vec!["debug".to_owned()];
+        *default = Some("debug".to_owned());
+    }
+
+    state.set_manifest(manifest);
+
+    let request = state.run_request().expect("run request");
+    assert!(!request.args.iter().any(|arg| arg == "--profile"));
+}
+
+#[test]
 fn live_run_output_appends_while_running() {
     let mut state = XtaskState::default();
     let request_id = state.begin_run("cargo xtask release".to_owned());
@@ -186,11 +242,77 @@ fn live_run_output_appends_while_running() {
     let output = state.last_run.as_ref().expect("live output");
     assert!(state.running);
     assert_eq!(output.command_line, "cargo xtask release");
+    assert_eq!(output.combined, "building\nwarning\n");
     assert_eq!(output.stdout, "building\n");
     assert_eq!(output.stderr, "warning\n");
-    assert!(state.output_text().contains("Running xtask"));
-    assert!(state.output_text().contains("building"));
-    assert!(state.output_text().contains("warning"));
+    let text = state.output_text();
+    assert!(text.contains("Running xtask"));
+    assert!(text.contains("building\nwarning"));
+    assert!(!text.contains("\nstdout\n"));
+    assert!(!text.contains("\nstderr\n"));
+}
+
+#[test]
+fn run_finished_preserves_live_interleaved_output() {
+    let mut state = XtaskState::default();
+    let request_id = state.begin_run("cargo xtask release".to_owned());
+
+    state.apply_event(XtaskEvent::RunOutput {
+        request_id,
+        chunk: XtaskRunChunk {
+            stream: XtaskOutputStream::Stdout,
+            text: "stdout 1\n".to_owned(),
+        },
+    });
+    state.apply_event(XtaskEvent::RunOutput {
+        request_id,
+        chunk: XtaskRunChunk {
+            stream: XtaskOutputStream::Stderr,
+            text: "stderr 1\n".to_owned(),
+        },
+    });
+    state.apply_event(XtaskEvent::RunFinished {
+        request_id,
+        result: Ok(XtaskRunOutput {
+            command_line: "cargo xtask release".to_owned(),
+            success: true,
+            exit_code: Some(0),
+            combined: String::new(),
+            stdout: "stdout 1\n".to_owned(),
+            stderr: "stderr 1\n".to_owned(),
+        }),
+    });
+
+    let output = state.last_run.as_ref().expect("finished output");
+    assert!(!state.running);
+    assert_eq!(output.combined, "stdout 1\nstderr 1\n");
+    assert!(state.output_text().contains("stdout 1\nstderr 1"));
+    assert!(!state.output_text().contains("\nstdout\n"));
+    assert!(!state.output_text().contains("\nstderr\n"));
+}
+
+#[test]
+fn run_finished_without_live_chunks_falls_back_to_single_stream() {
+    let mut state = XtaskState::default();
+    let request_id = state.begin_run("cargo xtask release".to_owned());
+
+    state.apply_event(XtaskEvent::RunFinished {
+        request_id,
+        result: Ok(XtaskRunOutput {
+            command_line: "cargo xtask release".to_owned(),
+            success: false,
+            exit_code: Some(1),
+            combined: String::new(),
+            stdout: "stdout tail".to_owned(),
+            stderr: "stderr tail\n".to_owned(),
+        }),
+    });
+
+    let output = state.last_run.as_ref().expect("finished output");
+    assert_eq!(output.combined, "stdout tail\nstderr tail\n");
+    assert!(state.output_text().contains("stdout tail\nstderr tail"));
+    assert!(!state.output_text().contains("\nstdout\n"));
+    assert!(!state.output_text().contains("\nstderr\n"));
 }
 
 #[test]
@@ -255,6 +377,7 @@ fn stale_run_output_is_ignored() {
 
     let output = state.last_run.as_ref().expect("current output");
     assert_eq!(output.command_line, "cargo xtask current");
+    assert_eq!(output.combined, "current output\n");
     assert_eq!(output.stdout, "current output\n");
     assert!(!state.output_text().contains("old output"));
 }
@@ -280,6 +403,9 @@ fn live_run_output_is_bounded() {
     });
 
     let output = state.last_run.as_ref().expect("live output");
+    assert!(output.combined.len() <= crate::output::OUTPUT_TEXT_LIMIT_BYTES);
+    assert!(output.combined.starts_with("[... output truncated"));
+    assert!(output.combined.ends_with("tail"));
     assert!(output.stdout.len() <= crate::output::OUTPUT_TEXT_LIMIT_BYTES);
     assert!(output.stdout.starts_with("[... output truncated"));
     assert!(output.stdout.ends_with("tail"));
