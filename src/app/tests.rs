@@ -504,6 +504,37 @@ fn activate_selected_opens_details_for_non_test_rows() {
 }
 
 #[test]
+fn capture_test_snapshot_requires_running_leaf_test() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    expand_all(&mut app.tree.root);
+    app.tree.select_next();
+    app.tree.select_next();
+    app.tree.select_next();
+
+    assert_eq!(
+        app.apply_command(AppCommand::CaptureTestSnapshot),
+        AppEffect::None
+    );
+    assert_eq!(app.status, "No test run in progress");
+
+    app.running = true;
+    assert_eq!(
+        app.apply_command(AppCommand::CaptureTestSnapshot),
+        AppEffect::None
+    );
+    assert_eq!(app.status, "Selected test is not currently running");
+
+    app.tree.start_test(&test_key(0));
+    assert_eq!(
+        app.apply_command(AppCommand::CaptureTestSnapshot),
+        AppEffect::CaptureTestSnapshot(TestSnapshotRequest {
+            title: "Running test snapshot: demo::tests::case_00".to_owned(),
+        })
+    );
+    assert_eq!(app.status, "Capturing running test snapshot...");
+}
+
+#[test]
 fn resize_tests_pane_updates_settings_and_requests_save() {
     let mut app = App::with_settings(
         Tree::from_tests(test_rows(1)),
@@ -792,9 +823,7 @@ fn failing_test_run_reports_failed_result() {
 #[test]
 fn scoped_run_summary_counts_only_the_scope() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(2)));
-    let request = RunRequest {
-        scope: run_scope_test(0),
-    };
+    let request = RunRequest::new(run_scope_test(0));
     assert!(app.begin_run(&request).is_some());
     let key = test_key(0);
 
@@ -830,6 +859,45 @@ fn ignored_start_event_during_workspace_run_stays_ignored() {
 }
 
 #[test]
+fn custom_run_opens_and_runs_selected_scope_with_options() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    expand_all(&mut app.tree.root);
+    app.tree.select_next();
+    app.tree.select_next();
+    app.tree.select_next();
+
+    assert_eq!(
+        app.apply_command(AppCommand::OpenCustomRun),
+        AppEffect::None
+    );
+    assert!(app.custom_run.modal_open);
+    app.custom_run.options.no_capture = true;
+
+    let effect = app.apply_command(AppCommand::RunCustom);
+
+    match effect {
+        AppEffect::StartRun(request) => {
+            assert!(matches!(request.scope, RunScope::Test(_)));
+            assert!(request.options.no_capture);
+        }
+        other => panic!("unexpected effect: {other:?}"),
+    }
+    assert!(!app.custom_run.modal_open);
+}
+
+#[test]
+fn custom_run_debugger_requires_single_test_scope() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    app.apply_command(AppCommand::OpenCustomRun);
+    app.custom_run.options.debugger = Some("rust-lldb --args".to_owned());
+
+    assert_eq!(app.apply_command(AppCommand::RunCustom), AppEffect::None);
+
+    assert_eq!(app.status, "Debugger requires a single selected test");
+    assert!(app.custom_run.modal_open);
+}
+
+#[test]
 fn new_run_resets_previous_run_metadata_and_result() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(2)));
     assert!(app.begin_run(&RunRequest::default()).is_some());
@@ -859,12 +927,7 @@ fn new_run_resets_previous_run_metadata_and_result() {
     app.main_output.follow = false;
     app.main_output.search.current_line = Some(3);
 
-    assert!(
-        app.begin_run(&RunRequest {
-            scope: run_scope_test(0),
-        })
-        .is_some()
-    );
+    assert!(app.begin_run(&RunRequest::new(run_scope_test(0))).is_some());
 
     assert_eq!(app.run.run_id, None);
     assert_eq!(app.run.outcome, RunOutcome::Running);
@@ -1282,7 +1345,10 @@ fn stale_discovery_event_is_ignored() {
 
     assert!(app.apply_discovery_event(
         current_request_id,
-        DiscoveryEvent::Finished(Ok(test_rows(1))),
+        DiscoveryEvent::Finished(Ok(DiscoveryOutput {
+            tests: test_rows(1),
+            run_config: crate::nextest::RunConfig::default(),
+        })),
     ));
     assert!(!app.discovery.running);
     assert_eq!(app.discovery.error, None);
@@ -1367,6 +1433,7 @@ fn test_rows(count: usize) -> Vec<DiscoveredTest> {
             full_name: format!("tests::case_{index:02}"),
             status: TestStatus::Pending,
             ignored: false,
+            ignore_reason: None,
         })
         .collect()
 }

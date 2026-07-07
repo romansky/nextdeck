@@ -40,6 +40,36 @@ fn finds_async_test_function_line() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn finds_ignore_reason_for_test_function() {
+    let root = temp_dir("ignore-reason");
+    fs::create_dir_all(&root).expect("create temp");
+    let path = root.join("case.rs");
+    fs::write(
+        &path,
+        r#"
+            #[cfg(test)]
+            mod tests {
+                #[test]
+                #[ignore = "performance test"]
+                fn expensive_case() {}
+
+                #[test]
+                fn normal_case() {}
+            }
+        "#,
+    )
+    .expect("write source");
+
+    assert_eq!(
+        ignore_reason_for_test(&path, "tests::expensive_case").as_deref(),
+        Some("performance test")
+    );
+    assert_eq!(ignore_reason_for_test(&path, "tests::normal_case"), None);
+
+    let _ = fs::remove_dir_all(root);
+}
+
 fn temp_dir(name: &str) -> PathBuf {
     env::temp_dir().join(format!(
         "nextdeck-source-test-{name}-{}",

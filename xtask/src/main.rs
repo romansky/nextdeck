@@ -33,9 +33,12 @@ enum XtaskCommand {
         #[arg(long, help = "Allow cargo package to run with a dirty worktree")]
         allow_dirty: bool,
     },
-    #[command(about = "Package and install the verified TUI package locally")]
+    #[command(about = "Install the TUI package locally from the workspace")]
     TuiPublishLocal {
-        #[arg(long, help = "Allow packaging with a dirty worktree")]
+        #[arg(
+            long,
+            help = "Accepted for compatibility; ignored for workspace installs"
+        )]
         allow_dirty: bool,
     },
     #[command(about = "Build, archive, checksum, and sign a TUI release artifact")]
@@ -112,11 +115,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         XtaskCommand::TuiCheck { allow_dirty } => tui_check(&workspace, allow_dirty),
-        XtaskCommand::TuiPublishLocal { allow_dirty } => {
-            let artifact = package_crate(&workspace, TUI_PACKAGE, allow_dirty)?;
-            println!("Packaged {}", artifact.crate_path.display());
-            install_tui_crate(&workspace, &artifact.unpacked_dir)
-        }
+        XtaskCommand::TuiPublishLocal { allow_dirty: _ } => install_tui_workspace(&workspace),
         XtaskCommand::TuiRelease {
             version,
             target,
@@ -217,35 +216,16 @@ fn package_crate(workspace: &Path, package: &str, allow_dirty: bool) -> Result<P
     })
 }
 
-fn install_tui_crate(workspace: &Path, package_dir: &Path) -> Result<()> {
-    let install_dir = isolated_package_dir(TUI_PACKAGE, package_dir)?;
-    copy_dir(package_dir, &install_dir)?;
-    let crate_arg = install_dir
-        .to_str()
-        .with_context(|| format!("package path is not UTF-8: {}", install_dir.display()))?;
+fn install_tui_workspace(workspace: &Path) -> Result<()> {
+    println!(
+        "Installing {TUI_PACKAGE} from workspace path because {LIB_PACKAGE} is not published yet."
+    );
     run(
         workspace,
         "cargo",
-        ["install", "--path", crate_arg, "--locked", "--force"],
+        ["install", "--path", ".", "--locked", "--force"],
     )?;
     verify_local_install()
-}
-
-fn isolated_package_dir(package: &str, package_dir: &Path) -> Result<PathBuf> {
-    let package_name = package_dir
-        .file_name()
-        .context("verified package directory has no file name")?;
-    let root = env::temp_dir().join(format!("{package}-publish-local"));
-    let install_dir = root.join(package_name);
-
-    if install_dir.exists() {
-        fs::remove_dir_all(&install_dir)
-            .with_context(|| format!("removing old isolated package {}", install_dir.display()))?;
-    }
-    fs::create_dir_all(&root)
-        .with_context(|| format!("creating isolated package root {}", root.display()))?;
-
-    Ok(install_dir)
 }
 
 fn lib_publish_local(workspace: &Path, allow_dirty: bool) -> Result<()> {

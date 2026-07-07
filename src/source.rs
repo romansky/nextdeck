@@ -33,6 +33,45 @@ pub fn find_test_line(path: &Path, test_name: &str) -> Option<usize> {
         .find_map(|(index, line)| regex.is_match(line).then_some(index + 1))
 }
 
+pub fn ignore_reason_for_test(path: &Path, test_name: &str) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let name = test_name.rsplit("::").next().unwrap_or(test_name);
+    let pattern = format!(r"\bfn\s+{}\b", regex::escape(name));
+    let regex = Regex::new(&pattern).ok()?;
+    let mut attributes = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#[") {
+            attributes.push(trimmed.to_owned());
+            continue;
+        }
+        if regex.is_match(trimmed) {
+            return attributes.iter().find_map(|attribute| {
+                parse_ignore_reason_attribute(attribute).map(ToOwned::to_owned)
+            });
+        }
+        if !trimmed.is_empty() && !trimmed.starts_with("//") {
+            attributes.clear();
+        }
+    }
+
+    None
+}
+
+fn parse_ignore_reason_attribute(attribute: &str) -> Option<&str> {
+    let body = attribute.strip_prefix("#[")?.strip_suffix(']')?.trim();
+    let rest = body.strip_prefix("ignore")?.trim_start();
+    let rest = rest.strip_prefix('=')?.trim_start();
+    parse_quoted_string(rest)
+}
+
+fn parse_quoted_string(value: &str) -> Option<&str> {
+    let value = value.strip_prefix('"')?;
+    let end = value.find('"')?;
+    Some(&value[..end])
+}
+
 fn cargo_table_path(manifest: &Path, table_name: &str) -> Option<PathBuf> {
     let text = fs::read_to_string(manifest).ok()?;
     let mut in_table = false;

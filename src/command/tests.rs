@@ -29,6 +29,20 @@ const fn settings_open_with_input_context() -> CommandContext {
     }
 }
 
+const fn custom_run_modal_context() -> CommandContext {
+    CommandContext {
+        input: InputMode::CustomRunModal,
+        overlay: Some(OverlayMode::CustomRun),
+    }
+}
+
+const fn custom_run_input_context() -> CommandContext {
+    CommandContext {
+        input: InputMode::CustomRunInput,
+        overlay: Some(OverlayMode::CustomRun),
+    }
+}
+
 const fn disk_cleanup_modal_context() -> CommandContext {
     CommandContext {
         input: InputMode::DiskCleanupModal,
@@ -212,6 +226,22 @@ fn maps_refresh_and_view_filter_keys() {
         command_for_key(KeyCode::Char('o'), KeyModifiers::NONE, CommandFocus::Tests),
         AppCommand::OpenSource
     );
+    assert_eq!(
+        command_for_key(KeyCode::Char('R'), KeyModifiers::SHIFT, CommandFocus::Tests),
+        AppCommand::OpenCustomRun
+    );
+}
+
+#[test]
+fn test_details_modal_maps_snapshot_key() {
+    assert_eq!(
+        command_for_test_details_modal(KeyCode::Char('s')),
+        AppCommand::CaptureTestSnapshot
+    );
+    assert_eq!(
+        command_for_test_details_modal(KeyCode::Esc),
+        AppCommand::CloseTestDetails
+    );
 }
 
 #[test]
@@ -392,6 +422,67 @@ fn disk_cleanup_modal_uses_cleanup_commands() {
         KeyModifiers::NONE,
     )));
     assert_eq!(command_for_input(&q, context), AppCommand::Noop);
+}
+
+#[test]
+fn custom_run_modal_uses_custom_run_commands() {
+    let context = custom_run_modal_context();
+    assert_eq!(
+        command_for_input(
+            &InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))),
+            context
+        ),
+        AppCommand::CustomRunNext
+    );
+    assert_eq!(
+        command_for_input(
+            &InputEvent::Terminal(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
+            context
+        ),
+        AppCommand::RunCustom
+    );
+    assert_eq!(
+        command_for_input(
+            &InputEvent::Terminal(Event::Key(KeyEvent::new(
+                KeyCode::Char('e'),
+                KeyModifiers::NONE,
+            ))),
+            context
+        ),
+        AppCommand::CustomRunActivate
+    );
+    assert_eq!(
+        command_for_input(
+            &InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
+            context
+        ),
+        AppCommand::CloseCustomRun
+    );
+}
+
+#[test]
+fn custom_run_input_commits_or_cancels_editing() {
+    let context = custom_run_input_context();
+    assert_eq!(
+        command_for_input(
+            &InputEvent::Terminal(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
+            context
+        ),
+        AppCommand::CommitCustomRunEdit
+    );
+    assert_eq!(
+        command_for_input(
+            &InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
+            context
+        ),
+        AppCommand::CancelCustomRunEdit
+    );
 }
 
 #[test]
@@ -648,6 +739,7 @@ fn output_focus_uses_output_search_commands() {
 #[test]
 fn command_metadata_drives_ticker_labels() {
     assert_eq!(AppCommand::RunSelected.ticker_label(), Some("run"));
+    assert_eq!(AppCommand::OpenCustomRun.ticker_label(), Some("custom run"));
     assert_eq!(AppCommand::ToggleOutputRegex.ticker_label(), Some("regex"));
     assert_eq!(AppCommand::CloseHelp.ticker_label(), Some("close help"));
 }

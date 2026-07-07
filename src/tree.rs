@@ -31,6 +31,7 @@ pub struct DiscoveredTest {
     pub full_name: String,
     pub status: TestStatus,
     pub ignored: bool,
+    pub ignore_reason: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]

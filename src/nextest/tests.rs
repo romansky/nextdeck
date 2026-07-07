@@ -1,4 +1,5 @@
 use super::*;
+use crate::diagnostics::ProcessTracker;
 
 #[test]
 fn project_dir_prefers_manifest_parent_resolved_from_current_dir() {
@@ -397,11 +398,12 @@ fn manual_test_command_uses_native_target_flags_and_shell_quoting() {
         full_name: "tests::case one".to_owned(),
         status: TestStatus::Pending,
         ignored: true,
+        ignore_reason: Some("fixture ignored test".to_owned()),
     };
 
     assert_eq!(
         manual_test_command(&test),
-        "cargo nextest run -p demo --lib --run-ignored only 'tests::case one'"
+        "cargo nextest run --run-ignored only -p demo --lib 'tests::case one'"
     );
 
     test.binary_kind = "test".to_owned();
@@ -443,6 +445,93 @@ fn manual_run_command_uses_scope_args() {
         }),
         "cargo nextest run -p alpha --lib tests::duplicate_name && cargo nextest run -p beta --lib tests::duplicate_name"
     );
+}
+
+#[test]
+fn manual_run_request_command_includes_run_options() {
+    let request = RunRequest {
+        scope: RunScope::Test(test_selector("demo", "demo", "lib", "tests::case one")),
+        options: RunOptions {
+            profile: Some("ci".to_owned()),
+            filterset: Some("package(demo)".to_owned()),
+            ignored: RunIgnored::All,
+            retries: Some(2),
+            flaky_result: Some(FlakyResult::Fail),
+            fail_fast: FailFast::Off,
+            max_fail: Some("3:immediate".to_owned()),
+            no_capture: true,
+            debugger: Some("rust-lldb --args".to_owned()),
+            stress_count: Some("10".to_owned()),
+            stress_duration: Some("30s".to_owned()),
+        },
+    };
+
+    assert_eq!(
+        manual_run_request_command(&request),
+        "cargo nextest run -P ci -E 'package(demo)' --run-ignored all --retries 2 --flaky-result fail --no-fail-fast --max-fail 3:immediate --no-capture --debugger 'rust-lldb --args' --stress-count 10 --stress-duration 30s -p demo --lib 'tests::case one'"
+    );
+}
+
+#[test]
+fn parses_profiles_and_default_filter_presets_from_nextest_config() {
+    let profiles = parse_nextest_profiles(
+        r#"
+            [profile.default]
+            default-filter = "not test(slow)"
+
+            [profile.ci]
+            retries = 2
+            default-filter = "package(nextdeck)"
+        "#,
+    );
+
+    assert_eq!(
+        profiles,
+        vec![
+            NextestProfile {
+                name: "default".to_owned(),
+                default_filter: Some("not test(slow)".to_owned()),
+            },
+            NextestProfile {
+                name: "ci".to_owned(),
+                default_filter: Some("package(nextdeck)".to_owned()),
+            },
+        ]
+    );
+    assert_eq!(
+        profile_filter_presets(&profiles),
+        vec![
+            FilterPreset::Filterset {
+                name: "profile default default-filter".to_owned(),
+                expression: "not test(slow)".to_owned(),
+            },
+            FilterPreset::Filterset {
+                name: "profile ci default-filter".to_owned(),
+                expression: "package(nextdeck)".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn ignored_reason_presets_group_tests_by_reason() {
+    let mut first = discovered_test("demo", "demo", "lib", "tests::expensive_one");
+    first.ignored = true;
+    first.ignore_reason = Some("performance test".to_owned());
+    let mut second = discovered_test("demo", "demo", "lib", "tests::expensive_two");
+    second.ignored = true;
+    second.ignore_reason = Some("performance test".to_owned());
+
+    let presets = ignored_reason_presets(&[first, second]);
+
+    assert_eq!(presets.len(), 1);
+    match &presets[0] {
+        FilterPreset::IgnoredReason { reason, tests } => {
+            assert_eq!(reason, "performance test");
+            assert_eq!(tests.len(), 2);
+        }
+        other => panic!("unexpected preset: {other:?}"),
+    }
 }
 
 #[test]
@@ -513,10 +602,12 @@ async fn run_output_fixture(filter: &str, passthrough_args: Vec<String>) -> Vec<
                     kind,
                     filter,
                 )),
+                options: RunOptions::default(),
             },
             tx,
             stop_rx,
             None,
+            ProcessTracker::default(),
         )
         .await
         .expect("run output fixture");
@@ -574,6 +665,7 @@ fn discovered_test(package: &str, binary: &str, kind: &str, full_name: &str) -> 
         full_name: full_name.to_owned(),
         status: TestStatus::Pending,
         ignored: false,
+        ignore_reason: None,
     }
 }
 

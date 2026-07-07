@@ -80,7 +80,35 @@ fn search_box_view_marks_invalid_regex() {
     };
 
     assert!(search.view("anything").invalid);
-    assert!(search.view("anything").title_fragment().contains("!regex"));
+    assert!(
+        search
+            .view("anything")
+            .actions_fragment()
+            .contains("!regex")
+    );
+}
+
+#[test]
+fn search_actions_stay_compact_until_search_has_value() {
+    let search = OutputSearchState::default();
+
+    assert_eq!(
+        search.view("anything").actions_fragment(),
+        "[/]search<[            ]>"
+    );
+}
+
+#[test]
+fn search_actions_expand_when_search_has_value() {
+    let search = OutputSearchState {
+        query: "panic".to_owned(),
+        ..OutputSearchState::default()
+    };
+
+    assert_eq!(
+        search.view("panic line").actions_fragment(),
+        "[/]search<[panic       ] 0/1 [n/N]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
+    );
 }
 
 #[test]

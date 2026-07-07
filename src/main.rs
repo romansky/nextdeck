@@ -1,6 +1,8 @@
 mod app;
 mod command;
 mod config;
+mod custom_run;
+mod diagnostics;
 mod disk_usage;
 mod editor;
 mod git_status;
@@ -106,7 +108,7 @@ async fn main() -> Result<()> {
         editor::EditorConfig::resolve(cli.open_with.clone(), settings.open_with_command.clone());
     let client = NextestClient::new(cli.manifest_path, cli.current_dir, cli.nextest_args);
     if cli.list_json {
-        let tests = client.discover().await?;
+        let tests = client.discover().await?.tests;
         serde_json::to_writer_pretty(io::stdout(), &tests)?;
         println!();
         return Ok(());

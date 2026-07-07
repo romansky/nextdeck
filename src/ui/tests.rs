@@ -14,8 +14,8 @@ fn output_status_shows_all_when_text_fits() {
     let text = "one\ntwo";
 
     assert_eq!(
-        app.main_output.status("Output", text, text),
-        "Output <#1-2/2 [s]nap:✓> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
+        app.main_output.status("Output", text),
+        "Output <#1-2/2 [s]nap:✓>"
     );
 }
 
@@ -27,22 +27,22 @@ fn output_status_shows_clamped_line_ranges() {
 
     app.main_output.scroll = 0;
     assert_eq!(
-        app.main_output.status("Output", text, text),
-        "Output <#1-3/6 [s]nap:✓> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
+        app.main_output.status("Output", text),
+        "Output <#1-3/6 [s]nap:✓>"
     );
 
     app.main_output.scroll = 2;
     app.main_output.follow = false;
     assert_eq!(
-        app.main_output.status("Output", text, text),
-        "Output <#3-5/6 [s]nap:✗> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
+        app.main_output.status("Output", text),
+        "Output <#3-5/6 [s]nap:✗>"
     );
 
     app.main_output.scroll = 3;
     app.main_output.follow = true;
     assert_eq!(
-        app.main_output.status("Output", text, text),
-        "Output <#4-6/6 [s]nap:✓> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
+        app.main_output.status("Output", text),
+        "Output <#4-6/6 [s]nap:✓>"
     );
 }
 
@@ -214,7 +214,8 @@ fn info_columns_keep_run_and_storage_details_separate() {
     assert!(storage_text.contains("available"));
     assert!(storage_text.contains("2.0 KiB"));
     assert!(storage_text.contains("1970-01-01 00:00:00 UTC"));
-    assert!(storage_text.contains("target"));
+    assert!(!storage_text.contains("total"));
+    assert!(storage_text.contains("/target"));
     assert!(storage_text.contains("1.0 KiB"));
 }
 
@@ -254,6 +255,20 @@ fn disk_cleanup_modal_shows_detailed_target_row_without_summary_duplicate() {
 }
 
 #[test]
+fn disk_cleanup_modal_shows_running_indicator() {
+    let mut app = app_with_tree(Tree::from_tests(Vec::new()));
+    app.begin_cargo_clean().expect("clean starts");
+
+    let text = disk_cleanup_lines(&app, &Theme::dark())
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(text.contains("cargo clean running..."));
+}
+
+#[test]
 fn settings_modal_includes_storage_and_duration_settings() {
     let app = app_with_tree(Tree::from_tests(Vec::new()));
 
@@ -285,18 +300,77 @@ fn footer_includes_run_and_storage_status_before_key() {
 fn panel_actions_describe_local_commands() {
     assert_eq!(
         tests_actions(),
-        "[enter]details [e]vents [r]un [R]failed [o]pen-editor [u]update"
+        "[enter]details [e]vents [r]un [R]run-custom [o]pen-editor [u]update"
     );
     assert_eq!(info_actions(), "[d]disk-refresh [D]cleanup [x]tasks");
     assert_eq!(
         disk_cleanup_actions(),
         "[c]cargo-clean [r]refresh [esc]close"
     );
-    assert_eq!(output_actions(), "[/]search [n]ext [N]prev [o]pen-editor");
     assert_eq!(
-        discovery_error_actions(),
-        "[u]retry [/]search [n]ext [N]prev [o]pen-editor [q]quit"
+        output_actions("[/]search<[            ]>"),
+        "[/]search<[            ]> [o]pen-editor"
     );
+    assert_eq!(
+        discovery_error_actions("[/]search<[            ]> [o]pen-editor"),
+        "[u]retry [/]search<[            ]> [o]pen-editor [q]quit"
+    );
+}
+
+#[test]
+fn custom_run_options_render_values_without_accidental_editors() {
+    let app = app_with_tree(Tree::from_tests(Vec::new()));
+    let theme = Theme::dark();
+    let lines = custom_run_lines(&app.custom_run, &theme, 100);
+    let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+
+    assert!(text.contains("> scope          selected            # selected, workspace, failed"));
+    assert!(text.contains("  profile        default             # default"));
+    assert!(text.contains("  filterset      none                # none, custom"));
+    assert!(text.contains("  flaky          profile             # profile, pass, fail"));
+    assert!(!text.contains("[_"));
+
+    let hint_columns = lines
+        .iter()
+        .filter_map(|line| line_text(line).find('#'))
+        .collect::<Vec<_>>();
+    assert!(hint_columns.iter().all(|column| *column == hint_columns[0]));
+
+    let narrow = custom_run_lines(&app.custom_run, &theme, 32)
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(narrow.contains("# s..."));
+}
+
+#[test]
+fn custom_run_modal_places_command_below_options() {
+    let app = app_with_tree(Tree::from_tests(Vec::new()));
+    let theme = Theme::dark();
+    let lines = custom_run_modal_lines(&app, &theme, 100);
+    let rendered = lines.iter().map(line_text).collect::<Vec<_>>();
+    let stress_index = rendered
+        .iter()
+        .position(|line| line.contains("stress-duration"))
+        .expect("stress duration option");
+    let command_index = rendered
+        .iter()
+        .position(|line| line == "Command")
+        .expect("command heading");
+
+    assert!(command_index > stress_index);
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line.contains("cargo nextest run"))
+    );
+    assert!(
+        !rendered
+            .iter()
+            .any(|line| line.contains("Detected Profiles"))
+    );
+    assert!(!rendered.iter().any(|line| line.contains("Filter Presets")));
 }
 
 #[test]
@@ -378,7 +452,7 @@ fn help_text_sorts_commands_alpha_numerically_within_groups() {
         &[
             "next or previous failure",
             "open selected test source",
-            "rerun failures",
+            "custom run",
             "run selected scope",
             "update test list",
         ],
@@ -439,6 +513,7 @@ fn tree_leading_fields_have_no_status_gap() {
         full_name: "tests::case".to_owned(),
         status: TestStatus::Pending,
         ignored: false,
+        ignore_reason: None,
     }]);
 
     assert_eq!(
@@ -465,6 +540,7 @@ fn running_duration_field_rolls_up_to_parent_rows() {
         full_name: "tests::case".to_owned(),
         status: TestStatus::Pending,
         ignored: false,
+        ignore_reason: None,
     }]);
     tree.start_test(&TestKey {
         binary_id: Some("demo::demo".to_owned()),
@@ -507,6 +583,7 @@ fn test_details_modal_includes_live_info_and_manual_command() {
         full_name: "tests::case one".to_owned(),
         status: TestStatus::Pending,
         ignored: true,
+        ignore_reason: Some("fixture ignored test".to_owned()),
     };
     let key = test.key.clone();
     let mut app = app_with_tree(Tree::from_tests(vec![test.clone()]));
@@ -534,7 +611,7 @@ fn test_details_modal_includes_live_info_and_manual_command() {
     assert!(text.contains("output   stdout 5 chars"));
     assert!(
         text.contains(
-            "cargo    cargo nextest run -p demo --lib --run-ignored only 'tests::case one'"
+            "cargo    cargo nextest run --run-ignored only -p demo --lib 'tests::case one'"
         )
     );
     assert!(!text.contains("[esc] close"));
@@ -542,7 +619,7 @@ fn test_details_modal_includes_live_info_and_manual_command() {
     test.full_name = "tests::case_two".to_owned();
     assert_eq!(
         manual_test_command(&test),
-        "cargo nextest run -p demo --lib --run-ignored only tests::case_two"
+        "cargo nextest run --run-ignored only -p demo --lib tests::case_two"
     );
 }
 
@@ -564,6 +641,7 @@ fn test_details_modal_for_parent_includes_scoped_run_command() {
         full_name: "tests::case".to_owned(),
         status: TestStatus::Pending,
         ignored: false,
+        ignore_reason: None,
     }]));
     app.tree.select_next();
 
@@ -576,6 +654,36 @@ fn test_details_modal_for_parent_includes_scoped_run_command() {
     assert!(text.contains("kind     package"));
     assert!(text.contains("package  demo"));
     assert!(text.contains("cargo    cargo nextest run -p demo"));
+}
+
+#[test]
+fn test_details_actions_include_snapshot_for_leaf_tests() {
+    let mut app = app_with_tree(Tree::from_tests(vec![DiscoveredTest {
+        key: TestKey {
+            binary_id: Some("demo::demo".to_owned()),
+            event_prefix: Some("demo::demo".to_owned()),
+            name: "tests::case".to_owned(),
+        },
+        package: "demo".to_owned(),
+        binary: "demo".to_owned(),
+        binary_kind: "lib".to_owned(),
+        cwd: PathBuf::from("."),
+        source_path: None,
+        module: Some("tests".to_owned()),
+        name: "case".to_owned(),
+        full_name: "tests::case".to_owned(),
+        status: TestStatus::Pending,
+        ignored: false,
+        ignore_reason: None,
+    }]));
+    expand_all(&mut app.tree.root);
+
+    app.tree.select_next();
+    assert_eq!(test_details_actions(&app), "[esc]close");
+
+    app.tree.select_next();
+    app.tree.select_next();
+    assert_eq!(test_details_actions(&app), "[s]snapshot [esc]close");
 }
 
 fn expand_all(node: &mut TestNode) {
@@ -603,6 +711,7 @@ fn running_row_label_shows_spinner_after_name() {
         full_name: "tests::case".to_owned(),
         status: TestStatus::Pending,
         ignored: false,
+        ignore_reason: None,
     }]);
     let key = TestKey {
         binary_id: Some("demo::demo".to_owned()),
@@ -633,16 +742,15 @@ fn running_test_spinner_advances_with_app_tick() {
 }
 
 #[test]
-fn output_status_includes_search_flags() {
+fn output_actions_include_search_flags_when_search_has_value() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.main_output.page_size = 5;
     app.main_output.search.query = "panic".to_owned();
     app.main_output.search.filter = true;
     let text = "panic line";
 
     assert_eq!(
-        app.main_output.status("Output", text, text),
-        "Output <#1-1/1 [s]nap:✓> <search: [panic       ] 0/1 [n]ext [f]ilter:✓ [r]egex:✗ [c]ase-sensitive:✗>"
+        app.main_output.search_actions(text),
+        "[/]search<[panic       ] 0/1 [n/N]ext [f]ilter:✓ [r]egex:✗ [c]ase-sensitive:✗>"
     );
 }
 
@@ -673,14 +781,14 @@ fn output_search_box_marks_active_input() {
 }
 
 #[test]
-fn output_status_shows_submit_and_advanced_hints_while_searching() {
+fn output_actions_show_submit_and_advanced_hints_while_searching() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
     app.main_output.search.draft_query = "panic".to_owned();
     app.main_output.search.input_active = true;
 
     assert_eq!(
-        app.main_output.status("Output", "panic line", "panic line"),
-        "Output <#1-1/1 [s]nap:✓> <search: [panic_      ] 0/0 [enter]submit [C+enter]advanced [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
+        app.main_output.search_actions("panic line"),
+        "[/]search<[panic_      ] 0/0 [enter]submit [C+enter]advanced [n/N]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
     );
 }
 

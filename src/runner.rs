@@ -6,10 +6,11 @@ use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
 use crate::{
-    app::{App, AppEffect},
+    app::{App, AppEffect, OutputOpenRequest, TestSnapshotRequest},
     command::{AppCommand, CommandContext, InputMode, command_for_input},
     config,
     config::AppSettings,
+    diagnostics::{self, ProcessTracker},
     disk_usage,
     editor::EditorConfig,
     git_status,
@@ -204,6 +205,7 @@ fn latest_only_event(event: &QueueEvent, context: CommandContext) -> Option<Late
         | QueueEvent::DiskUsage(_, _)
         | QueueEvent::GitStatus(_)
         | QueueEvent::Run(_)
+        | QueueEvent::TestSnapshot(_)
         | QueueEvent::Xtask(_)
         | QueueEvent::Tick => None,
     }
@@ -283,6 +285,16 @@ fn handle_queue_event(
                 *run_control = None;
             }
         }
+        QueueEvent::TestSnapshot(request) => {
+            match context.editor.open_text(&request.title, &request.text) {
+                Ok(path) => {
+                    app.status = format!("Opened test snapshot {}", path.display());
+                }
+                Err(error) => {
+                    app.status = format!("Failed to open test snapshot: {error}");
+                }
+            }
+        }
         QueueEvent::Xtask(event) => app.apply_xtask_event(event),
         QueueEvent::Tick => app.tick(),
     }
@@ -330,6 +342,12 @@ fn handle_effect(
             } else {
                 app.status = "No run in progress".to_owned();
             }
+        }
+        AppEffect::CaptureTestSnapshot(request) => {
+            let tracker = run_control
+                .as_ref()
+                .map(|control| control.process_tracker.clone());
+            start_test_snapshot(request, tracker, context.queue_tx.clone());
         }
         AppEffect::OpenSource(location) => match context.editor.open_source(&location) {
             Ok(()) => {
@@ -402,6 +420,7 @@ fn apply_runtime_settings(context: &mut RunLoopContext<'_>, settings: &AppSettin
 
 struct RunControl {
     stop_tx: mpsc::UnboundedSender<()>,
+    process_tracker: ProcessTracker,
 }
 
 fn start_discovery(
@@ -474,6 +493,23 @@ fn start_cargo_clean(
             Err(error) => Err(format!("failed to run cargo clean: {error}")),
         };
         let _ = tx.send(QueueEvent::CargoClean(request_id, result)).await;
+    })
+}
+
+fn start_test_snapshot(
+    request: TestSnapshotRequest,
+    process_tracker: Option<ProcessTracker>,
+    tx: QueueSender,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let root_pid = process_tracker.as_ref().and_then(ProcessTracker::root_pid);
+        let text = diagnostics::capture_running_test_snapshot(root_pid).await;
+        let _ = tx
+            .send(QueueEvent::TestSnapshot(OutputOpenRequest {
+                title: request.title,
+                text,
+            }))
+            .await;
     })
 }
 
@@ -555,13 +591,21 @@ fn start_run(
 
     let (run_tx, mut run_rx) = mpsc::channel::<RunEvent>(queue::APP_EVENT_QUEUE_CAPACITY);
     let (stop_tx, stop_rx) = mpsc::unbounded_channel();
+    let process_tracker = ProcessTracker::default();
+    let run_process_tracker = process_tracker.clone();
     tokio::spawn(async move {
         let tailer = test_event_run
             .as_ref()
             .map(|run| test_events::start_tailer(run.id.clone(), run.path.clone(), run_tx.clone()));
         let test_events_path = test_event_run.as_ref().map(|run| run.path.clone());
         if let Err(error) = client
-            .run(request, run_tx.clone(), stop_rx, test_events_path)
+            .run(
+                request,
+                run_tx.clone(),
+                stop_rx,
+                test_events_path,
+                run_process_tracker,
+            )
             .await
         {
             let _ = run_tx
@@ -586,7 +630,10 @@ fn start_run(
         }
     });
 
-    Some(RunControl { stop_tx })
+    Some(RunControl {
+        stop_tx,
+        process_tracker,
+    })
 }
 
 #[cfg(test)]

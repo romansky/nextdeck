@@ -59,12 +59,6 @@ pub struct DiskCleanupState {
     pub last_result: Option<Result<(), String>>,
 }
 
-impl DiskUsageSnapshot {
-    pub fn total_bytes(&self) -> u64 {
-        self.entries.iter().map(|entry| entry.bytes).sum()
-    }
-}
-
 impl DiskUsageState {
     pub fn begin_scan(&mut self) -> RequestId {
         self.request_id = self.request_id.next();

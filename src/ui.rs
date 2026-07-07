@@ -12,6 +12,7 @@ use crate::{
     app::{App, FocusPane},
     command::{CommandGroup, CommandInfo, OverlayMode, command_infos},
     config,
+    custom_run::{CustomRunField, CustomRunFilter, CustomRunState},
     disk_usage::{StorageHealth, format_bytes, format_timestamp_utc},
     nextest::{manual_run_command, manual_test_command},
     output_pane::{
@@ -48,6 +49,7 @@ struct OutputPaneRender<'a> {
 
 struct OutputPaneContent {
     status: String,
+    actions: String,
     lines: Vec<Line<'static>>,
     scroll: u16,
 }
@@ -58,6 +60,13 @@ struct ModalChrome<'a> {
 }
 
 const XTASK_COMMAND_NAME_MAX_WIDTH: usize = 30;
+const FIELD_HINT_VALUE_COLUMN_WIDTH: usize = 18;
+const FIELD_HINT_MIN_COLUMN_WIDTH: usize = 6;
+const FIELD_HINT_GAP_WIDTH: usize = 2;
+const SELECTABLE_FIELD_PREFIX_WIDTH: usize = 2;
+const CUSTOM_RUN_FIELD_LABEL_WIDTH: usize = 15;
+const SETTINGS_FIELD_LABEL_WIDTH: usize = 13;
+const DETAIL_FIELD_LABEL_WIDTH: usize = 9;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AutoColumn {
@@ -197,6 +206,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
             draw_output_search_modal(frame, app.active_output_search(), theme);
         }
         Some(OverlayMode::DiskCleanup) => draw_disk_cleanup_modal(frame, app, theme),
+        Some(OverlayMode::CustomRun) => draw_custom_run_modal(frame, app, theme),
         Some(OverlayMode::Xtasks) => draw_xtasks_modal(frame, app, theme),
         Some(OverlayMode::TestEvents) => draw_test_events_modal(frame, app, theme),
         Some(OverlayMode::TestDetails) => draw_test_details_modal(frame, app, theme),
@@ -290,6 +300,45 @@ fn fit_line_prefix(content: &str, width: usize) -> String {
     format!("{prefix}...")
 }
 
+fn selectable_field_value_width(content_width: usize, label_width: usize, has_hint: bool) -> usize {
+    let prefix_width = SELECTABLE_FIELD_PREFIX_WIDTH + label_width;
+    if has_hint {
+        FIELD_HINT_VALUE_COLUMN_WIDTH.min(
+            content_width
+                .saturating_sub(prefix_width + FIELD_HINT_GAP_WIDTH + FIELD_HINT_MIN_COLUMN_WIDTH),
+        )
+    } else {
+        content_width.saturating_sub(prefix_width)
+    }
+}
+
+fn selectable_field_line(
+    marker: &str,
+    label: &str,
+    label_width: usize,
+    value: &str,
+    hint: Option<&str>,
+    style: Style,
+    hint_style: Style,
+    content_width: usize,
+) -> Line<'static> {
+    let value_width = selectable_field_value_width(content_width, label_width, hint.is_some());
+    let mut spans = vec![
+        Span::styled(format!("{marker} {label:<label_width$}"), style),
+        Span::styled(fit_line_prefix(value.trim_end(), value_width), style),
+    ];
+
+    if let Some(hint) = hint {
+        let used_width =
+            SELECTABLE_FIELD_PREFIX_WIDTH + label_width + value_width + FIELD_HINT_GAP_WIDTH;
+        let hint_width = content_width.saturating_sub(used_width);
+        spans.push(Span::raw(" ".repeat(FIELD_HINT_GAP_WIDTH)));
+        spans.push(Span::styled(fit_line_prefix(hint, hint_width), hint_style));
+    }
+
+    Line::from(spans)
+}
+
 fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let area = centered_rect(62, 58, frame.area());
     if app.discovery.error.is_some() {
@@ -302,13 +351,14 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
                 focused: false,
             },
         );
+        let actions = discovery_error_actions(&output.actions);
         draw_modal_output_lines(
             frame,
             theme,
             area,
             ModalChrome {
                 title: &output.status,
-                actions: Some(discovery_error_actions()),
+                actions: Some(&actions),
             },
             output.lines,
             output.scroll,
@@ -354,10 +404,22 @@ fn draw_test_details_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         area,
         ModalChrome {
             title: "Test Details",
-            actions: Some("[esc]close"),
+            actions: Some(test_details_actions(app)),
         },
         test_details_modal_lines(app, theme),
     );
+}
+
+fn test_details_actions(app: &App) -> &'static str {
+    if app
+        .tree
+        .selected_node()
+        .is_some_and(|node| matches!(node.kind, NodeKind::Test(_)))
+    {
+        "[s]snapshot [esc]close"
+    } else {
+        "[esc]close"
+    }
 }
 
 fn draw_modal_lines(
@@ -514,6 +576,195 @@ fn draw_disk_cleanup_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     );
 }
 
+fn draw_custom_run_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
+    let area = centered_rect(88, 82, frame.area());
+    draw_modal_lines(
+        frame,
+        theme,
+        area,
+        ModalChrome {
+            title: "Custom Run",
+            actions: Some(custom_run_actions(&app.custom_run)),
+        },
+        custom_run_modal_lines(app, theme, area.width.saturating_sub(4) as usize),
+    );
+}
+
+fn custom_run_modal_lines(app: &App, theme: &Theme, content_width: usize) -> Vec<Line<'static>> {
+    let mut lines = custom_run_lines(&app.custom_run, theme, content_width);
+    lines.push(Line::from(""));
+    lines.push(Line::styled("Command", theme.title(false)));
+    match app.custom_run_command_preview() {
+        Ok(command) => lines.push(Line::styled(
+            fit_line_prefix(&command, content_width),
+            theme.accent(),
+        )),
+        Err(error) => lines.push(Line::styled(error, theme.danger())),
+    }
+    lines
+}
+
+fn custom_run_lines(
+    custom_run: &CustomRunState,
+    theme: &Theme,
+    content_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for field in CustomRunField::ALL {
+        lines.push(custom_run_line(custom_run, field, theme, content_width));
+    }
+    lines
+}
+
+fn custom_run_line(
+    custom_run: &CustomRunState,
+    field: CustomRunField,
+    theme: &Theme,
+    content_width: usize,
+) -> Line<'static> {
+    let selected = custom_run.selected == field;
+    let marker = if selected { ">" } else { " " };
+    let style = if selected {
+        theme.selected()
+    } else {
+        theme.text()
+    };
+    let hint = custom_run_options_hint(custom_run, field);
+    let value_width =
+        selectable_field_value_width(content_width, CUSTOM_RUN_FIELD_LABEL_WIDTH, hint.is_some());
+    let value = custom_run_value(custom_run, field, value_width);
+    selectable_field_line(
+        marker,
+        field.label(),
+        CUSTOM_RUN_FIELD_LABEL_WIDTH,
+        &value,
+        hint.as_deref(),
+        style,
+        theme.muted(),
+        content_width,
+    )
+}
+
+fn custom_run_value(
+    custom_run: &CustomRunState,
+    field: CustomRunField,
+    value_width: usize,
+) -> String {
+    if field
+        .edit_field()
+        .is_some_and(|edit_field| custom_run.editing == Some(edit_field))
+    {
+        return format!(
+            "[{}]",
+            custom_run.input.view(value_width.saturating_sub(2), true)
+        );
+    }
+    let value = match field {
+        CustomRunField::Scope => custom_run.scope.label().to_owned(),
+        CustomRunField::Profile => custom_run
+            .selected_profile()
+            .unwrap_or("default")
+            .to_owned(),
+        CustomRunField::Filterset => custom_run_filter_value(custom_run),
+        CustomRunField::Ignored => custom_run.options.ignored.label().to_owned(),
+        CustomRunField::Retries => optional_value(custom_run.options.retries),
+        CustomRunField::FlakyResult => custom_run
+            .options
+            .flaky_result
+            .map(|value| value.label().to_owned())
+            .unwrap_or_else(|| "profile".to_owned()),
+        CustomRunField::FailFast => custom_run.options.fail_fast.label().to_owned(),
+        CustomRunField::MaxFail => custom_run
+            .options
+            .max_fail
+            .clone()
+            .unwrap_or_else(|| "profile".to_owned()),
+        CustomRunField::NoCapture => on_off(custom_run.options.no_capture).to_owned(),
+        CustomRunField::Debugger => custom_run
+            .options
+            .debugger
+            .clone()
+            .unwrap_or_else(|| "off".to_owned()),
+        CustomRunField::StressCount => custom_run
+            .options
+            .stress_count
+            .clone()
+            .unwrap_or_else(|| "off".to_owned()),
+        CustomRunField::StressDuration => custom_run
+            .options
+            .stress_duration
+            .clone()
+            .unwrap_or_else(|| "off".to_owned()),
+    };
+    fit_line_prefix(&value, value_width)
+}
+
+fn custom_run_filter_value(custom_run: &CustomRunState) -> String {
+    match &custom_run.filter {
+        CustomRunFilter::None => "none".to_owned(),
+        CustomRunFilter::Custom(expression) => format!("custom: {expression}"),
+        CustomRunFilter::Preset(index) => custom_run
+            .run_config
+            .filter_presets
+            .get(*index)
+            .map(|preset| format!("preset: {}", preset.name()))
+            .unwrap_or_else(|| "none".to_owned()),
+    }
+}
+
+fn optional_value(value: Option<u32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "profile".to_owned())
+}
+
+fn custom_run_options_hint(custom_run: &CustomRunState, field: CustomRunField) -> Option<String> {
+    let hint = match field {
+        CustomRunField::Scope => "selected, workspace, failed".to_owned(),
+        CustomRunField::Profile => custom_run
+            .run_config
+            .profiles
+            .iter()
+            .map(|profile| profile.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        CustomRunField::Filterset => {
+            if custom_run.run_config.filter_presets.is_empty() {
+                "none, custom".to_owned()
+            } else {
+                let mut options = vec!["none".to_owned()];
+                options.extend(
+                    custom_run
+                        .run_config
+                        .filter_presets
+                        .iter()
+                        .map(|preset| preset.name().to_owned()),
+                );
+                options.push("custom".to_owned());
+                options.join(", ")
+            }
+        }
+        CustomRunField::Ignored => "default, only ignored, all".to_owned(),
+        CustomRunField::Retries => "profile, 0..10".to_owned(),
+        CustomRunField::FlakyResult => "profile, pass, fail".to_owned(),
+        CustomRunField::FailFast => "profile, on, off".to_owned(),
+        CustomRunField::NoCapture => "off, on".to_owned(),
+        CustomRunField::MaxFail
+        | CustomRunField::Debugger
+        | CustomRunField::StressCount
+        | CustomRunField::StressDuration => return None,
+    };
+    (!hint.is_empty()).then_some(format!("# {hint}"))
+}
+
+fn custom_run_actions(custom_run: &CustomRunState) -> &'static str {
+    if custom_run.editing.is_some() {
+        "[enter]save [esc]cancel"
+    } else {
+        "[up/down]select [left/right]change [e]edit [enter]run [esc]close"
+    }
+}
+
 fn disk_cleanup_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::styled("Disk Usage", theme.title(false)),
@@ -545,6 +796,11 @@ fn disk_cleanup_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
             theme.text(),
         ),
     ]);
+
+    if app.disk_cleanup.running {
+        lines.push(Line::from(""));
+        lines.push(Line::styled("cargo clean running...", theme.accent()));
+    }
 
     if let Some(result) = &app.disk_cleanup.last_result {
         lines.push(Line::from(""));
@@ -1015,14 +1271,6 @@ fn xtask_actions(xtasks: &XtaskState) -> &'static str {
 fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let area = centered_rect(72, 62, frame.area());
     let settings = &app.global_settings;
-    let lines = vec![
-        settings_line(app, SettingsField::OpenWith, theme),
-        settings_line(app, SettingsField::TreeWidth, theme),
-        settings_line(app, SettingsField::TreeDuration, theme),
-        settings_line(app, SettingsField::StorageThreshold, theme),
-        settings_line(app, SettingsField::Theme, theme),
-        settings_line(app, SettingsField::ColorBlindMode, theme),
-    ];
     let actions = if settings.open_with_editing {
         "[enter]save [esc]cancel"
     } else {
@@ -1037,6 +1285,15 @@ fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
             actions: Some(actions),
         },
     );
+    let content_width = inner.width as usize;
+    let lines = vec![
+        settings_line(app, SettingsField::OpenWith, theme, content_width),
+        settings_line(app, SettingsField::TreeWidth, theme, content_width),
+        settings_line(app, SettingsField::TreeDuration, theme, content_width),
+        settings_line(app, SettingsField::StorageThreshold, theme, content_width),
+        settings_line(app, SettingsField::Theme, theme, content_width),
+        settings_line(app, SettingsField::ColorBlindMode, theme, content_width),
+    ];
     let paragraph = Paragraph::new(lines)
         .alignment(Alignment::Left)
         .style(theme.text())
@@ -1044,7 +1301,12 @@ fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     frame.render_widget(paragraph, inner);
 }
 
-fn settings_line(app: &App, field: SettingsField, theme: &Theme) -> Line<'static> {
+fn settings_line(
+    app: &App,
+    field: SettingsField,
+    theme: &Theme,
+    content_width: usize,
+) -> Line<'static> {
     let selected = app.global_settings.selected == field;
     let marker = if selected { ">" } else { " " };
     let value = settings_value(app, field);
@@ -1053,10 +1315,16 @@ fn settings_line(app: &App, field: SettingsField, theme: &Theme) -> Line<'static
     } else {
         theme.text()
     };
-    Line::from(vec![
-        Span::styled(format!("{marker} {:<13}", field.label()), style),
-        Span::styled(value, style),
-    ])
+    selectable_field_line(
+        marker,
+        field.label(),
+        SETTINGS_FIELD_LABEL_WIDTH,
+        &value,
+        None,
+        style,
+        theme.muted(),
+        content_width,
+    )
 }
 
 fn settings_value(app: &App, field: SettingsField) -> String {
@@ -1351,6 +1619,12 @@ fn test_details_modal_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
                 ),
                 detail_line("ignored", bool_label(test.ignored), theme.text(), theme),
                 detail_line(
+                    "ignore",
+                    test.ignore_reason.clone().unwrap_or_else(|| "-".to_owned()),
+                    theme.text(),
+                    theme,
+                ),
+                detail_line(
                     "source",
                     test.source_path
                         .as_ref()
@@ -1502,16 +1776,10 @@ fn storage_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
                 theme.text(),
                 theme,
             ),
-            detail_line(
-                "total",
-                format_bytes(snapshot.total_bytes()),
-                theme.text(),
-                theme,
-            ),
         ]);
         for entry in &snapshot.entries {
             lines.push(detail_line(
-                entry.label,
+                storage_entry_label(&entry.label),
                 format_bytes(entry.bytes),
                 theme.text(),
                 theme,
@@ -1534,6 +1802,14 @@ fn storage_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     }
 
     lines
+}
+
+fn storage_entry_label(label: &str) -> String {
+    if label.starts_with('/') {
+        label.to_owned()
+    } else {
+        format!("/{label}")
+    }
 }
 
 fn storage_status(app: &App) -> &'static str {
@@ -1565,13 +1841,17 @@ fn run_result_style(app: &App, theme: &Theme) -> ratatui::style::Style {
 }
 
 fn detail_line(
-    label: &'static str,
+    label: impl Into<String>,
     value: impl Into<String>,
     value_style: ratatui::style::Style,
     theme: &Theme,
 ) -> Line<'static> {
+    let label = label.into();
     Line::from(vec![
-        Span::styled(format!("{label:<9}"), theme.muted()),
+        Span::styled(
+            format!("{label:<width$}", width = DETAIL_FIELD_LABEL_WIDTH),
+            theme.muted(),
+        ),
         Span::styled(value.into(), value_style),
     ])
 }
@@ -1658,7 +1938,7 @@ fn draw_output_pane(
         area,
         PanelChrome {
             status: &output.status,
-            actions: output_actions(),
+            actions: &output.actions,
         },
         output.lines,
         focused,
@@ -1668,10 +1948,10 @@ fn draw_output_pane(
 
 fn output_pane_content(theme: &Theme, output: OutputPaneRender<'_>) -> OutputPaneContent {
     let output_view = output.state.output_view(&output.source_text);
+    let search_actions = output.state.search_actions(&output.source_text);
     OutputPaneContent {
-        status: output
-            .state
-            .status(&output.label, &output_view.text, &output.source_text),
+        status: output.state.status(&output.label, &output_view.text),
+        actions: output_actions(&search_actions),
         lines: output_lines(&output.state.search, theme, &output_view),
         scroll: output.state.scroll,
     }
@@ -1699,7 +1979,7 @@ fn draw_output_panel(
 }
 
 fn tests_actions() -> &'static str {
-    "[enter]details [e]vents [r]un [R]failed [o]pen-editor [u]update"
+    "[enter]details [e]vents [r]un [R]run-custom [o]pen-editor [u]update"
 }
 
 fn info_actions() -> &'static str {
@@ -1710,8 +1990,8 @@ fn disk_cleanup_actions() -> &'static str {
     "[c]cargo-clean [r]refresh [esc]close"
 }
 
-fn output_actions() -> &'static str {
-    "[/]search [n]ext [N]prev [o]pen-editor"
+fn output_actions(search_actions: &str) -> String {
+    format!("{search_actions} [o]pen-editor")
 }
 
 fn test_events_actions(test_events: &TestEventsState) -> &'static str {
@@ -1721,8 +2001,8 @@ fn test_events_actions(test_events: &TestEventsState) -> &'static str {
     }
 }
 
-fn discovery_error_actions() -> &'static str {
-    "[u]retry [/]search [n]ext [N]prev [o]pen-editor [q]quit"
+fn discovery_error_actions(output_actions: &str) -> String {
+    format!("[u]retry {output_actions} [q]quit")
 }
 
 fn info_status(_app: &App) -> String {

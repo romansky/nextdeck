@@ -44,17 +44,20 @@ impl OutputPaneState {
         self.search.filtered_view(source_text)
     }
 
-    pub fn status(&self, label: &str, text: &str, source_text: &str) -> String {
+    pub fn status(&self, label: &str, text: &str) -> String {
         let total = output_line_count(text);
-        let search = self.search.view(source_text).title_fragment();
         let top = self.render_scroll(text) as usize;
         let visible = self.page_size.max(1) as usize;
         let bottom = top.saturating_add(visible).min(total);
         format!(
-            "{label} <#{}-{bottom}/{total} [s]nap:{}> {search}",
+            "{label} <#{}-{bottom}/{total} [s]nap:{}>",
             top + 1,
             bool_symbol(self.follow)
         )
+    }
+
+    pub fn search_actions(&self, source_text: &str) -> String {
+        self.search.view(source_text).actions_fragment()
     }
 
     pub fn render_scroll(&self, text: &str) -> u16 {
@@ -200,6 +203,7 @@ impl SearchModalFocus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchBoxView {
     pub box_text: String,
+    pub has_value: bool,
     pub match_summary: Option<(usize, usize)>,
     pub input_active: bool,
     pub filter: bool,
@@ -209,7 +213,11 @@ pub struct SearchBoxView {
 }
 
 impl SearchBoxView {
-    pub fn title_fragment(&self) -> String {
+    pub fn actions_fragment(&self) -> String {
+        if !self.has_value {
+            return format!("[/]search<{}>", self.box_text);
+        }
+
         let summary = self
             .match_summary
             .map(|(current, total)| format!(" {current}/{total}"))
@@ -221,7 +229,7 @@ impl SearchBoxView {
             ""
         };
         format!(
-            "<search: {}{}{}{} [n]ext [f]ilter:{} [r]egex:{} [c]ase-sensitive:{}>",
+            "[/]search<{}{}{}{} [n/N]ext [f]ilter:{} [r]egex:{} [c]ase-sensitive:{}>",
             self.box_text,
             summary,
             invalid,
@@ -323,8 +331,14 @@ pub enum SearchEditorKey {
 
 impl OutputSearchState {
     pub fn view(&self, text: &str) -> SearchBoxView {
+        let field_value = if self.input_active || self.modal_open {
+            &self.draft_query
+        } else {
+            &self.query
+        };
         SearchBoxView {
             box_text: self.box_text(SEARCH_BOX_WIDTH),
+            has_value: !field_value.is_empty(),
             match_summary: if self.query.is_empty() {
                 None
             } else {

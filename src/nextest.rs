@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs, io,
     path::{Path, PathBuf},
     process::{ExitStatus, Stdio},
@@ -20,6 +20,7 @@ use tokio::{
 };
 
 use crate::{
+    diagnostics::ProcessTracker,
     source,
     tree::{DiscoveredTest, TestKey, TestStatus},
 };
@@ -34,6 +35,16 @@ pub struct NextestClient {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RunRequest {
     pub scope: RunScope,
+    pub options: RunOptions,
+}
+
+impl RunRequest {
+    pub fn new(scope: RunScope) -> Self {
+        Self {
+            scope,
+            options: RunOptions::default(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -50,6 +61,89 @@ pub enum RunScope {
     },
     Test(TestSelector),
     Failed {
+        tests: Vec<TestSelector>,
+    },
+    TestSet {
+        label: String,
+        tests: Vec<TestSelector>,
+    },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RunOptions {
+    pub profile: Option<String>,
+    pub filterset: Option<String>,
+    pub ignored: RunIgnored,
+    pub retries: Option<u32>,
+    pub flaky_result: Option<FlakyResult>,
+    pub fail_fast: FailFast,
+    pub max_fail: Option<String>,
+    pub no_capture: bool,
+    pub debugger: Option<String>,
+    pub stress_count: Option<String>,
+    pub stress_duration: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RunIgnored {
+    #[default]
+    Default,
+    Only,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FlakyResult {
+    Pass,
+    Fail,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FailFast {
+    #[default]
+    Profile,
+    On,
+    Off,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DiscoveryOutput {
+    pub tests: Vec<DiscoveredTest>,
+    pub run_config: RunConfig,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunConfig {
+    pub profiles: Vec<NextestProfile>,
+    pub filter_presets: Vec<FilterPreset>,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self {
+            profiles: vec![NextestProfile {
+                name: "default".to_owned(),
+                default_filter: None,
+            }],
+            filter_presets: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NextestProfile {
+    pub name: String,
+    pub default_filter: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FilterPreset {
+    Filterset {
+        name: String,
+        expression: String,
+    },
+    IgnoredReason {
+        reason: String,
         tests: Vec<TestSelector>,
     },
 }
@@ -98,6 +192,136 @@ impl TestSelector {
     }
 }
 
+impl RunOptions {
+    fn nextest_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(profile) = non_empty_option(&self.profile)
+            && profile != "default"
+        {
+            args.extend(["-P".to_owned(), profile.to_owned()]);
+        }
+        if let Some(filterset) = non_empty_option(&self.filterset) {
+            args.extend(["-E".to_owned(), filterset.to_owned()]);
+        }
+        match self.ignored {
+            RunIgnored::Default => {}
+            RunIgnored::Only => args.extend(["--run-ignored".to_owned(), "only".to_owned()]),
+            RunIgnored::All => args.extend(["--run-ignored".to_owned(), "all".to_owned()]),
+        }
+        if let Some(retries) = self.retries {
+            args.extend(["--retries".to_owned(), retries.to_string()]);
+        }
+        if let Some(flaky_result) = self.flaky_result {
+            args.extend([
+                "--flaky-result".to_owned(),
+                flaky_result.nextest_value().to_owned(),
+            ]);
+        }
+        match self.fail_fast {
+            FailFast::Profile => {}
+            FailFast::On => args.push("--fail-fast".to_owned()),
+            FailFast::Off => args.push("--no-fail-fast".to_owned()),
+        }
+        if let Some(max_fail) = non_empty_option(&self.max_fail) {
+            args.extend(["--max-fail".to_owned(), max_fail.to_owned()]);
+        }
+        if self.no_capture {
+            args.push("--no-capture".to_owned());
+        }
+        if let Some(debugger) = non_empty_option(&self.debugger) {
+            args.extend(["--debugger".to_owned(), debugger.to_owned()]);
+        }
+        if let Some(stress_count) = non_empty_option(&self.stress_count) {
+            args.extend(["--stress-count".to_owned(), stress_count.to_owned()]);
+        }
+        if let Some(stress_duration) = non_empty_option(&self.stress_duration) {
+            args.extend(["--stress-duration".to_owned(), stress_duration.to_owned()]);
+        }
+        args
+    }
+}
+
+impl RunIgnored {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Only => "only ignored",
+            Self::All => "all",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Default => Self::Only,
+            Self::Only => Self::All,
+            Self::All => Self::Default,
+        }
+    }
+
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::Default => Self::All,
+            Self::Only => Self::Default,
+            Self::All => Self::Only,
+        }
+    }
+}
+
+impl FlakyResult {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+        }
+    }
+
+    const fn nextest_value(self) -> &'static str {
+        self.label()
+    }
+}
+
+impl FailFast {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Profile => "profile",
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Profile => Self::On,
+            Self::On => Self::Off,
+            Self::Off => Self::Profile,
+        }
+    }
+
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::Profile => Self::Off,
+            Self::On => Self::Profile,
+            Self::Off => Self::On,
+        }
+    }
+}
+
+impl FilterPreset {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Filterset { name, .. } => name,
+            Self::IgnoredReason { reason, .. } => reason,
+        }
+    }
+}
+
+fn non_empty_option(value: &Option<String>) -> Option<&str> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
 impl RunScope {
     pub fn label(&self) -> String {
         match self {
@@ -107,6 +331,7 @@ impl RunScope {
             Self::Module { path, .. } => format!("module {path}"),
             Self::Test(test) => format!("test {}", test.name),
             Self::Failed { tests } => format!("{} failed test(s)", tests.len()),
+            Self::TestSet { label, .. } => label.clone(),
         }
     }
 
@@ -125,6 +350,7 @@ impl RunScope {
             }
             Self::Test(selector) => selector.matches_test(test),
             Self::Failed { tests } => tests.iter().any(|selector| selector.matches_test(test)),
+            Self::TestSet { tests, .. } => tests.iter().any(|selector| selector.matches_test(test)),
         }
     }
 
@@ -152,11 +378,16 @@ impl RunScope {
                 vec![args]
             }
             Self::Failed { tests } => failed_nextest_arg_sets(tests),
+            Self::TestSet { tests, .. } => grouped_test_arg_sets(tests),
         }
     }
 }
 
 fn failed_nextest_arg_sets(tests: &[TestSelector]) -> Vec<Vec<String>> {
+    grouped_test_arg_sets(tests)
+}
+
+fn grouped_test_arg_sets(tests: &[TestSelector]) -> Vec<Vec<String>> {
     let mut grouped: BTreeMap<TargetSelector, Vec<String>> = BTreeMap::new();
     for test in tests {
         let names = grouped.entry(test.target.clone()).or_default();
@@ -189,25 +420,25 @@ fn binary_nextest_args(package: &str, name: &str, kind: &str) -> Vec<String> {
 }
 
 pub fn manual_test_command(test: &DiscoveredTest) -> String {
-    let mut args = vec!["cargo".to_owned(), "nextest".to_owned(), "run".to_owned()];
-    args.extend(binary_nextest_args(
-        &test.package,
-        &test.binary,
-        &test.binary_kind,
-    ));
+    let mut request = RunRequest::new(RunScope::Test(TestSelector::from_test(test)));
     if test.ignored {
-        args.extend(["--run-ignored".to_owned(), "only".to_owned()]);
+        request.options.ignored = RunIgnored::Only;
     }
-    args.push(test.full_name.clone());
-    shell_command(args)
+    manual_run_request_command(&request)
 }
 
 pub fn manual_run_command(scope: &RunScope) -> String {
-    scope
+    manual_run_request_command(&RunRequest::new(scope.clone()))
+}
+
+pub fn manual_run_request_command(request: &RunRequest) -> String {
+    request
+        .scope
         .nextest_arg_sets()
         .into_iter()
         .map(|scope_args| {
             let mut args = vec!["cargo".to_owned(), "nextest".to_owned(), "run".to_owned()];
+            args.extend(request.options.nextest_args());
             args.extend(scope_args);
             shell_command(args)
         })
@@ -271,7 +502,7 @@ pub enum RunEvent {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum DiscoveryEvent {
-    Finished(Result<Vec<DiscoveredTest>, String>),
+    Finished(Result<DiscoveryOutput, String>),
 }
 
 impl NextestClient {
@@ -305,7 +536,7 @@ impl NextestClient {
             .map(|manifest_dir| cargo_project_root_for_manifest_dir(manifest_dir.to_path_buf()))
     }
 
-    pub async fn discover(&self) -> Result<Vec<DiscoveredTest>> {
+    pub async fn discover(&self) -> Result<DiscoveryOutput> {
         let mut command = self.list_command();
         let output = command
             .kill_on_drop(true)
@@ -327,7 +558,10 @@ impl NextestClient {
 
         let summary = serde_json::from_slice::<TestListSummary>(&output.stdout)
             .context("parsing cargo nextest list JSON")?;
-        Ok(summary_to_tests(summary))
+        let mut tests = summary_to_tests(summary);
+        annotate_ignore_reasons(&mut tests);
+        let run_config = self.discover_run_config(&tests);
+        Ok(DiscoveryOutput { tests, run_config })
     }
 
     pub async fn run(
@@ -336,6 +570,7 @@ impl NextestClient {
         tx: mpsc::Sender<RunEvent>,
         mut stop_rx: mpsc::UnboundedReceiver<()>,
         test_events_path: Option<PathBuf>,
+        process_tracker: ProcessTracker,
     ) -> Result<()> {
         let arg_sets = request.scope.nextest_arg_sets();
         let total_runs = arg_sets.len();
@@ -344,7 +579,7 @@ impl NextestClient {
             if total_runs > 1 {
                 let _ = tx
                     .send(RunEvent::RunnerOutput(format!(
-                        "Starting failed test group {}/{}",
+                        "Starting test group {}/{}",
                         index + 1,
                         total_runs
                     )))
@@ -352,7 +587,14 @@ impl NextestClient {
             }
 
             match self
-                .run_once(scope_args, &tx, &mut stop_rx, test_events_path.as_ref())
+                .run_once(
+                    scope_args,
+                    &request.options,
+                    &tx,
+                    &mut stop_rx,
+                    test_events_path.as_ref(),
+                    &process_tracker,
+                )
                 .await?
             {
                 RunProcessOutcome::Finished(status) => {
@@ -374,11 +616,13 @@ impl NextestClient {
     async fn run_once(
         &self,
         scope_args: Vec<String>,
+        options: &RunOptions,
         tx: &mpsc::Sender<RunEvent>,
         stop_rx: &mut mpsc::UnboundedReceiver<()>,
         test_events_path: Option<&PathBuf>,
+        process_tracker: &ProcessTracker,
     ) -> Result<RunProcessOutcome> {
-        let mut command = self.run_command(scope_args, test_events_path);
+        let mut command = self.run_command(scope_args, options, test_events_path);
         configure_run_command(&mut command);
         let mut child = command
             .kill_on_drop(true)
@@ -387,6 +631,7 @@ impl NextestClient {
             .stderr(Stdio::piped())
             .spawn()
             .context("spawning cargo nextest run")?;
+        process_tracker.set(child.id());
 
         let stdout = child.stdout.take().context("nextest stdout unavailable")?;
         let stderr = child.stderr.take().context("nextest stderr unavailable")?;
@@ -466,6 +711,7 @@ impl NextestClient {
                 }
             }
         };
+        process_tracker.clear();
         stdout_task.await.context("joining stdout task")??;
         stderr_task.await.context("joining stderr task")??;
         if stopped {
@@ -488,7 +734,12 @@ impl NextestClient {
         command
     }
 
-    fn run_command(&self, scope_args: Vec<String>, test_events_path: Option<&PathBuf>) -> Command {
+    fn run_command(
+        &self,
+        scope_args: Vec<String>,
+        options: &RunOptions,
+        test_events_path: Option<&PathBuf>,
+    ) -> Command {
         let mut command = Command::new("cargo");
         if let Some(path) = &self.current_dir {
             command.current_dir(path);
@@ -513,12 +764,28 @@ impl NextestClient {
             "--no-input-handler",
         ]);
         command.args(&self.passthrough_args);
+        command.args(options.nextest_args());
         command.args(scope_args);
         command.env("NEXTEST_EXPERIMENTAL_LIBTEST_JSON", "1");
         if let Some(path) = test_events_path {
             command.env(nextdeck_test_events::ENV_VAR, path);
         }
         command
+    }
+
+    fn discover_run_config(&self, tests: &[DiscoveredTest]) -> RunConfig {
+        let profiles = self
+            .project_dir()
+            .and_then(|project_dir| {
+                read_nextest_profiles(&project_dir.join(".config/nextest.toml"))
+            })
+            .unwrap_or_else(|| RunConfig::default().profiles);
+        let mut filter_presets = profile_filter_presets(&profiles);
+        filter_presets.extend(ignored_reason_presets(tests));
+        RunConfig {
+            profiles,
+            filter_presets,
+        }
     }
 }
 
@@ -645,6 +912,144 @@ fn manifest_has_workspace_table(path: &Path) -> bool {
     })
 }
 
+fn read_nextest_profiles(path: &Path) -> Option<Vec<NextestProfile>> {
+    let text = fs::read_to_string(path).ok()?;
+    Some(parse_nextest_profiles(&text))
+}
+
+fn parse_nextest_profiles(text: &str) -> Vec<NextestProfile> {
+    let mut profiles = Vec::<NextestProfile>::new();
+    let mut current_profile = None::<String>;
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.starts_with('[') {
+            current_profile = parse_profile_section(line);
+            if let Some(name) = &current_profile {
+                upsert_profile(&mut profiles, name.clone(), None);
+            }
+            continue;
+        }
+
+        let Some(profile_name) = &current_profile else {
+            continue;
+        };
+        if let Some(default_filter) = parse_toml_string_value(line, "default-filter") {
+            upsert_profile(&mut profiles, profile_name.clone(), Some(default_filter));
+        }
+    }
+
+    upsert_profile(&mut profiles, "default".to_owned(), None);
+    profiles.sort_by(|left, right| {
+        profile_sort_key(&left.name)
+            .cmp(&profile_sort_key(&right.name))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    profiles
+}
+
+fn parse_profile_section(line: &str) -> Option<String> {
+    let body = line.strip_prefix('[')?.strip_suffix(']')?;
+    let name = body.strip_prefix("profile.")?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    if let Some(quoted) = name
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    {
+        return Some(quoted.to_owned());
+    }
+    if name.contains('.') {
+        return None;
+    }
+    Some(name.to_owned())
+}
+
+fn parse_toml_string_value(line: &str, key: &str) -> Option<String> {
+    let (raw_key, raw_value) = line.split_once('=')?;
+    if raw_key.trim() != key {
+        return None;
+    }
+    let value = raw_value.trim();
+    let value = value.strip_prefix('"')?;
+    let end = value.find('"')?;
+    Some(value[..end].replace("\\\"", "\"").replace("\\\\", "\\"))
+}
+
+fn upsert_profile(
+    profiles: &mut Vec<NextestProfile>,
+    name: String,
+    default_filter: Option<String>,
+) {
+    if let Some(profile) = profiles.iter_mut().find(|profile| profile.name == name) {
+        if default_filter.is_some() {
+            profile.default_filter = default_filter;
+        }
+        return;
+    }
+    profiles.push(NextestProfile {
+        name,
+        default_filter,
+    });
+}
+
+fn profile_sort_key(name: &str) -> (usize, &str) {
+    if name == "default" {
+        (0, name)
+    } else {
+        (1, name)
+    }
+}
+
+fn profile_filter_presets(profiles: &[NextestProfile]) -> Vec<FilterPreset> {
+    profiles
+        .iter()
+        .filter_map(|profile| {
+            let expression = profile.default_filter.as_ref()?;
+            Some(FilterPreset::Filterset {
+                name: format!("profile {} default-filter", profile.name),
+                expression: expression.clone(),
+            })
+        })
+        .collect()
+}
+
+fn ignored_reason_presets(tests: &[DiscoveredTest]) -> Vec<FilterPreset> {
+    let mut by_reason = BTreeMap::<String, BTreeSet<TestSelector>>::new();
+    for test in tests.iter().filter(|test| test.ignored) {
+        let Some(reason) = test
+            .ignore_reason
+            .as_ref()
+            .filter(|reason| !reason.is_empty())
+        else {
+            continue;
+        };
+        by_reason
+            .entry(reason.clone())
+            .or_default()
+            .insert(TestSelector::from_test(test));
+    }
+
+    by_reason
+        .into_iter()
+        .map(|(reason, tests)| FilterPreset::IgnoredReason {
+            reason,
+            tests: tests.into_iter().collect(),
+        })
+        .collect()
+}
+
+fn annotate_ignore_reasons(tests: &mut [DiscoveredTest]) {
+    for test in tests.iter_mut().filter(|test| test.ignored) {
+        let Some(path) = &test.source_path else {
+            continue;
+        };
+        test.ignore_reason = source::ignore_reason_for_test(path, &test.full_name);
+    }
+}
+
 fn summary_to_tests(summary: TestListSummary) -> Vec<DiscoveredTest> {
     let mut tests = Vec::with_capacity(summary.test_count);
     for (binary_id, suite) in summary.rust_suites {
@@ -681,6 +1086,7 @@ fn summary_to_tests(summary: TestListSummary) -> Vec<DiscoveredTest> {
                 full_name,
                 status,
                 ignored: case.ignored,
+                ignore_reason: None,
             });
         }
     }

@@ -18,6 +18,7 @@ fn builds_package_module_test_tree() {
         full_name: "a::b::works".to_owned(),
         status: TestStatus::Pending,
         ignored: false,
+        ignore_reason: None,
     }]);
 
     assert_eq!(tree.root.children[0].label, "demo");
@@ -274,6 +275,7 @@ fn integration_test_targets_are_grouped_under_binary_name() {
         full_name: "top_level_test".to_owned(),
         status: TestStatus::Pending,
         ignored: false,
+        ignore_reason: None,
     }]);
 
     assert_eq!(tree.root.children[0].label, "demo");
@@ -791,6 +793,7 @@ fn discovered_test(binary_id: &str, package: &str, module: &str, name: &str) -> 
         full_name: format!("{module}::{name}"),
         status: TestStatus::Pending,
         ignored: false,
+        ignore_reason: None,
     }
 }
 

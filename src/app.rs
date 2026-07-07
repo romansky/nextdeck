@@ -3,11 +3,15 @@ use std::time::{Duration, Instant};
 use crate::{
     command::{AppCommand, CommandContext, CommandFocus, InputMode, OverlayMode},
     config::{self, AppSettings, STORAGE_LOW_SPACE_THRESHOLD_STEP_GB, TREE_WIDTH_STEP_PERCENT},
+    custom_run::CustomRunState,
     disk_usage::{DiskCleanupState, DiskUsageSnapshot, DiskUsageState},
     editor::SourceLocation,
     git_status::GitStatus,
     input_field::InputFieldInput,
-    nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope, TargetSelector, TestSelector},
+    nextest::{
+        DiscoveryEvent, DiscoveryOutput, RunEvent, RunRequest, RunScope, TargetSelector,
+        TestSelector, manual_run_request_command,
+    },
     output_pane::{
         OutputPaneState, OutputSearchState, OutputView, SearchDirection, SearchEditorInput,
         SearchEditorKey, SearchModalFocus,
@@ -18,7 +22,10 @@ use crate::{
     source,
     state::StatusCounts,
     test_events::{TestEventRun, TestEventsFocus, TestEventsState},
-    tree::{DiscoveredTest, NodeId, NodeKind, SelectionChange, TestNode, TestViewFilter, Tree},
+    tree::{
+        DiscoveredTest, NodeId, NodeKind, SelectionChange, TestNode, TestStatus, TestViewFilter,
+        Tree,
+    },
     xtask::{XtaskEvent, XtaskRunRequest, XtaskState},
 };
 
@@ -52,6 +59,7 @@ pub struct App {
     pub git_status: GitStatus,
     pub disk_usage: DiskUsageState,
     pub disk_cleanup: DiskCleanupState,
+    pub custom_run: CustomRunState,
     pub xtasks: XtaskState,
     pub test_events: TestEventsState,
     pub global_settings: GlobalSettingsState,
@@ -134,6 +142,7 @@ pub enum AppEffect {
     StartDiscovery(RequestId),
     StartRun(RunRequest),
     StopRun,
+    CaptureTestSnapshot(TestSnapshotRequest),
     OpenSource(SourceLocation),
     OpenOutput(OutputOpenRequest),
     RefreshDiskUsage(RequestId),
@@ -146,6 +155,11 @@ pub enum AppEffect {
 pub struct OutputOpenRequest {
     pub title: String,
     pub text: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TestSnapshotRequest {
+    pub title: String,
 }
 
 impl App {
@@ -167,6 +181,7 @@ impl App {
             git_status: GitStatus::unknown(),
             disk_usage: DiskUsageState::default(),
             disk_cleanup: DiskCleanupState::default(),
+            custom_run: CustomRunState::default(),
             xtasks: XtaskState::default(),
             test_events: TestEventsState::default(),
             global_settings: GlobalSettingsState::default(),
@@ -271,6 +286,8 @@ impl App {
             Some(OverlayMode::Settings)
         } else if self.disk_cleanup.modal_open {
             Some(OverlayMode::DiskCleanup)
+        } else if self.custom_run.modal_open {
+            Some(OverlayMode::CustomRun)
         } else if self.xtasks.modal_open {
             Some(OverlayMode::Xtasks)
         } else if self.test_events.modal_open {
@@ -291,6 +308,10 @@ impl App {
             Some(OverlayMode::Settings) if self.global_settings.open_with_editing => {
                 InputMode::SettingsOpenWith
             }
+            Some(OverlayMode::CustomRun) if self.custom_run.editing.is_some() => {
+                InputMode::CustomRunInput
+            }
+            Some(OverlayMode::CustomRun) => InputMode::CustomRunModal,
             Some(OverlayMode::Settings) => InputMode::SettingsModal,
             Some(OverlayMode::DiskCleanup) => InputMode::DiskCleanupModal,
             Some(OverlayMode::Xtasks) if self.xtasks.output.search.modal_open => {
@@ -361,9 +382,11 @@ impl App {
             return false;
         }
         match event {
-            DiscoveryEvent::Finished(Ok(tests)) => {
+            DiscoveryEvent::Finished(Ok(output)) => {
+                let DiscoveryOutput { tests, run_config } = output;
                 let count = tests.len();
                 self.tree.refresh_from_tests(tests);
+                self.custom_run.update_run_config(run_config);
                 self.tree_scroll = 0;
                 self.reset_output_for_source_change();
                 self.discovery.running = false;
@@ -752,23 +775,53 @@ impl App {
                     self.status = "Discovering tests".to_owned();
                     AppEffect::None
                 } else {
-                    AppEffect::StartRun(RunRequest {
-                        scope: self.selected_scope(),
-                    })
+                    AppEffect::StartRun(RunRequest::new(self.selected_scope()))
                 }
             }
-            AppCommand::RunFailed => {
-                if self.discovery.running {
-                    self.status = "Discovering tests".to_owned();
-                    return AppEffect::None;
-                }
-                if let Some(scope) = self.failed_scope() {
-                    AppEffect::StartRun(RunRequest { scope })
-                } else {
-                    self.status = "No failed tests to rerun".to_owned();
-                    AppEffect::None
-                }
+            AppCommand::OpenCustomRun => {
+                self.open_custom_run();
+                AppEffect::None
             }
+            AppCommand::CloseCustomRun => {
+                self.close_custom_run();
+                AppEffect::None
+            }
+            AppCommand::CustomRunNext => {
+                self.custom_run.next_field();
+                AppEffect::None
+            }
+            AppCommand::CustomRunPrevious => {
+                self.custom_run.previous_field();
+                AppEffect::None
+            }
+            AppCommand::CustomRunAdjustLeft => {
+                self.custom_run.adjust_selected(-1);
+                AppEffect::None
+            }
+            AppCommand::CustomRunAdjustRight => {
+                self.custom_run.adjust_selected(1);
+                AppEffect::None
+            }
+            AppCommand::CustomRunActivate => {
+                if !self.custom_run.begin_edit_selected() {
+                    self.custom_run.adjust_selected(1);
+                }
+                AppEffect::None
+            }
+            AppCommand::CustomRunEdit(input) => {
+                self.custom_run.edit_input(input);
+                AppEffect::None
+            }
+            AppCommand::CommitCustomRunEdit => {
+                self.custom_run.commit_edit();
+                AppEffect::None
+            }
+            AppCommand::CancelCustomRunEdit => {
+                self.custom_run.cancel_edit();
+                AppEffect::None
+            }
+            AppCommand::RunCustom => self.run_custom_effect(),
+            AppCommand::CaptureTestSnapshot => self.capture_test_snapshot_effect(),
             AppCommand::OpenSource => self.open_source_effect(),
             AppCommand::OpenOutput => self.open_output_effect(),
             AppCommand::OpenSettings => {
@@ -1286,6 +1339,16 @@ impl App {
         }
     }
 
+    pub fn custom_run_request(&self) -> Result<RunRequest, String> {
+        self.custom_run
+            .build_request(self.selected_scope(), self.failed_scope())
+    }
+
+    pub fn custom_run_command_preview(&self) -> Result<String, String> {
+        self.custom_run_request()
+            .map(|request| manual_run_request_command(&request))
+    }
+
     pub fn begin_run(&mut self, request: &RunRequest) -> Option<RequestId> {
         if self.running {
             self.status = "Run already in progress".to_owned();
@@ -1427,6 +1490,45 @@ impl App {
         }
     }
 
+    fn open_custom_run(&mut self) {
+        if self.discovery.running {
+            self.status = "Discovering tests".to_owned();
+            return;
+        }
+        if self.running {
+            self.status = "Run in progress".to_owned();
+            return;
+        }
+        self.custom_run.open();
+        self.status = "Custom run opened".to_owned();
+    }
+
+    fn close_custom_run(&mut self) {
+        self.custom_run.close();
+        self.status = "Custom run closed".to_owned();
+    }
+
+    fn run_custom_effect(&mut self) -> AppEffect {
+        if self.discovery.running {
+            self.status = "Discovering tests".to_owned();
+            return AppEffect::None;
+        }
+        if self.running {
+            self.status = "Run in progress".to_owned();
+            return AppEffect::None;
+        }
+        match self.custom_run_request() {
+            Ok(request) => {
+                self.custom_run.close();
+                AppEffect::StartRun(request)
+            }
+            Err(error) => {
+                self.status = error;
+                AppEffect::None
+            }
+        }
+    }
+
     fn open_source_effect(&mut self) -> AppEffect {
         let Some(location) = self.selected_source_location() else {
             self.status = "No source path available for selection".to_owned();
@@ -1434,6 +1536,29 @@ impl App {
         };
         self.status = format!("Opening {}", location.path.display());
         AppEffect::OpenSource(location)
+    }
+
+    fn capture_test_snapshot_effect(&mut self) -> AppEffect {
+        let Some(node) = self.tree.selected_node() else {
+            self.status = "No selection".to_owned();
+            return AppEffect::None;
+        };
+        if !matches!(node.kind, NodeKind::Test(_)) {
+            self.status = "Snapshot is available for a single test".to_owned();
+            return AppEffect::None;
+        }
+        if !self.running {
+            self.status = "No test run in progress".to_owned();
+            return AppEffect::None;
+        }
+        if node.status != TestStatus::Running {
+            self.status = "Selected test is not currently running".to_owned();
+            return AppEffect::None;
+        }
+
+        let title = format!("Running test snapshot: {}", self.tree.selected_path());
+        self.status = "Capturing running test snapshot...".to_owned();
+        AppEffect::CaptureTestSnapshot(TestSnapshotRequest { title })
     }
 
     fn open_output_effect(&mut self) -> AppEffect {
@@ -1605,6 +1730,11 @@ impl App {
         self.run.active = true;
         self.run.phase = RunPhase::Building;
         self.run.run_id = None;
+        self.run.profile = request
+            .options
+            .profile
+            .clone()
+            .unwrap_or_else(|| "default".to_owned());
         self.run.scope = request.scope.clone();
         self.run.outcome = RunOutcome::Running;
         self.run.exit_code = None;
