@@ -10,6 +10,7 @@ mod nextest;
 mod output;
 mod output_pane;
 mod queue;
+mod request;
 mod runner;
 mod scroll;
 mod settings;

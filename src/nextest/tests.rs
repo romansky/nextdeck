@@ -295,7 +295,7 @@ async fn stop_termination_signals_the_child_process_group() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     terminate_child_process_tree(&mut child).expect("terminate process tree");
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
     wait_for_stopped_child(&mut child, &tx)
         .await
         .expect("wait for stopped child");
@@ -496,7 +496,7 @@ struct FinishedTestOutput {
 async fn run_output_fixture(filter: &str, passthrough_args: Vec<String>) -> Vec<RunEvent> {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/output-workspace");
     let client = NextestClient::new(None, Some(fixture), passthrough_args);
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(crate::queue::APP_EVENT_QUEUE_CAPACITY);
     let (_stop_tx, stop_rx) = tokio::sync::mpsc::unbounded_channel();
     let (binary, kind) = if filter.starts_with("integration_") {
         ("integration_output", "test")

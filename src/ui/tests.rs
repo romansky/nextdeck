@@ -10,37 +10,39 @@ fn app_with_tree(tree: Tree) -> App {
 #[test]
 fn output_status_shows_all_when_text_fits() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.output_page_size = 5;
+    app.main_output.page_size = 5;
     let text = "one\ntwo";
 
     assert_eq!(
-        output_status(&app, text, text),
-        "Output <lines: 1-2/2> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
+        app.main_output.status("Output", text, text),
+        "Output <#1-2/2 [s]nap:✓> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
     );
 }
 
 #[test]
 fn output_status_shows_clamped_line_ranges() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.output_page_size = 3;
+    app.main_output.page_size = 3;
     let text = "1\n2\n3\n4\n5\n6";
 
-    app.output_scroll = 0;
+    app.main_output.scroll = 0;
     assert_eq!(
-        output_status(&app, text, text),
-        "Output <lines: 1-3/6> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
+        app.main_output.status("Output", text, text),
+        "Output <#1-3/6 [s]nap:✓> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
     );
 
-    app.output_scroll = 2;
+    app.main_output.scroll = 2;
+    app.main_output.follow = false;
     assert_eq!(
-        output_status(&app, text, text),
-        "Output <lines: 3-5/6> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
+        app.main_output.status("Output", text, text),
+        "Output <#3-5/6 [s]nap:✗> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
     );
 
-    app.output_scroll = 3;
+    app.main_output.scroll = 3;
+    app.main_output.follow = true;
     assert_eq!(
-        output_status(&app, text, text),
-        "Output <lines: 4-6/6> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
+        app.main_output.status("Output", text, text),
+        "Output <#4-6/6 [s]nap:✓> <search: [            ] 0/0 [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
     );
 }
 
@@ -289,11 +291,11 @@ fn help_text_sorts_commands_alpha_numerically_within_groups() {
         &[
             "search output",
             "toggle output case sensitivity",
-            "follow output bottom",
             "toggle output match filter",
             "next or previous output match",
             "open output as text file",
             "toggle output regex",
+            "toggle output snap",
         ],
     );
 }
@@ -536,14 +538,14 @@ fn running_test_spinner_advances_with_app_tick() {
 #[test]
 fn output_status_includes_search_flags() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.output_page_size = 5;
-    app.output_search.query = "panic".to_owned();
-    app.output_search.filter = true;
+    app.main_output.page_size = 5;
+    app.main_output.search.query = "panic".to_owned();
+    app.main_output.search.filter = true;
     let text = "panic line";
 
     assert_eq!(
-        output_status(&app, text, text),
-        "Output <lines: 1-1/1> <search: [panic       ] 0/1 [n]ext [f]ilter:✓ [r]egex:✗ [c]ase-sensitive:✗>"
+        app.main_output.status("Output", text, text),
+        "Output <#1-1/1 [s]nap:✓> <search: [panic       ] 0/1 [n]ext [f]ilter:✓ [r]egex:✗ [c]ase-sensitive:✗>"
     );
 }
 
@@ -551,14 +553,14 @@ fn output_status_includes_search_flags() {
 fn output_lines_marks_current_search_result_differently() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
     let theme = Theme::dark();
-    app.output_search.query = "panic".to_owned();
-    app.output_search.current_line = Some(1);
+    app.main_output.search.query = "panic".to_owned();
+    app.main_output.search.current_line = Some(1);
 
     let output_view = crate::output_pane::OutputView {
         text: "panic one\npanic two".to_owned(),
         source_lines: vec![0, 1],
     };
-    let lines = output_lines(&app, &theme, &output_view);
+    let lines = output_lines(&app.main_output.search, &theme, &output_view);
 
     assert_eq!(lines[0].spans[0].style, theme.search_match());
     assert_eq!(lines[1].spans[0].style, theme.active_search_match());
@@ -567,31 +569,31 @@ fn output_lines_marks_current_search_result_differently() {
 #[test]
 fn output_search_box_marks_active_input() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.output_search.draft_query = "panic".to_owned();
-    app.output_search.input_active = true;
+    app.main_output.search.draft_query = "panic".to_owned();
+    app.main_output.search.input_active = true;
 
-    assert_eq!(app.output_search.box_text(18), "[panic_            ]");
+    assert_eq!(app.main_output.search.box_text(18), "[panic_            ]");
 }
 
 #[test]
 fn output_status_shows_submit_and_advanced_hints_while_searching() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.output_search.draft_query = "panic".to_owned();
-    app.output_search.input_active = true;
+    app.main_output.search.draft_query = "panic".to_owned();
+    app.main_output.search.input_active = true;
 
     assert_eq!(
-        output_status(&app, "panic line", "panic line"),
-        "Output <lines: 1-1/1> <search: [panic_      ] 0/0 [enter]submit [C+enter]advanced [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
+        app.main_output.status("Output", "panic line", "panic line"),
+        "Output <#1-1/1 [s]nap:✓> <search: [panic_      ] 0/0 [enter]submit [C+enter]advanced [n]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
     );
 }
 
 #[test]
 fn output_search_box_keeps_fixed_width_for_long_query() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.output_search.query = "abcdefghijklmnopqrstuvwxyz".to_owned();
+    app.main_output.search.query = "abcdefghijklmnopqrstuvwxyz".to_owned();
 
-    assert_eq!(app.output_search.box_text(18).len(), 20);
-    assert_eq!(app.output_search.box_text(18), "[ijklmnopqrstuvwxyz]");
+    assert_eq!(app.main_output.search.box_text(18).len(), 20);
+    assert_eq!(app.main_output.search.box_text(18), "[ijklmnopqrstuvwxyz]");
 }
 
 fn help_line_with_label<'a>(lines: &'a [Line<'a>], label: &str) -> &'a Line<'a> {

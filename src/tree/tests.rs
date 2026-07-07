@@ -413,6 +413,35 @@ fn early_success_output_survives_empty_finished_event() {
 }
 
 #[test]
+fn appended_test_output_is_bounded() {
+    let mut tree = Tree::from_tests(vec![discovered_test(
+        "demo::demo",
+        "demo",
+        "tests",
+        "works",
+    )]);
+    let key = TestKey {
+        binary_id: Some("demo::demo".to_owned()),
+        event_prefix: Some("demo::demo".to_owned()),
+        name: "tests::works".to_owned(),
+    };
+
+    tree.append_test_output(
+        &key,
+        "x".repeat(crate::output::OUTPUT_TEXT_LIMIT_BYTES + 1024),
+        String::new(),
+    );
+    tree.append_test_output(&key, "tail".to_owned(), String::new());
+    expand_all(&mut tree);
+    select_label(&mut tree, "works");
+
+    let output = tree.selected_output();
+    assert!(output.contains("[... output truncated"));
+    assert!(output.contains("tail"));
+    assert!(output.len() <= crate::output::OUTPUT_TEXT_LIMIT_BYTES + 1);
+}
+
+#[test]
 fn pending_module_output_stays_scoped_and_short() {
     let mut tree = Tree::from_tests(vec![discovered_test(
         "demo::demo",

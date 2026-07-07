@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
@@ -14,12 +14,15 @@ use crate::{
     config,
     disk_usage::{StorageHealth, format_bytes, format_timestamp_utc},
     nextest::{manual_run_command, manual_test_command},
-    output_pane::SearchModalFocus,
+    output_pane::{
+        OutputPaneState, OutputSearchState, OutputView, SearchModalFocus,
+        output_render_scroll_for_count,
+    },
     settings::SettingsField,
     symbols::bool_symbol,
     theme::Theme,
     tree::{NodeKind, TestNode, TestStatus},
-    xtask::{XtaskArgValue, XtaskState, XtaskValueSpec},
+    xtask::{XtaskArgValue, XtaskDetailFocus, XtaskState, XtaskValueSpec},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,6 +36,19 @@ pub struct AppLayout {
 struct PanelChrome<'a> {
     status: &'a str,
     actions: &'a str,
+}
+
+struct OutputPaneRender<'a> {
+    state: &'a OutputPaneState,
+    source_text: String,
+    label: String,
+    focused: bool,
+}
+
+struct OutputPaneContent {
+    status: String,
+    lines: Vec<Line<'static>>,
+    scroll: u16,
 }
 
 struct ModalChrome<'a> {
@@ -74,6 +90,16 @@ pub fn layout(area: Rect, tree_width_percent: u16) -> AppLayout {
     }
 }
 
+pub fn xtask_output_page_size(area: Rect) -> u16 {
+    let modal_area = centered_rect(88, 82, area);
+    let inner = modal_area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let output_area = xtask_detail_output_area(inner);
+    output_area.height.saturating_sub(2).max(1)
+}
+
 pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let app_layout = layout(frame.area(), app.settings.tree_width_percent);
     draw_tree(frame, app, theme, app_layout.tree);
@@ -85,7 +111,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         Some(OverlayMode::Discovery | OverlayMode::DiscoveryError) => {
             draw_discovery_modal(frame, app, theme);
         }
-        Some(OverlayMode::OutputSearch) => draw_output_search_modal(frame, app, theme),
+        Some(OverlayMode::OutputSearch) => {
+            draw_output_search_modal(frame, app.active_output_search(), theme);
+        }
         Some(OverlayMode::DiskCleanup) => draw_disk_cleanup_modal(frame, app, theme),
         Some(OverlayMode::Xtasks) => draw_xtasks_modal(frame, app, theme),
         Some(OverlayMode::TestDetails) => draw_test_details_modal(frame, app, theme),
@@ -93,8 +121,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         Some(OverlayMode::Help) => draw_help(frame, app, theme),
         None => {}
     }
-    if app.xtasks.modal_open && app.output_search.modal_open {
-        draw_output_search_modal(frame, app, theme);
+    if app.xtasks.modal_open && app.xtasks.output.search.modal_open {
+        draw_output_search_modal(frame, app.active_output_search(), theme);
     }
 }
 
@@ -179,27 +207,25 @@ fn fit_line_prefix(content: &str, width: usize) -> String {
 fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let area = centered_rect(62, 58, frame.area());
     if app.discovery.error.is_some() {
-        let source_text = app.output_source_text();
-        let output_view = app.output_search.filtered_view(&source_text);
-        let page_size = area.height.saturating_sub(2).max(1);
-        let status = output_status_for(
-            "Discovery",
-            app,
-            &output_view.text,
-            &source_text,
-            page_size,
-            app.output_scroll,
+        let output = output_pane_content(
+            theme,
+            OutputPaneRender {
+                state: &app.main_output,
+                source_text: app.output_source_text(),
+                label: "Discovery".to_owned(),
+                focused: false,
+            },
         );
         draw_modal_output_lines(
             frame,
             theme,
             area,
             ModalChrome {
-                title: &status,
+                title: &output.status,
                 actions: Some(discovery_error_actions()),
             },
-            output_lines(app, theme, &output_view),
-            app.output_scroll,
+            output.lines,
+            output.scroll,
         );
     } else {
         let lines = vec![
@@ -295,9 +321,8 @@ fn draw_modal_output_lines(
     frame.render_widget(output, inner);
 }
 
-fn draw_output_search_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
+fn draw_output_search_modal(frame: &mut Frame<'_>, search: &OutputSearchState, theme: &Theme) {
     let area = centered_rect(70, 70, frame.area());
-    let search = &app.output_search;
     let inner = draw_modal_shell(
         frame,
         theme,
@@ -533,6 +558,9 @@ fn xtask_list_lines(xtasks: &XtaskState, theme: &Theme) -> Vec<Line<'static>> {
 }
 
 fn draw_xtask_detail_frame(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
+    let output_area = xtask_detail_output_area(area);
+    let params_focused = app.xtasks.detail_focus == XtaskDetailFocus::Parameters;
+    let output_focused = app.xtasks.detail_focus == XtaskDetailFocus::Output;
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -542,37 +570,50 @@ fn draw_xtask_detail_frame(frame: &mut Frame<'_>, app: &App, theme: &Theme, area
         ])
         .split(area);
 
-    draw_xtask_params_panel(frame, theme, chunks[0], &app.xtasks);
+    draw_xtask_params_panel(frame, theme, chunks[0], &app.xtasks, params_focused);
     frame.render_widget(Clear, chunks[1]);
-    draw_xtask_output_panel(frame, app, theme, chunks[2]);
+    draw_xtask_output_panel(frame, app, theme, output_area, output_focused);
 }
 
-fn draw_xtask_params_panel(frame: &mut Frame<'_>, theme: &Theme, area: Rect, xtasks: &XtaskState) {
-    let content_width = area.width.saturating_sub(2).max(1) as usize;
-    let block = theme.panel_block("Parameters", Some("[up/down]select"), true);
-    let inner = block.inner(area);
+fn xtask_detail_output_area(area: Rect) -> Rect {
     let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(inner);
-    let paragraph = Paragraph::new(xtask_param_lines(xtasks, theme, content_width))
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Length(1),
+            Constraint::Percentage(60),
+        ])
+        .split(area);
+    chunks[2]
+}
+
+fn draw_xtask_params_panel(
+    frame: &mut Frame<'_>,
+    theme: &Theme,
+    area: Rect,
+    xtasks: &XtaskState,
+    focused: bool,
+) {
+    let content_width = area.width.saturating_sub(2).max(1) as usize;
+    let block = theme.panel_block(
+        "Parameters",
+        focused.then_some("[up/down]select [left/right]change"),
+        focused,
+    );
+    let inner = block.inner(area);
+    let paragraph = Paragraph::new(xtask_param_lines(xtasks, theme, content_width, focused))
         .style(theme.text())
         .wrap(Wrap { trim: false });
-    let back = Paragraph::new(Line::from(vec![
-        Span::styled("[ Back ]", theme.accent()),
-        Span::styled(" esc/b", theme.muted()),
-    ]))
-    .style(theme.text());
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
-    frame.render_widget(paragraph, chunks[0]);
-    frame.render_widget(back, chunks[1]);
+    frame.render_widget(paragraph, inner);
 }
 
 fn xtask_param_lines(
     xtasks: &XtaskState,
     theme: &Theme,
     content_width: usize,
+    focused: bool,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(command) = xtasks.selected_command() {
@@ -603,8 +644,9 @@ fn xtask_param_lines(
             let help_width = content_width.saturating_sub(10);
             for (index, arg) in command.args.iter().enumerate() {
                 let selected = index == xtasks.selected_arg;
+                let active = focused && selected;
                 let marker = if selected { ">" } else { " " };
-                let style = if selected {
+                let style = if active {
                     theme.selected()
                 } else {
                     theme.text()
@@ -631,44 +673,37 @@ fn xtask_param_lines(
     lines
 }
 
-fn draw_xtask_output_panel(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
-    let source_text = app.xtasks.output_text();
-    let output_view = app.output_search.filtered_view(&source_text);
-    let page_size = area.height.saturating_sub(2).max(1);
-    let label = xtask_output_label(&app.xtasks);
-    let status = output_status_for(
-        label,
-        app,
-        &output_view.text,
-        &source_text,
-        page_size,
-        app.xtasks.output_scroll,
-    );
-    draw_output_panel(
+fn draw_xtask_output_panel(
+    frame: &mut Frame<'_>,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    focused: bool,
+) {
+    draw_output_pane(
         frame,
         theme,
         area,
-        PanelChrome {
-            status: &status,
-            actions: output_actions(),
+        OutputPaneRender {
+            state: &app.xtasks.output,
+            source_text: app.xtasks.output_text(),
+            label: xtask_output_label(&app.xtasks, app.running_test_spinner()),
+            focused,
         },
-        output_lines(app, theme, &output_view),
-        true,
-        app.xtasks.output_scroll,
     );
 }
 
-fn xtask_output_label(xtasks: &XtaskState) -> &'static str {
+fn xtask_output_label(xtasks: &XtaskState, spinner: &str) -> String {
     if xtasks.running {
-        "Output: running"
+        format!("Output: {spinner}")
     } else if let Some(output) = &xtasks.last_run {
         if output.success {
-            "Output: completed"
+            "Output: ✓".to_owned()
         } else {
-            "Output: failed"
+            "Output: ✗".to_owned()
         }
     } else {
-        "Output"
+        "Output".to_owned()
     }
 }
 
@@ -706,7 +741,14 @@ fn xtask_actions(xtasks: &XtaskState) -> &'static str {
     if xtasks.editing.is_some() {
         "[enter]save [esc]cancel"
     } else if xtasks.detail_open {
-        "[up/down]param [left/right]change [e]edit [r]run [/]search"
+        match xtasks.detail_focus {
+            XtaskDetailFocus::Parameters => {
+                "[esc]back [tab]output [up/down]param [left/right]change [e]edit [r]run"
+            }
+            XtaskDetailFocus::Output => {
+                "[esc]back [tab]params [up/down]scroll [/]search [n/N]match [r]run"
+            }
+        }
     } else {
         "[up/down]command [enter]open [u]refresh [esc]close"
     }
@@ -1325,22 +1367,50 @@ fn status_label(status: TestStatus) -> &'static str {
 }
 
 fn draw_output(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
-    let source_text = app.output_source_text();
-    let output_view = app.output_search.filtered_view(&source_text);
-    let focused = pane_focused(app, FocusPane::Output);
-    let status = output_status(app, &output_view.text, &source_text);
+    draw_output_pane(
+        frame,
+        theme,
+        area,
+        OutputPaneRender {
+            state: &app.main_output,
+            source_text: app.output_source_text(),
+            label: "Output".to_owned(),
+            focused: pane_focused(app, FocusPane::Output),
+        },
+    );
+}
+
+fn draw_output_pane(
+    frame: &mut Frame<'_>,
+    theme: &Theme,
+    area: Rect,
+    output: OutputPaneRender<'_>,
+) {
+    let focused = output.focused;
+    let output = output_pane_content(theme, output);
     draw_output_panel(
         frame,
         theme,
         area,
         PanelChrome {
-            status: &status,
+            status: &output.status,
             actions: output_actions(),
         },
-        output_lines(app, theme, &output_view),
+        output.lines,
         focused,
-        app.output_scroll,
+        output.scroll,
     );
+}
+
+fn output_pane_content(theme: &Theme, output: OutputPaneRender<'_>) -> OutputPaneContent {
+    let output_view = output.state.output_view(&output.source_text);
+    OutputPaneContent {
+        status: output
+            .state
+            .status(&output.label, &output_view.text, &output.source_text),
+        lines: output_lines(&output.state.search, theme, &output_view),
+        scroll: output.state.scroll,
+    }
 }
 
 fn draw_output_panel(
@@ -1388,55 +1458,10 @@ fn info_status(_app: &App) -> String {
     "Info".to_owned()
 }
 
-fn output_status(app: &App, text: &str, source_text: &str) -> String {
-    output_status_for(
-        "Output",
-        app,
-        text,
-        source_text,
-        app.output_page_size,
-        app.output_scroll,
-    )
-}
-
-fn output_status_for(
-    label: &str,
-    app: &App,
-    text: &str,
-    source_text: &str,
-    page_size: u16,
-    scroll: u16,
-) -> String {
-    let total = output_line_count(text);
-    let search = output_search_title(app, source_text);
-    let top = output_render_scroll(text, page_size, scroll) as usize;
-    let visible = page_size.max(1) as usize;
-    let bottom = top.saturating_add(visible).min(total);
-    format!("{label} <lines: {}-{bottom}/{total}> {search}", top + 1)
-}
-
-fn output_search_title(app: &App, text: &str) -> String {
-    app.output_search.view(text).title_fragment()
-}
-
-fn output_render_scroll(text: &str, page_size: u16, scroll: u16) -> u16 {
-    output_render_scroll_for_count(output_line_count(text), page_size, scroll)
-}
-
-fn output_render_scroll_for_count(total: usize, page_size: u16, scroll: u16) -> u16 {
-    let visible = page_size.max(1) as usize;
-    let max_scroll = total.saturating_sub(visible).min(u16::MAX as usize) as u16;
-    scroll.min(max_scroll)
-}
-
-fn output_line_count(text: &str) -> usize {
-    text.lines().count().max(1)
-}
-
 fn output_lines(
-    app: &App,
+    search: &OutputSearchState,
     theme: &Theme,
-    output_view: &crate::output_pane::OutputView,
+    output_view: &OutputView,
 ) -> Vec<Line<'static>> {
     let lines = output_view
         .text
@@ -1448,7 +1473,7 @@ fn output_lines(
                 .get(index)
                 .copied()
                 .unwrap_or(index);
-            highlighted_output_line(app, theme, source_line, line)
+            highlighted_output_line(search, theme, source_line, line)
         })
         .collect::<Vec<_>>();
     if lines.is_empty() {
@@ -1459,16 +1484,16 @@ fn output_lines(
 }
 
 fn highlighted_output_line(
-    app: &App,
+    search: &OutputSearchState,
     theme: &Theme,
     source_line: usize,
     line: &str,
 ) -> Line<'static> {
-    let ranges = match app.output_search.match_ranges(line) {
+    let ranges = match search.match_ranges(line) {
         Ok(ranges) if !ranges.is_empty() => ranges,
         _ => return Line::styled(line.to_owned(), theme.text()),
     };
-    let match_style = if app.output_search.current_line == Some(source_line) {
+    let match_style = if search.current_line == Some(source_line) {
         theme.active_search_match()
     } else {
         theme.search_match()

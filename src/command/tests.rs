@@ -45,7 +45,14 @@ const fn xtask_modal_context() -> CommandContext {
 
 const fn xtask_command_modal_context() -> CommandContext {
     CommandContext {
-        input: InputMode::XtaskCommandModal,
+        input: InputMode::XtaskCommandModal(XtaskDetailFocus::Parameters),
+        overlay: Some(OverlayMode::Xtasks),
+    }
+}
+
+const fn xtask_output_context() -> CommandContext {
+    CommandContext {
+        input: InputMode::XtaskCommandModal(XtaskDetailFocus::Output),
         overlay: Some(OverlayMode::Xtasks),
     }
 }
@@ -115,6 +122,18 @@ fn plain_slash_searches_output_only_when_output_is_focused() {
     assert_eq!(
         command_for_key(KeyCode::Char('/'), KeyModifiers::NONE, CommandFocus::Output),
         AppCommand::StartOutputSearch
+    );
+}
+
+#[test]
+fn plain_s_toggles_snap_only_when_output_is_focused() {
+    assert_eq!(
+        command_for_key(KeyCode::Char('s'), KeyModifiers::NONE, CommandFocus::Tests),
+        AppCommand::ToggleShowSkipped
+    );
+    assert_eq!(
+        command_for_key(KeyCode::Char('s'), KeyModifiers::NONE, CommandFocus::Output),
+        AppCommand::ToggleOutputSnap
     );
 }
 
@@ -416,7 +435,17 @@ fn xtask_modal_uses_xtask_commands() {
 fn xtask_command_modal_uses_parameter_and_output_commands() {
     let context = xtask_command_modal_context();
     let arg = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
-    assert_eq!(command_for_input(&arg, context), AppCommand::XtaskNextArg);
+    assert_eq!(
+        command_for_input(&arg, context),
+        AppCommand::ToggleXtaskDetailFocus
+    );
+
+    let next_arg =
+        InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+    assert_eq!(
+        command_for_input(&next_arg, context),
+        AppCommand::XtaskNextArg
+    );
 
     let adjust = InputEvent::Terminal(Event::Key(KeyEvent::new(
         KeyCode::Right,
@@ -442,12 +471,30 @@ fn xtask_command_modal_uses_parameter_and_output_commands() {
     )));
     assert_eq!(command_for_input(&run, context), AppCommand::RunXtask);
 
+    let output_context = xtask_output_context();
+
+    let line_down =
+        InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+    assert_eq!(
+        command_for_input(&line_down, output_context),
+        AppCommand::XtaskOutputLineDown
+    );
+
+    let snap = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('s'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&snap, output_context),
+        AppCommand::ToggleOutputSnap
+    );
+
     let regex = InputEvent::Terminal(Event::Key(KeyEvent::new(
         KeyCode::Char('r'),
         KeyModifiers::CONTROL,
     )));
     assert_eq!(
-        command_for_input(&regex, context),
+        command_for_input(&regex, output_context),
         AppCommand::ToggleOutputRegex
     );
 
@@ -456,7 +503,7 @@ fn xtask_command_modal_uses_parameter_and_output_commands() {
         KeyModifiers::NONE,
     )));
     assert_eq!(
-        command_for_input(&search, context),
+        command_for_input(&search, output_context),
         AppCommand::StartOutputSearch
     );
 
@@ -465,7 +512,7 @@ fn xtask_command_modal_uses_parameter_and_output_commands() {
         KeyModifiers::NONE,
     )));
     assert_eq!(
-        command_for_input(&next_match, context),
+        command_for_input(&next_match, output_context),
         AppCommand::FindNextOutputMatch
     );
 
@@ -474,7 +521,7 @@ fn xtask_command_modal_uses_parameter_and_output_commands() {
         KeyModifiers::NONE,
     )));
     assert_eq!(
-        command_for_input(&filter, context),
+        command_for_input(&filter, output_context),
         AppCommand::ToggleOutputFilter
     );
 
@@ -483,7 +530,7 @@ fn xtask_command_modal_uses_parameter_and_output_commands() {
         KeyModifiers::NONE,
     )));
     assert_eq!(
-        command_for_input(&open_output, context),
+        command_for_input(&open_output, output_context),
         AppCommand::OpenOutput
     );
 
@@ -492,7 +539,7 @@ fn xtask_command_modal_uses_parameter_and_output_commands() {
         KeyModifiers::NONE,
     )));
     assert_eq!(
-        command_for_input(&page, context),
+        command_for_input(&page, output_context),
         AppCommand::XtaskOutputPageDown
     );
 
@@ -506,10 +553,7 @@ fn xtask_command_modal_uses_parameter_and_output_commands() {
         KeyCode::Char('b'),
         KeyModifiers::NONE,
     )));
-    assert_eq!(
-        command_for_input(&back, context),
-        AppCommand::CloseXtaskDetails
-    );
+    assert_eq!(command_for_input(&back, context), AppCommand::Noop);
 }
 
 #[test]

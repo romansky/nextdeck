@@ -4,6 +4,7 @@ use crate::{
     input::InputEvent,
     input_field::{InputFieldInput, InputFieldKey},
     output_pane::{SearchEditorInput, SearchEditorKey},
+    xtask::XtaskDetailFocus,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -59,8 +60,13 @@ pub enum AppCommand {
     XtaskAdjustLeft,
     XtaskAdjustRight,
     XtaskActivateArg,
+    ToggleXtaskDetailFocus,
+    XtaskOutputLineUp,
+    XtaskOutputLineDown,
     XtaskOutputPageUp,
     XtaskOutputPageDown,
+    XtaskOutputTop,
+    XtaskOutputBottom,
     XtaskEdit(InputFieldInput),
     CommitXtaskEdit,
     CancelXtaskEdit,
@@ -85,6 +91,7 @@ pub enum AppCommand {
     ToggleOutputFilter,
     ToggleOutputRegex,
     ToggleOutputCaseSensitive,
+    ToggleOutputSnap,
     ReportStatus(String),
 }
 
@@ -138,7 +145,7 @@ pub enum CommandKind {
     ToggleShowIgnored,
     ToggleShowSkipped,
     SelectFailed,
-    FollowOutputBottom,
+    ToggleOutputSnap,
     StartOutputSearch,
     FindOutputMatch,
     ToggleOutputFilter,
@@ -304,11 +311,11 @@ const COMMANDS: &[CommandInfo] = &[
         ticker: "toggle skipped",
     },
     CommandInfo {
-        kind: CommandKind::FollowOutputBottom,
+        kind: CommandKind::ToggleOutputSnap,
         group: CommandGroup::Output,
-        keys: "End",
-        label: "follow output bottom",
-        ticker: "bottom",
+        keys: "s",
+        label: "toggle output snap",
+        ticker: "snap",
     },
     CommandInfo {
         kind: CommandKind::StartOutputSearch,
@@ -426,6 +433,7 @@ impl AppCommand {
             Self::ToggleShowSkipped => Some(CommandKind::ToggleShowSkipped),
             Self::SelectNextFailed | Self::SelectPreviousFailed => Some(CommandKind::SelectFailed),
             Self::StartOutputSearch => Some(CommandKind::StartOutputSearch),
+            Self::ToggleOutputSnap => Some(CommandKind::ToggleOutputSnap),
             Self::OpenOutputSearchModal
             | Self::CloseTestDetails
             | Self::CloseSettings
@@ -450,8 +458,13 @@ impl AppCommand {
             | Self::XtaskAdjustLeft
             | Self::XtaskAdjustRight
             | Self::XtaskActivateArg
+            | Self::ToggleXtaskDetailFocus
+            | Self::XtaskOutputLineUp
+            | Self::XtaskOutputLineDown
             | Self::XtaskOutputPageUp
             | Self::XtaskOutputPageDown
+            | Self::XtaskOutputTop
+            | Self::XtaskOutputBottom
             | Self::XtaskEdit(_)
             | Self::CommitXtaskEdit
             | Self::CancelXtaskEdit
@@ -507,7 +520,13 @@ impl AppCommand {
             Self::XtaskNextArg | Self::XtaskPreviousArg => Some("xtasks arg"),
             Self::XtaskAdjustLeft | Self::XtaskAdjustRight => Some("xtasks adjust"),
             Self::XtaskActivateArg => Some("xtasks edit"),
-            Self::XtaskOutputPageUp | Self::XtaskOutputPageDown => Some("xtasks output"),
+            Self::ToggleXtaskDetailFocus => Some("xtasks focus"),
+            Self::XtaskOutputLineUp
+            | Self::XtaskOutputLineDown
+            | Self::XtaskOutputPageUp
+            | Self::XtaskOutputPageDown
+            | Self::XtaskOutputTop
+            | Self::XtaskOutputBottom => Some("xtasks output"),
             Self::XtaskEdit(_) => Some("xtasks input"),
             Self::CommitXtaskEdit => Some("xtasks save"),
             Self::CancelXtaskEdit => Some("xtasks cancel"),
@@ -560,7 +579,7 @@ pub enum InputMode {
     DiskCleanupModal,
     XtaskInput,
     XtaskModal,
-    XtaskCommandModal,
+    XtaskCommandModal(XtaskDetailFocus),
     TestDetailsModal,
     OutputSearchModal,
     OutputSearchInline,
@@ -603,7 +622,9 @@ fn command_for_input_mode(code: KeyCode, modifiers: KeyModifiers, input: InputMo
         InputMode::DiskCleanupModal => command_for_disk_cleanup_modal(code),
         InputMode::XtaskInput => command_for_xtask_input(code, modifiers),
         InputMode::XtaskModal => command_for_xtask_modal(code),
-        InputMode::XtaskCommandModal => command_for_xtask_command_modal(code, modifiers),
+        InputMode::XtaskCommandModal(focus) => {
+            command_for_xtask_command_modal(code, modifiers, focus)
+        }
         InputMode::TestDetailsModal => command_for_test_details_modal(code),
         InputMode::OutputSearchModal => command_for_output_search_modal(code, modifiers),
         InputMode::OutputSearchInline => command_for_output_search_input(code, modifiers),
@@ -700,26 +721,51 @@ fn command_for_xtask_modal(code: KeyCode) -> AppCommand {
     }
 }
 
-fn command_for_xtask_command_modal(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+fn command_for_xtask_command_modal(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    focus: XtaskDetailFocus,
+) -> AppCommand {
     match code {
-        KeyCode::Esc | KeyCode::Char('b') => AppCommand::CloseXtaskDetails,
+        KeyCode::Esc => AppCommand::CloseXtaskDetails,
+        KeyCode::Tab | KeyCode::BackTab => AppCommand::ToggleXtaskDetailFocus,
+        KeyCode::Char('r') if !modifiers.contains(KeyModifiers::CONTROL) => AppCommand::RunXtask,
+        _ => match focus {
+            XtaskDetailFocus::Parameters => command_for_xtask_params(code),
+            XtaskDetailFocus::Output => command_for_xtask_output(code, modifiers),
+        },
+    }
+}
+
+fn command_for_xtask_params(code: KeyCode) -> AppCommand {
+    match code {
+        KeyCode::Up => AppCommand::XtaskPreviousArg,
+        KeyCode::Down => AppCommand::XtaskNextArg,
+        KeyCode::Left => AppCommand::XtaskAdjustLeft,
+        KeyCode::Right => AppCommand::XtaskAdjustRight,
+        KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('e') => AppCommand::XtaskActivateArg,
+        _ => AppCommand::Noop,
+    }
+}
+
+fn command_for_xtask_output(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+    match code {
+        KeyCode::Up => AppCommand::XtaskOutputLineUp,
+        KeyCode::Down => AppCommand::XtaskOutputLineDown,
+        KeyCode::PageUp => AppCommand::XtaskOutputPageUp,
+        KeyCode::PageDown => AppCommand::XtaskOutputPageDown,
+        KeyCode::Home => AppCommand::XtaskOutputTop,
+        KeyCode::End => AppCommand::XtaskOutputBottom,
         KeyCode::Char('/') => AppCommand::StartOutputSearch,
         KeyCode::Char('n') => AppCommand::FindNextOutputMatch,
         KeyCode::Char('N') => AppCommand::FindPreviousOutputMatch,
         KeyCode::Char('f') => AppCommand::ToggleOutputFilter,
+        KeyCode::Char('s') => AppCommand::ToggleOutputSnap,
         KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
             AppCommand::ToggleOutputRegex
         }
         KeyCode::Char('c') => AppCommand::ToggleOutputCaseSensitive,
         KeyCode::Char('o') => AppCommand::OpenOutput,
-        KeyCode::Char('r') => AppCommand::RunXtask,
-        KeyCode::Up | KeyCode::BackTab => AppCommand::XtaskPreviousArg,
-        KeyCode::Down | KeyCode::Tab => AppCommand::XtaskNextArg,
-        KeyCode::Left => AppCommand::XtaskAdjustLeft,
-        KeyCode::Right => AppCommand::XtaskAdjustRight,
-        KeyCode::PageUp => AppCommand::XtaskOutputPageUp,
-        KeyCode::PageDown => AppCommand::XtaskOutputPageDown,
-        KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('e') => AppCommand::XtaskActivateArg,
         _ => AppCommand::Noop,
     }
 }
@@ -854,6 +900,7 @@ fn command_for_output_key(code: KeyCode) -> AppCommand {
         KeyCode::Char('n') => AppCommand::FindNextOutputMatch,
         KeyCode::Char('N') => AppCommand::FindPreviousOutputMatch,
         KeyCode::Char('f') => AppCommand::ToggleOutputFilter,
+        KeyCode::Char('s') => AppCommand::ToggleOutputSnap,
         KeyCode::Char('r') => AppCommand::ToggleOutputRegex,
         KeyCode::Char('c') => AppCommand::ToggleOutputCaseSensitive,
         KeyCode::Char('o') => AppCommand::OpenOutput,

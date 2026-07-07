@@ -7,26 +7,29 @@ use crate::{
     git_status::GitStatus,
     input::InputEvent,
     nextest::{DiscoveryEvent, RunEvent},
+    request::RequestId,
     xtask::XtaskEvent,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum QueueEvent {
     Input(InputEvent),
-    Discovery(DiscoveryEvent),
-    CargoClean(Result<(), String>),
-    DiskUsage(Result<DiskUsageSnapshot, String>),
+    Discovery(RequestId, DiscoveryEvent),
+    CargoClean(RequestId, Result<(), String>),
+    DiskUsage(RequestId, Result<DiskUsageSnapshot, String>),
     GitStatus(GitStatus),
     Run(RunEvent),
     Xtask(XtaskEvent),
     Tick,
 }
 
-pub type QueueSender = mpsc::UnboundedSender<QueueEvent>;
-pub type QueueReceiver = mpsc::UnboundedReceiver<QueueEvent>;
+pub(crate) const APP_EVENT_QUEUE_CAPACITY: usize = 4096;
+
+pub type QueueSender = mpsc::Sender<QueueEvent>;
+pub type QueueReceiver = mpsc::Receiver<QueueEvent>;
 
 pub fn channel() -> (QueueSender, QueueReceiver) {
-    mpsc::unbounded_channel()
+    mpsc::channel(APP_EVENT_QUEUE_CAPACITY)
 }
 
 pub fn start_ticker(tx: QueueSender, interval: Duration) -> tokio::task::JoinHandle<()> {
@@ -34,7 +37,7 @@ pub fn start_ticker(tx: QueueSender, interval: Duration) -> tokio::task::JoinHan
         let mut ticker = tokio::time::interval(interval);
         loop {
             ticker.tick().await;
-            if tx.send(QueueEvent::Tick).is_err() {
+            if tx.send(QueueEvent::Tick).await.is_err() {
                 break;
             }
         }

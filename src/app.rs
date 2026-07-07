@@ -9,9 +9,10 @@ use crate::{
     input_field::InputFieldInput,
     nextest::{DiscoveryEvent, RunEvent, RunRequest, RunScope, TargetSelector, TestSelector},
     output_pane::{
-        OutputSearchState, OutputView, SearchDirection, SearchEditorInput, SearchEditorKey,
-        SearchModalFocus,
+        OutputPaneState, OutputSearchState, OutputView, SearchDirection, SearchEditorInput,
+        SearchEditorKey, SearchModalFocus,
     },
+    request::RequestId,
     scroll,
     settings::{GlobalSettingsState, SettingsField},
     source,
@@ -26,6 +27,12 @@ pub enum FocusPane {
     Output,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutputPaneId {
+    Main,
+    Xtask,
+}
+
 pub struct App {
     pub tree: Tree,
     pub tree_scroll: usize,
@@ -34,14 +41,11 @@ pub struct App {
     pub ui_ticks: usize,
     pub running: bool,
     pub should_quit: bool,
-    pub output_scroll: u16,
-    pub output_follow: bool,
-    pub output_search: OutputSearchState,
+    pub main_output: OutputPaneState,
     pub focus: FocusPane,
     pub show_help: bool,
     pub show_test_details: bool,
     pub tree_page_size: usize,
-    pub output_page_size: u16,
     pub discovery: DiscoveryState,
     pub git_status: GitStatus,
     pub disk_usage: DiskUsageState,
@@ -60,6 +64,7 @@ pub struct KeyEcho {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DiscoveryState {
+    pub request_id: RequestId,
     pub running: bool,
     pub ticks: usize,
     pub error: Option<String>,
@@ -123,15 +128,15 @@ impl Default for RunState {
 pub enum AppEffect {
     None,
     SaveSettings(AppSettings),
-    StartDiscovery,
+    StartDiscovery(RequestId),
     StartRun(RunRequest),
     StopRun,
     OpenSource(SourceLocation),
     OpenOutput(OutputOpenRequest),
-    RefreshDiskUsage,
-    RunCargoClean,
-    RefreshXtasks,
-    RunXtask(XtaskRunRequest),
+    RefreshDiskUsage(RequestId),
+    RunCargoClean(RequestId),
+    RefreshXtasks(RequestId),
+    RunXtask(RequestId, XtaskRunRequest),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -150,14 +155,11 @@ impl App {
             ui_ticks: 0,
             running: false,
             should_quit: false,
-            output_scroll: 0,
-            output_follow: true,
-            output_search: OutputSearchState::default(),
+            main_output: OutputPaneState::default(),
             focus: FocusPane::Tree,
             show_help: false,
             show_test_details: false,
             tree_page_size: 1,
-            output_page_size: 1,
             discovery: DiscoveryState::default(),
             git_status: GitStatus::unknown(),
             disk_usage: DiskUsageState::default(),
@@ -175,26 +177,53 @@ impl App {
         app
     }
 
-    pub fn prepare_frame(&mut self, tree_height: u16, output_height: u16) {
-        self.set_viewport_sizes(tree_height, output_height);
-        let line_count = self.output_text().lines().count().max(1);
-        self.set_output_line_count(line_count);
+    pub fn startup_effects(&mut self) -> Vec<AppEffect> {
+        let discovery_request_id = if self.discovery.running {
+            self.discovery.request_id
+        } else {
+            self.begin_discovery()
+        };
+        let xtask_request_id = self.xtasks.begin_load();
+        let disk_usage_request_id = self.begin_disk_usage_scan();
+
+        vec![
+            AppEffect::StartDiscovery(discovery_request_id),
+            AppEffect::RefreshXtasks(xtask_request_id),
+            AppEffect::RefreshDiskUsage(disk_usage_request_id),
+        ]
     }
 
-    pub fn set_viewport_sizes(&mut self, tree_height: u16, output_height: u16) {
+    pub fn prepare_frame(
+        &mut self,
+        tree_height: u16,
+        output_height: u16,
+        xtask_output_height: u16,
+    ) {
+        self.set_viewport_sizes(tree_height, output_height, xtask_output_height);
+        let line_count = self.output_text().lines().count().max(1);
+        self.set_output_line_count(line_count);
+        if self.xtasks.detail_open {
+            let line_count = self.xtasks.output_text().lines().count().max(1);
+            self.xtasks.output.set_line_count(line_count);
+        }
+    }
+
+    pub fn set_viewport_sizes(
+        &mut self,
+        tree_height: u16,
+        output_height: u16,
+        xtask_output_height: u16,
+    ) {
         self.tree_page_size = tree_height.saturating_sub(2).max(1) as usize;
-        self.output_page_size = output_height.saturating_sub(2).max(1);
+        self.main_output
+            .set_page_size(output_height.saturating_sub(2).max(1));
+        self.xtasks.output.set_page_size(xtask_output_height);
         self.ensure_tree_selection_visible();
         self.clamp_output_scroll();
     }
 
     pub fn set_output_line_count(&mut self, line_count: usize) {
-        let max_scroll = self.max_output_scroll(line_count);
-        if self.output_follow {
-            self.output_scroll = max_scroll;
-        } else {
-            self.output_scroll = self.output_scroll.min(max_scroll);
-        }
+        self.main_output.set_line_count(line_count);
     }
 
     pub fn toggle_focus(&mut self) {
@@ -226,7 +255,7 @@ impl App {
             Some(OverlayMode::DiskCleanup)
         } else if self.xtasks.modal_open {
             Some(OverlayMode::Xtasks)
-        } else if self.output_search.modal_open {
+        } else if self.main_output.search.modal_open {
             Some(OverlayMode::OutputSearch)
         } else if self.show_test_details {
             Some(OverlayMode::TestDetails)
@@ -244,20 +273,22 @@ impl App {
             }
             Some(OverlayMode::Settings) => InputMode::SettingsModal,
             Some(OverlayMode::DiskCleanup) => InputMode::DiskCleanupModal,
-            Some(OverlayMode::Xtasks) if self.output_search.modal_open => {
+            Some(OverlayMode::Xtasks) if self.xtasks.output.search.modal_open => {
                 InputMode::OutputSearchModal
             }
-            Some(OverlayMode::Xtasks) if self.output_search.input_active => {
+            Some(OverlayMode::Xtasks) if self.xtasks.output.search.input_active => {
                 InputMode::OutputSearchInline
             }
             Some(OverlayMode::Xtasks) if self.xtasks.editing.is_some() => InputMode::XtaskInput,
-            Some(OverlayMode::Xtasks) if self.xtasks.detail_open => InputMode::XtaskCommandModal,
+            Some(OverlayMode::Xtasks) if self.xtasks.detail_open => {
+                InputMode::XtaskCommandModal(self.xtasks.detail_focus)
+            }
             Some(OverlayMode::Xtasks) => InputMode::XtaskModal,
             Some(OverlayMode::OutputSearch) => InputMode::OutputSearchModal,
             Some(OverlayMode::TestDetails) => InputMode::TestDetailsModal,
             Some(OverlayMode::Discovery) => InputMode::DiscoveryRunning,
             Some(OverlayMode::DiscoveryError) => InputMode::Normal(CommandFocus::Output),
-            None if self.output_search.input_active => InputMode::OutputSearchInline,
+            None if self.main_output.search.input_active => InputMode::OutputSearchInline,
             None => InputMode::Normal(focus),
         };
 
@@ -284,17 +315,23 @@ impl App {
         }
     }
 
-    pub fn begin_discovery(&mut self) {
+    pub fn begin_discovery(&mut self) -> RequestId {
+        let request_id = self.discovery.request_id.next();
         self.show_test_details = false;
         self.discovery = DiscoveryState {
+            request_id,
             running: true,
             ticks: 0,
             error: None,
         };
         self.status = "Discovering tests".to_owned();
+        request_id
     }
 
-    pub fn apply_discovery_event(&mut self, event: DiscoveryEvent) -> bool {
+    pub fn apply_discovery_event(&mut self, request_id: RequestId, event: DiscoveryEvent) -> bool {
+        if request_id != self.discovery.request_id {
+            return false;
+        }
         match event {
             DiscoveryEvent::Finished(Ok(tests)) => {
                 let count = tests.len();
@@ -321,50 +358,79 @@ impl App {
         self.git_status = git_status;
     }
 
-    pub fn begin_disk_usage_scan(&mut self) {
-        self.disk_usage.begin_scan();
+    pub fn begin_disk_usage_scan(&mut self) -> RequestId {
+        self.disk_usage.begin_scan()
     }
 
-    pub fn apply_disk_usage(&mut self, result: Result<DiskUsageSnapshot, String>) {
+    pub fn apply_disk_usage(
+        &mut self,
+        request_id: RequestId,
+        result: Result<DiskUsageSnapshot, String>,
+    ) {
+        if request_id != self.disk_usage.request_id {
+            return;
+        }
         if let Some(error) = self.disk_usage.apply_result(result).err() {
             self.status = format!("Disk usage failed: {error}");
         }
     }
 
-    pub fn begin_cargo_clean(&mut self) -> bool {
+    pub fn begin_cargo_clean(&mut self) -> Option<RequestId> {
         if !self.disk_cleanup.begin_clean() {
             self.status = "cargo clean already running".to_owned();
-            return false;
+            return None;
         }
         self.status = "Running cargo clean".to_owned();
-        true
+        Some(self.disk_cleanup.request_id)
     }
 
-    pub fn apply_cargo_clean(&mut self, result: Result<(), String>) -> bool {
+    pub fn apply_cargo_clean(
+        &mut self,
+        request_id: RequestId,
+        result: Result<(), String>,
+    ) -> AppEffect {
+        if request_id != self.disk_cleanup.request_id {
+            return AppEffect::None;
+        }
         match &result {
             Ok(()) => self.status = "cargo clean completed".to_owned(),
             Err(error) => self.status = format!("cargo clean failed: {error}"),
         }
-        self.disk_cleanup.apply_result(result)
+        if self.disk_cleanup.apply_result(result) {
+            let request_id = self.begin_disk_usage_scan();
+            AppEffect::RefreshDiskUsage(request_id)
+        } else {
+            AppEffect::None
+        }
     }
 
     pub fn apply_xtask_event(&mut self, event: XtaskEvent) {
         if let Some(status) = match &event {
-            XtaskEvent::InfoLoaded(Ok(manifest)) => Some(format!(
+            XtaskEvent::InfoLoaded {
+                result: Ok(manifest),
+                ..
+            } => Some(format!(
                 "Discovered {} xtask command(s)",
                 manifest.commands.len()
             )),
-            XtaskEvent::InfoLoaded(Err(error)) => Some(format!("Xtask discovery failed: {error}")),
-            XtaskEvent::RunOutput(_) => None,
-            XtaskEvent::RunFinished(Ok(output)) if output.success => {
-                Some(format!("Xtask completed: {}", output.command_line))
-            }
-            XtaskEvent::RunFinished(Ok(output)) => {
-                Some(format!("Xtask failed: {}", output.command_line))
-            }
-            XtaskEvent::RunFinished(Err(error)) => Some(format!("Xtask failed: {error}")),
+            XtaskEvent::InfoLoaded {
+                result: Err(error), ..
+            } => Some(format!("Xtask discovery failed: {error}")),
+            XtaskEvent::RunOutput { .. } => None,
+            XtaskEvent::RunFinished {
+                result: Ok(output), ..
+            } if output.success => Some(format!("Xtask completed: {}", output.command_line)),
+            XtaskEvent::RunFinished {
+                result: Ok(output), ..
+            } => Some(format!("Xtask failed: {}", output.command_line)),
+            XtaskEvent::RunFinished {
+                result: Err(error), ..
+            } => Some(format!("Xtask failed: {error}")),
         } {
-            self.status = status;
+            if self.xtasks.apply_event(event) {
+                self.status = status;
+            }
+            return;
         }
         self.xtasks.apply_event(event);
     }
@@ -626,14 +692,14 @@ impl App {
             AppCommand::PageUp => {
                 match self.command_focus() {
                     FocusPane::Tree => self.select_previous_page(),
-                    FocusPane::Output => self.scroll_output_up(self.output_page_size),
+                    FocusPane::Output => self.scroll_output_up(self.main_output.page_size),
                 }
                 AppEffect::None
             }
             AppCommand::PageDown => {
                 match self.command_focus() {
                     FocusPane::Tree => self.select_next_page(),
-                    FocusPane::Output => self.scroll_output_down(self.output_page_size),
+                    FocusPane::Output => self.scroll_output_down(self.main_output.page_size),
                 }
                 AppEffect::None
             }
@@ -649,8 +715,8 @@ impl App {
                     self.status = "Run in progress".to_owned();
                     AppEffect::None
                 } else {
-                    self.begin_discovery();
-                    AppEffect::StartDiscovery
+                    let request_id = self.begin_discovery();
+                    AppEffect::StartDiscovery(request_id)
                 }
             }
             AppCommand::RunSelected => {
@@ -706,8 +772,8 @@ impl App {
                 AppEffect::None
             }
             AppCommand::RefreshDiskUsage => {
-                self.begin_disk_usage_scan();
-                AppEffect::RefreshDiskUsage
+                let request_id = self.begin_disk_usage_scan();
+                AppEffect::RefreshDiskUsage(request_id)
             }
             AppCommand::OpenDiskCleanup => {
                 self.disk_cleanup.modal_open = true;
@@ -720,8 +786,8 @@ impl App {
                 AppEffect::None
             }
             AppCommand::RunCargoClean => {
-                if self.begin_cargo_clean() {
-                    AppEffect::RunCargoClean
+                if let Some(request_id) = self.begin_cargo_clean() {
+                    AppEffect::RunCargoClean(request_id)
                 } else {
                     AppEffect::None
                 }
@@ -737,9 +803,9 @@ impl App {
                 AppEffect::None
             }
             AppCommand::RefreshXtasks => {
-                self.xtasks.begin_load();
+                let request_id = self.xtasks.begin_load();
                 self.status = "Refreshing xtasks".to_owned();
-                AppEffect::RefreshXtasks
+                AppEffect::RefreshXtasks(request_id)
             }
             AppCommand::OpenSelectedXtask => {
                 if self.xtasks.open_detail() {
@@ -765,26 +831,31 @@ impl App {
                 AppEffect::None
             }
             AppCommand::XtaskNextArg => {
+                self.xtasks.focus_parameters();
                 self.xtasks.select_next_arg();
                 AppEffect::None
             }
             AppCommand::XtaskPreviousArg => {
+                self.xtasks.focus_parameters();
                 self.xtasks.select_previous_arg();
                 AppEffect::None
             }
             AppCommand::XtaskAdjustLeft => {
+                self.xtasks.focus_parameters();
                 if !self.xtasks.adjust_selected_arg(-1) {
                     self.status = "Selected xtask argument is not adjustable".to_owned();
                 }
                 AppEffect::None
             }
             AppCommand::XtaskAdjustRight => {
+                self.xtasks.focus_parameters();
                 if !self.xtasks.adjust_selected_arg(1) {
                     self.status = "Selected xtask argument is not adjustable".to_owned();
                 }
                 AppEffect::None
             }
             AppCommand::XtaskActivateArg => {
+                self.xtasks.focus_parameters();
                 if !self.xtasks.begin_edit_selected_arg() {
                     let adjusted = self.xtasks.adjust_selected_arg(1);
                     if !adjusted {
@@ -793,12 +864,44 @@ impl App {
                 }
                 AppEffect::None
             }
+            AppCommand::ToggleXtaskDetailFocus => {
+                self.xtasks.toggle_detail_focus();
+                self.status = match self.xtasks.detail_focus {
+                    crate::xtask::XtaskDetailFocus::Parameters => {
+                        "Xtask parameters focused".to_owned()
+                    }
+                    crate::xtask::XtaskDetailFocus::Output => "Xtask output focused".to_owned(),
+                };
+                AppEffect::None
+            }
+            AppCommand::XtaskOutputLineUp => {
+                self.xtasks.focus_output();
+                self.xtasks.scroll_output_line_up();
+                AppEffect::None
+            }
+            AppCommand::XtaskOutputLineDown => {
+                self.xtasks.focus_output();
+                self.xtasks.scroll_output_line_down();
+                AppEffect::None
+            }
             AppCommand::XtaskOutputPageUp => {
-                self.xtasks.scroll_output_up(8);
+                self.xtasks.focus_output();
+                self.xtasks.scroll_output_page_up();
                 AppEffect::None
             }
             AppCommand::XtaskOutputPageDown => {
-                self.xtasks.scroll_output_down(8);
+                self.xtasks.focus_output();
+                self.xtasks.scroll_output_page_down();
+                AppEffect::None
+            }
+            AppCommand::XtaskOutputTop => {
+                self.xtasks.focus_output();
+                self.xtasks.scroll_output_top();
+                AppEffect::None
+            }
+            AppCommand::XtaskOutputBottom => {
+                self.xtasks.focus_output();
+                self.xtasks.scroll_output_bottom();
                 AppEffect::None
             }
             AppCommand::XtaskEdit(input) => {
@@ -823,9 +926,9 @@ impl App {
                 match self.xtasks.run_request() {
                     Ok(request) => {
                         let command_line = request.command_line();
-                        self.xtasks.begin_run(command_line.clone());
+                        let request_id = self.xtasks.begin_run(command_line.clone());
                         self.status = format!("Running {command_line}");
-                        AppEffect::RunXtask(request)
+                        AppEffect::RunXtask(request_id, request)
                     }
                     Err(error) => {
                         self.status = error.to_string();
@@ -882,11 +985,13 @@ impl App {
                 AppEffect::None
             }
             AppCommand::SearchModalNextControl => {
-                self.output_search.modal_focus = self.output_search.modal_focus.next();
+                let search = self.active_output_search_mut();
+                search.modal_focus = search.modal_focus.next();
                 AppEffect::None
             }
             AppCommand::SearchModalPreviousControl => {
-                self.output_search.modal_focus = self.output_search.modal_focus.previous();
+                let search = self.active_output_search_mut();
+                search.modal_focus = search.modal_focus.previous();
                 AppEffect::None
             }
             AppCommand::SearchModalActivate => {
@@ -911,6 +1016,10 @@ impl App {
             }
             AppCommand::ToggleOutputCaseSensitive => {
                 self.toggle_output_case_sensitive();
+                AppEffect::None
+            }
+            AppCommand::ToggleOutputSnap => {
+                self.toggle_output_snap();
                 AppEffect::None
             }
             AppCommand::ReportStatus(status) => {
@@ -1039,22 +1148,16 @@ impl App {
     }
 
     pub fn scroll_output_up(&mut self, amount: u16) {
-        self.output_scroll = scroll::up(self.output_scroll as usize, amount as usize) as u16;
-        self.output_follow = false;
+        self.main_output.scroll_up(amount);
     }
 
     pub fn scroll_output_down(&mut self, amount: u16) {
-        self.output_scroll = scroll::down(
-            self.output_scroll as usize,
-            amount as usize,
-            usize::from(u16::MAX) + 1,
-            1,
-        ) as u16;
-        self.output_follow = false;
+        self.main_output.scroll_down(amount);
     }
 
     pub fn scroll_output_bottom(&mut self) {
-        self.output_follow = true;
+        let line_count = self.output_source_text().lines().count().max(1);
+        self.main_output.snap_to_bottom(line_count);
     }
 
     pub fn output_text(&self) -> String {
@@ -1062,12 +1165,7 @@ impl App {
     }
 
     pub fn output_view(&self) -> OutputView {
-        let text = self.output_source_text();
-        self.output_search.filtered_view(&text)
-    }
-
-    pub fn output_search_error(&self) -> Option<String> {
-        self.output_search.error()
+        self.output_view_for(OutputPaneId::Main)
     }
 
     pub fn selected_scope(&self) -> RunScope {
@@ -1106,15 +1204,14 @@ impl App {
         }
     }
 
-    pub fn begin_run(&mut self, request: &RunRequest) -> bool {
+    pub fn begin_run(&mut self, request: &RunRequest) -> Option<RequestId> {
         if self.running {
             self.status = "Run already in progress".to_owned();
-            return false;
+            return None;
         }
 
         self.reset_for_run(request);
-        self.begin_disk_usage_scan();
-        true
+        Some(self.begin_disk_usage_scan())
     }
 
     pub fn apply_run_event(&mut self, event: RunEvent) {
@@ -1253,17 +1350,9 @@ impl App {
     }
 
     fn open_output_effect(&mut self) -> AppEffect {
-        let title = if self.xtask_output_active() {
-            self.xtasks
-                .selected_command()
-                .map(|command| format!("Xtask: {}", command.name))
-                .unwrap_or_else(|| "Xtask".to_owned())
-        } else if self.discovery.error.is_some() {
-            "Discovery failed".to_owned()
-        } else {
-            self.tree.selected_path()
-        };
-        let text = self.output_text();
+        let output = self.active_output_pane();
+        let title = self.output_title_for(output);
+        let text = self.output_view_for(output).text;
         self.status = "Opening output".to_owned();
         AppEffect::OpenOutput(OutputOpenRequest { title, text })
     }
@@ -1277,17 +1366,81 @@ impl App {
     }
 
     pub(crate) fn output_source_text(&self) -> String {
-        if self.xtask_output_active() {
-            self.xtasks.output_text()
-        } else if let Some(error) = &self.discovery.error {
+        if let Some(error) = &self.discovery.error {
             discovery_error_output(error)
         } else {
             self.tree.selected_output()
         }
     }
 
+    pub(crate) fn active_output_search(&self) -> &OutputSearchState {
+        &self.output_state(self.active_output_pane()).search
+    }
+
     fn xtask_output_active(&self) -> bool {
         self.xtasks.modal_open && self.xtasks.detail_open
+    }
+
+    fn active_output_pane(&self) -> OutputPaneId {
+        if self.xtask_output_active() {
+            OutputPaneId::Xtask
+        } else {
+            OutputPaneId::Main
+        }
+    }
+
+    fn output_state(&self, output: OutputPaneId) -> &OutputPaneState {
+        match output {
+            OutputPaneId::Main => &self.main_output,
+            OutputPaneId::Xtask => &self.xtasks.output,
+        }
+    }
+
+    fn output_state_mut(&mut self, output: OutputPaneId) -> &mut OutputPaneState {
+        match output {
+            OutputPaneId::Main => &mut self.main_output,
+            OutputPaneId::Xtask => &mut self.xtasks.output,
+        }
+    }
+
+    fn active_output_search_mut(&mut self) -> &mut OutputSearchState {
+        let output = self.active_output_pane();
+        &mut self.output_state_mut(output).search
+    }
+
+    fn output_view_for(&self, output: OutputPaneId) -> OutputView {
+        let text = self.output_source_text_for(output);
+        self.output_state(output).output_view(&text)
+    }
+
+    fn output_source_text_for(&self, output: OutputPaneId) -> String {
+        match output {
+            OutputPaneId::Main => self.output_source_text(),
+            OutputPaneId::Xtask => self.xtasks.output_text(),
+        }
+    }
+
+    fn toggle_output_snap(&mut self) {
+        let output = self.active_output_pane();
+        let line_count = self.output_source_text_for(output).lines().count().max(1);
+        let enabled = self.output_state_mut(output).toggle_snap(line_count);
+        self.status = format!("Output snap: {}", if enabled { "on" } else { "off" });
+    }
+
+    fn disable_output_snap(&mut self, output: OutputPaneId) {
+        self.output_state_mut(output).disable_snap();
+    }
+
+    fn output_title_for(&self, output: OutputPaneId) -> String {
+        match output {
+            OutputPaneId::Main if self.discovery.error.is_some() => "Discovery failed".to_owned(),
+            OutputPaneId::Main => self.tree.selected_path(),
+            OutputPaneId::Xtask => self
+                .xtasks
+                .selected_command()
+                .map(|command| format!("Xtask: {}", command.name))
+                .unwrap_or_else(|| "Xtask".to_owned()),
+        }
     }
 
     fn selected_source_location(&self) -> Option<SourceLocation> {
@@ -1341,13 +1494,7 @@ impl App {
     }
 
     fn clamp_output_scroll(&mut self) {
-        if self.output_follow {
-            self.output_scroll = 0;
-        }
-    }
-
-    fn max_output_scroll(&self, line_count: usize) -> u16 {
-        scroll::max_scroll(line_count, self.output_page_size as usize).min(u16::MAX as usize) as u16
+        self.main_output.clamp_following_scroll_to_top();
     }
 
     fn reset_for_run(&mut self, request: &RunRequest) {
@@ -1369,15 +1516,11 @@ impl App {
     }
 
     fn reset_output_for_source_change(&mut self) {
-        self.output_scroll = 0;
-        self.output_follow = true;
-        self.output_search.current_line = None;
+        self.main_output.reset_for_source_change();
     }
 
     fn reset_output_for_modal(&mut self) {
-        self.output_scroll = 0;
-        self.output_follow = false;
-        self.output_search.current_line = None;
+        self.main_output.reset_for_modal();
     }
 
     fn mark_tests_running(&mut self) {
@@ -1428,157 +1571,213 @@ impl App {
     }
 
     fn start_output_search(&mut self) {
-        self.focus = FocusPane::Output;
-        self.output_search.sync_draft_from_applied();
-        self.output_search.input_active = true;
-        self.output_search.modal_open = false;
-        self.status = output_search_prompt(&self.output_search);
+        let output = self.active_output_pane();
+        if output == OutputPaneId::Main {
+            self.focus = FocusPane::Output;
+        } else {
+            self.xtasks.focus_output();
+        }
+        self.disable_output_snap(output);
+        self.status = {
+            let search = &mut self.output_state_mut(output).search;
+            search.sync_draft_from_applied();
+            search.input_active = true;
+            search.modal_open = false;
+            output_search_prompt(search)
+        };
     }
 
     fn edit_output_search(&mut self, input: SearchEditorInput) {
-        if self.output_search.modal_open
-            && self.output_search.modal_focus != SearchModalFocus::Query
-        {
-            return;
-        }
-        if self.output_search.input_active || self.output_search.modal_open {
-            self.output_search.edit_draft(input);
-            self.status = output_search_prompt(&self.output_search);
+        let output = self.active_output_pane();
+        let status = {
+            let search = &mut self.output_state_mut(output).search;
+            if search.modal_open && search.modal_focus != SearchModalFocus::Query {
+                return;
+            }
+            if search.input_active || search.modal_open {
+                search.edit_draft(input);
+                Some(output_search_prompt(search))
+            } else {
+                None
+            }
+        };
+        if let Some(status) = status {
+            self.status = status;
         }
     }
 
     fn clear_output_search(&mut self) {
-        if self.output_search.input_active || self.output_search.modal_open {
-            self.output_search.clear_draft();
+        let output = self.active_output_pane();
+        let cleared_draft = {
+            let search = &mut self.output_state_mut(output).search;
+            if search.input_active || search.modal_open {
+                search.clear_draft();
+                true
+            } else {
+                search.sync_draft_from_applied();
+                search.clear_draft();
+                search.apply_draft();
+                search.current_line = None;
+                false
+            }
+        };
+        if cleared_draft {
             self.status = "Output search draft cleared".to_owned();
             return;
         }
-        self.output_search.sync_draft_from_applied();
-        self.output_search.clear_draft();
-        self.output_search.apply_draft();
-        self.output_search.current_line = None;
-        self.reset_active_output_scroll();
-        self.output_follow = false;
+        self.reset_output_scroll(output);
+        self.disable_output_snap(output);
         self.status = "Output search cleared".to_owned();
     }
 
     fn open_output_search_modal(&mut self) {
-        self.output_search.input_active = false;
-        self.output_search.modal_open = true;
-        self.output_search.modal_focus = SearchModalFocus::Query;
-        if self.output_search.draft_query.is_empty() && !self.output_search.query.is_empty() {
-            self.output_search.sync_draft_from_applied();
+        let output = self.active_output_pane();
+        self.disable_output_snap(output);
+        {
+            let search = &mut self.output_state_mut(output).search;
+            search.input_active = false;
+            search.modal_open = true;
+            search.modal_focus = SearchModalFocus::Query;
+            if search.draft_query.is_empty() && !search.query.is_empty() {
+                search.sync_draft_from_applied();
+            }
         }
         self.status = "Output search options".to_owned();
     }
 
     fn apply_output_search(&mut self) {
-        let previous_current_line = self.output_search.current_line;
-        self.output_search.apply_draft();
-        self.output_search.input_active = false;
-        self.output_search.modal_open = false;
-        if self.output_search.query.is_empty() {
-            self.output_search.current_line = None;
-            self.reset_active_output_scroll();
-            self.output_follow = false;
+        let output = self.active_output_pane();
+        let (query_empty, previous_current_line) = {
+            let search = &mut self.output_state_mut(output).search;
+            let previous_current_line = search.current_line;
+            search.apply_draft();
+            search.input_active = false;
+            search.modal_open = false;
+            if search.query.is_empty() {
+                search.current_line = None;
+            }
+            (search.query.is_empty(), previous_current_line)
+        };
+        if query_empty {
+            self.reset_output_scroll(output);
+            self.disable_output_snap(output);
             self.status = "Output search cleared".to_owned();
         } else {
-            self.select_output_match_after_apply(previous_current_line);
+            self.select_output_match_after_apply(output, previous_current_line);
         }
     }
 
     fn cancel_output_search(&mut self) {
-        self.output_search.input_active = false;
-        self.output_search.modal_open = false;
-        self.output_search.sync_draft_from_applied();
+        let output = self.active_output_pane();
+        {
+            let search = &mut self.output_state_mut(output).search;
+            search.input_active = false;
+            search.modal_open = false;
+            search.sync_draft_from_applied();
+        }
         self.status = "Output search cancelled".to_owned();
     }
 
     fn activate_output_search_modal_control(&mut self) {
-        match self.output_search.modal_focus {
+        let output = self.active_output_pane();
+        match self.output_state(output).search.modal_focus {
             SearchModalFocus::Query => {
-                self.output_search.edit_draft(SearchEditorInput::new(
-                    SearchEditorKey::Enter,
-                    false,
-                    false,
-                    false,
-                ));
+                self.output_state_mut(output)
+                    .search
+                    .edit_draft(SearchEditorInput::new(
+                        SearchEditorKey::Enter,
+                        false,
+                        false,
+                        false,
+                    ));
             }
-            SearchModalFocus::Clear => self.output_search.clear_draft(),
+            SearchModalFocus::Clear => self.output_state_mut(output).search.clear_draft(),
             SearchModalFocus::Apply => self.apply_output_search(),
             SearchModalFocus::Filter => {
-                self.output_search.draft_filter = !self.output_search.draft_filter;
+                let search = &mut self.output_state_mut(output).search;
+                search.draft_filter = !search.draft_filter;
             }
             SearchModalFocus::Regex => {
-                self.output_search.draft_regex = !self.output_search.draft_regex;
+                let search = &mut self.output_state_mut(output).search;
+                search.draft_regex = !search.draft_regex;
             }
             SearchModalFocus::CaseSensitive => {
-                self.output_search.draft_case_sensitive = !self.output_search.draft_case_sensitive;
+                let search = &mut self.output_state_mut(output).search;
+                search.draft_case_sensitive = !search.draft_case_sensitive;
             }
         }
     }
 
     fn toggle_output_filter(&mut self) {
-        if self.output_search.modal_open {
-            self.output_search.draft_filter = !self.output_search.draft_filter;
+        let output = self.active_output_pane();
+        if self.output_state(output).search.modal_open {
+            let search = &mut self.output_state_mut(output).search;
+            search.draft_filter = !search.draft_filter;
             return;
         }
-        self.output_search.filter = !self.output_search.filter;
-        self.output_search.sync_draft_from_applied();
-        self.scroll_to_current_output_match();
-        self.output_follow = false;
-        self.status = format!(
-            "Output filter: {}",
-            if self.output_search.filter {
-                "on"
-            } else {
-                "off"
-            }
-        );
+        let enabled = {
+            let search = &mut self.output_state_mut(output).search;
+            search.filter = !search.filter;
+            search.sync_draft_from_applied();
+            search.filter
+        };
+        self.scroll_to_current_output_match(output);
+        self.disable_output_snap(output);
+        self.status = format!("Output filter: {}", if enabled { "on" } else { "off" });
     }
 
     fn toggle_output_regex(&mut self) {
-        if self.output_search.modal_open {
-            self.output_search.draft_regex = !self.output_search.draft_regex;
+        let output = self.active_output_pane();
+        if self.output_state(output).search.modal_open {
+            let search = &mut self.output_state_mut(output).search;
+            search.draft_regex = !search.draft_regex;
             return;
         }
-        self.output_search.regex = !self.output_search.regex;
-        self.output_search.sync_draft_from_applied();
-        self.output_search.current_line = None;
-        self.status = match self.output_search_error() {
-            Some(error) => format!("Invalid output search regex: {error}"),
-            None => format!(
-                "Output regex: {}",
-                if self.output_search.regex {
-                    "on"
-                } else {
-                    "off"
-                }
-            ),
+        let enabled = {
+            let search = &mut self.output_state_mut(output).search;
+            search.regex = !search.regex;
+            search.sync_draft_from_applied();
+            search.current_line = None;
+            search.regex
         };
+        self.status = match self.output_state(output).search.error() {
+            Some(error) => format!("Invalid output search regex: {error}"),
+            None => format!("Output regex: {}", if enabled { "on" } else { "off" }),
+        };
+        self.disable_output_snap(output);
     }
 
     fn toggle_output_case_sensitive(&mut self) {
-        if self.output_search.modal_open {
-            self.output_search.draft_case_sensitive = !self.output_search.draft_case_sensitive;
+        let output = self.active_output_pane();
+        if self.output_state(output).search.modal_open {
+            let search = &mut self.output_state_mut(output).search;
+            search.draft_case_sensitive = !search.draft_case_sensitive;
             return;
         }
-        self.output_search.case_sensitive = !self.output_search.case_sensitive;
-        self.output_search.sync_draft_from_applied();
-        self.output_search.current_line = None;
+        let enabled = {
+            let search = &mut self.output_state_mut(output).search;
+            search.case_sensitive = !search.case_sensitive;
+            search.sync_draft_from_applied();
+            search.current_line = None;
+            search.case_sensitive
+        };
         self.status = format!(
             "Output case sensitive: {}",
-            if self.output_search.case_sensitive {
-                "on"
-            } else {
-                "off"
-            }
+            if enabled { "on" } else { "off" }
         );
+        self.disable_output_snap(output);
     }
 
     fn find_output_match(&mut self, direction: SearchDirection) {
-        let text = self.output_source_text();
-        let matches = match self.output_search.match_lines(&text) {
+        let output = self.active_output_pane();
+        self.disable_output_snap(output);
+        let text = self.output_source_text_for(output);
+        let query = self.output_state(output).search.query.clone();
+        if query.is_empty() {
+            self.status = "No output search query".to_owned();
+            return;
+        }
+        let matches = match self.output_state(output).search.match_lines(&text) {
             Ok(matches) => matches,
             Err(error) => {
                 self.status = format!("Invalid output search regex: {error}");
@@ -1586,31 +1785,31 @@ impl App {
             }
         };
 
-        if self.output_search.query.is_empty() {
-            self.status = "No output search query".to_owned();
-            return;
-        }
-
         if matches.is_empty() {
-            self.output_search.current_line = None;
-            self.status = format!("No output matches for '{}'", self.output_search.query);
+            self.output_state_mut(output).search.current_line = None;
+            self.status = format!("No output matches for '{query}'");
             return;
         }
 
         let output_match = self
-            .output_search
+            .output_state(output)
+            .search
             .next_match(&text, direction)
             .expect("matches already validated")
             .expect("matches already non-empty");
-        self.output_search.current_line = Some(output_match.line);
-        self.scroll_to_current_output_match();
-        self.output_follow = false;
-        self.status = self.output_match_status(output_match.index, output_match.total);
+        self.output_state_mut(output).search.current_line = Some(output_match.line);
+        self.scroll_to_current_output_match(output);
+        self.status = self.output_match_status(output, output_match.index, output_match.total);
     }
 
-    fn select_output_match_after_apply(&mut self, preferred_source_line: Option<usize>) {
-        let text = self.output_source_text();
-        let matches = match self.output_search.match_lines(&text) {
+    fn select_output_match_after_apply(
+        &mut self,
+        output: OutputPaneId,
+        preferred_source_line: Option<usize>,
+    ) {
+        let text = self.output_source_text_for(output);
+        let query = self.output_state(output).search.query.clone();
+        let matches = match self.output_state(output).search.match_lines(&text) {
             Ok(matches) => matches,
             Err(error) => {
                 self.status = format!("Invalid output search regex: {error}");
@@ -1619,52 +1818,52 @@ impl App {
         };
 
         if matches.is_empty() {
-            self.output_search.current_line = None;
-            self.status = format!("No output matches for '{}'", self.output_search.query);
+            self.output_state_mut(output).search.current_line = None;
+            self.status = format!("No output matches for '{query}'");
             return;
         }
 
         if let Some(source_line) = preferred_source_line
             && let Some(index) = matches.iter().position(|line| *line == source_line)
         {
-            self.output_search.current_line = Some(source_line);
-            self.scroll_to_current_output_match();
-            self.output_follow = false;
-            self.status = self.output_match_status(index, matches.len());
+            self.output_state_mut(output).search.current_line = Some(source_line);
+            self.scroll_to_current_output_match(output);
+            self.disable_output_snap(output);
+            self.status = self.output_match_status(output, index, matches.len());
             return;
         }
 
-        self.find_output_match(SearchDirection::Next);
+        let source_line = matches[0];
+        self.output_state_mut(output).search.current_line = Some(source_line);
+        self.scroll_to_current_output_match(output);
+        self.disable_output_snap(output);
+        self.status = self.output_match_status(output, 0, matches.len());
     }
 
-    fn scroll_to_current_output_match(&mut self) {
-        let Some(source_line) = self.output_search.current_line else {
+    fn scroll_to_current_output_match(&mut self, output: OutputPaneId) {
+        let Some(source_line) = self.output_state(output).search.current_line else {
             return;
         };
-        let view = self.output_view();
+        let view = self.output_view_for(output);
         if let Some(view_line) = view.line_index_for_source_line(source_line) {
-            self.set_active_output_scroll(view_line.min(u16::MAX as usize) as u16);
+            self.set_output_scroll(output, view_line.min(u16::MAX as usize) as u16);
         }
     }
 
-    fn reset_active_output_scroll(&mut self) {
-        self.set_active_output_scroll(0);
+    fn reset_output_scroll(&mut self, output: OutputPaneId) {
+        self.set_output_scroll(output, 0);
     }
 
-    fn set_active_output_scroll(&mut self, scroll: u16) {
-        if self.xtask_output_active() {
-            self.xtasks.output_scroll = scroll;
-        } else {
-            self.output_scroll = scroll;
-        }
+    fn set_output_scroll(&mut self, output: OutputPaneId, scroll: u16) {
+        self.output_state_mut(output).set_scroll(scroll);
     }
 
-    fn output_match_status(&self, index: usize, total: usize) -> String {
+    fn output_match_status(&self, output: OutputPaneId, index: usize, total: usize) -> String {
         format!(
             "Output match {}/{} for '{}'",
             index + 1,
             total,
-            self.output_search.query
+            self.output_state(output).search.query
         )
     }
 }

@@ -328,7 +328,7 @@ impl NextestClient {
     pub async fn run(
         &self,
         request: RunRequest,
-        tx: mpsc::UnboundedSender<RunEvent>,
+        tx: mpsc::Sender<RunEvent>,
         mut stop_rx: mpsc::UnboundedReceiver<()>,
     ) -> Result<()> {
         let arg_sets = request.scope.nextest_arg_sets();
@@ -336,11 +336,13 @@ impl NextestClient {
         let mut exit_code = Some(0);
         for (index, scope_args) in arg_sets.into_iter().enumerate() {
             if total_runs > 1 {
-                let _ = tx.send(RunEvent::RunnerOutput(format!(
-                    "Starting failed test group {}/{}",
-                    index + 1,
-                    total_runs
-                )));
+                let _ = tx
+                    .send(RunEvent::RunnerOutput(format!(
+                        "Starting failed test group {}/{}",
+                        index + 1,
+                        total_runs
+                    )))
+                    .await;
             }
 
             match self.run_once(scope_args, &tx, &mut stop_rx).await? {
@@ -350,20 +352,20 @@ impl NextestClient {
                     }
                 }
                 RunProcessOutcome::Stopped => {
-                    let _ = tx.send(RunEvent::RunnerStopped);
+                    let _ = tx.send(RunEvent::RunnerStopped).await;
                     return Ok(());
                 }
             }
         }
 
-        let _ = tx.send(RunEvent::RunnerFinished { exit_code });
+        let _ = tx.send(RunEvent::RunnerFinished { exit_code }).await;
         Ok(())
     }
 
     async fn run_once(
         &self,
         scope_args: Vec<String>,
-        tx: &mpsc::UnboundedSender<RunEvent>,
+        tx: &mpsc::Sender<RunEvent>,
         stop_rx: &mut mpsc::UnboundedReceiver<()>,
     ) -> Result<RunProcessOutcome> {
         let mut command = self.run_command(scope_args);
@@ -385,25 +387,25 @@ impl NextestClient {
         let stdout_task = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Some(line) = lines.next_line().await? {
-                if consume_success_output_line(&line, &stdout_success_output, &stdout_tx) {
+                if consume_success_output_line(&line, &stdout_success_output, &stdout_tx).await {
                     continue;
                 }
 
                 match parse_run_line(&line) {
                     Some(event) => {
                         observe_success_output_event(&event, &stdout_success_output);
-                        let _ = stdout_tx.send(event);
+                        let _ = stdout_tx.send(event).await;
                     }
                     None if let Some(event) = parse_runner_line(&line) => {
-                        let _ = stdout_tx.send(event);
+                        let _ = stdout_tx.send(event).await;
                     }
                     None if !line.trim().is_empty() => {
-                        let _ = stdout_tx.send(RunEvent::RunnerOutput(line));
+                        let _ = stdout_tx.send(RunEvent::RunnerOutput(line)).await;
                     }
                     None => {}
                 }
             }
-            flush_success_output(&stdout_success_output, &stdout_tx);
+            flush_success_output(&stdout_success_output, &stdout_tx).await;
             anyhow::Ok(())
         });
 
@@ -412,17 +414,17 @@ impl NextestClient {
         let stderr_task = tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Some(line) = lines.next_line().await? {
-                if consume_success_output_line(&line, &stderr_success_output, &stderr_tx) {
+                if consume_success_output_line(&line, &stderr_success_output, &stderr_tx).await {
                     continue;
                 }
 
                 if let Some(event) = parse_runner_line(&line) {
-                    let _ = stderr_tx.send(event);
+                    let _ = stderr_tx.send(event).await;
                 } else if !line.trim().is_empty() {
-                    let _ = stderr_tx.send(RunEvent::RunnerOutput(line));
+                    let _ = stderr_tx.send(RunEvent::RunnerOutput(line)).await;
                 }
             }
-            flush_success_output(&stderr_success_output, &stderr_tx);
+            flush_success_output(&stderr_success_output, &stderr_tx).await;
             anyhow::Ok(())
         });
 
@@ -432,11 +434,11 @@ impl NextestClient {
             }
             stop = stop_rx.recv() => {
                 if stop.is_some() {
-                    let _ = tx.send(RunEvent::RunnerOutput("Run stopped by user".to_owned()));
+                    let _ = tx.send(RunEvent::RunnerOutput("Run stopped by user".to_owned())).await;
                     if let Err(error) = terminate_child_process_tree(&mut child) {
                         let _ = tx.send(RunEvent::RunnerOutput(format!(
                             "Failed to stop nextest: {error}"
-                        )));
+                        ))).await;
                     }
                     (
                         wait_for_stopped_child(&mut child, tx)
@@ -526,18 +528,22 @@ fn configure_run_command(_command: &mut Command) {}
 
 async fn wait_for_stopped_child(
     child: &mut Child,
-    tx: &mpsc::UnboundedSender<RunEvent>,
+    tx: &mpsc::Sender<RunEvent>,
 ) -> Result<ExitStatus> {
     match time::timeout(STOP_GRACE_PERIOD, child.wait()).await {
         Ok(status) => status.context("waiting for stopped nextest"),
         Err(_) => {
-            let _ = tx.send(RunEvent::RunnerOutput(
-                "Run did not stop promptly; forcing termination".to_owned(),
-            ));
+            let _ = tx
+                .send(RunEvent::RunnerOutput(
+                    "Run did not stop promptly; forcing termination".to_owned(),
+                ))
+                .await;
             if let Err(error) = force_kill_child_process_tree(child) {
-                let _ = tx.send(RunEvent::RunnerOutput(format!(
-                    "Failed to force stop nextest: {error}"
-                )));
+                let _ = tx
+                    .send(RunEvent::RunnerOutput(format!(
+                        "Failed to force stop nextest: {error}"
+                    )))
+                    .await;
             }
             child
                 .wait()
@@ -830,10 +836,10 @@ fn observe_success_output_event(
     }
 }
 
-fn consume_success_output_line(
+async fn consume_success_output_line(
     line: &str,
     collector: &Arc<Mutex<SuccessfulOutputCollector>>,
-    tx: &mpsc::UnboundedSender<RunEvent>,
+    tx: &mpsc::Sender<RunEvent>,
 ) -> bool {
     let mut event = None;
     let consumed = if let Ok(mut collector) = collector.lock() {
@@ -852,21 +858,21 @@ fn consume_success_output_line(
     };
 
     if let Some(event) = event {
-        let _ = tx.send(event);
+        let _ = tx.send(event).await;
     }
     consumed
 }
 
-fn flush_success_output(
+async fn flush_success_output(
     collector: &Arc<Mutex<SuccessfulOutputCollector>>,
-    tx: &mpsc::UnboundedSender<RunEvent>,
+    tx: &mpsc::Sender<RunEvent>,
 ) {
     let event = collector
         .lock()
         .ok()
         .and_then(|mut collector| collector.finish_event());
     if let Some(event) = event {
-        let _ = tx.send(event);
+        let _ = tx.send(event).await;
     }
 }
 

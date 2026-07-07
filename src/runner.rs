@@ -16,6 +16,7 @@ use crate::{
     input::{InputEvent, InputSource},
     nextest::{DiscoveryEvent, NextestClient, RunEvent, RunRequest},
     queue::{self, QueueEvent, QueueSender},
+    request::RequestId,
     terminal::AppTerminal,
     theme::Theme,
     ui,
@@ -33,32 +34,23 @@ pub async fn run(
 ) -> Result<()> {
     let (queue_tx, queue_rx) = queue::channel();
 
-    let discovery = start_discovery(client.clone(), queue_tx.clone());
-    let xtasks = start_xtask_info(client.project_dir(), queue_tx.clone());
     let git_status = start_git_status(client.project_dir(), queue_tx.clone());
-    app.begin_disk_usage_scan();
-    let disk_usage = start_disk_usage(client.project_dir(), queue_tx.clone());
     let input = InputSource::start(queue_tx.clone());
     let ticker = queue::start_ticker(queue_tx.clone(), Duration::from_millis(250));
-    let result = run_loop(
-        terminal,
-        app,
-        run_on_start,
-        RunLoopContext {
-            client,
-            theme,
-            editor,
-            cli_open_with,
-            queue_tx,
-            runtime_settings: RuntimeSettings::from_settings(&app.settings),
-        },
-        queue_rx,
-    )
-    .await;
-    discovery.abort();
-    xtasks.abort();
+    let mut context = RunLoopContext {
+        client,
+        theme,
+        editor,
+        cli_open_with,
+        queue_tx,
+        runtime_settings: RuntimeSettings::from_settings(&app.settings),
+    };
+    let mut run_control = None;
+    for effect in app.startup_effects() {
+        handle_effect(app, &mut context, effect, &mut run_control);
+    }
+    let result = run_loop(terminal, app, run_on_start, context, queue_rx, run_control).await;
     git_status.abort();
-    disk_usage.abort();
     ticker.abort();
     drop(input);
     result
@@ -70,8 +62,8 @@ async fn run_loop(
     mut run_on_start: bool,
     mut context: RunLoopContext<'_>,
     mut queue_rx: queue::QueueReceiver,
+    mut run_control: Option<RunControl>,
 ) -> Result<()> {
-    let mut run_control = None;
     let mut pending_events = Vec::new();
     while !app.should_quit {
         let size = terminal.size()?;
@@ -79,7 +71,13 @@ async fn run_loop(
             Rect::new(0, 0, size.width, size.height),
             app.settings.tree_width_percent,
         );
-        app.prepare_frame(layout.tree.height, layout.output.height);
+        let xtask_output_page_size =
+            ui::xtask_output_page_size(Rect::new(0, 0, size.width, size.height));
+        app.prepare_frame(
+            layout.tree.height,
+            layout.output.height,
+            xtask_output_page_size,
+        );
         terminal.draw(|frame| ui::draw(frame, app, &context.theme))?;
         let Some(event) = queue_rx.recv().await else {
             break;
@@ -164,13 +162,8 @@ fn handle_queue_events(
             );
             continue;
         }
-        handle_queue_event(
-            app,
-            context,
-            run_on_start,
-            events[index].clone(),
-            run_control,
-        );
+        let event = std::mem::replace(&mut events[index], QueueEvent::Tick);
+        handle_queue_event(app, context, run_on_start, event, run_control);
         if app.should_quit {
             break;
         }
@@ -202,9 +195,9 @@ fn should_skip_stale_event(events: &[QueueEvent], index: usize, context: Command
 fn latest_only_event(event: &QueueEvent, context: CommandContext) -> Option<LatestOnlyInput> {
     match event {
         QueueEvent::Input(input) => latest_only_input(input, context),
-        QueueEvent::Discovery(_)
-        | QueueEvent::CargoClean(_)
-        | QueueEvent::DiskUsage(_)
+        QueueEvent::Discovery(_, _)
+        | QueueEvent::CargoClean(_, _)
+        | QueueEvent::DiskUsage(_, _)
         | QueueEvent::GitStatus(_)
         | QueueEvent::Run(_)
         | QueueEvent::Xtask(_)
@@ -259,8 +252,8 @@ fn handle_queue_event(
             tracing::debug!(?effect, status = %app.status, "command applied");
             handle_effect(app, context, effect, run_control);
         }
-        QueueEvent::Discovery(event) => {
-            if app.apply_discovery_event(event) && *run_on_start {
+        QueueEvent::Discovery(request_id, event) => {
+            if app.apply_discovery_event(request_id, event) && *run_on_start {
                 *run_on_start = false;
                 *run_control = start_run(
                     app,
@@ -270,12 +263,10 @@ fn handle_queue_event(
                 );
             }
         }
-        QueueEvent::DiskUsage(result) => app.apply_disk_usage(result),
-        QueueEvent::CargoClean(result) => {
-            if app.apply_cargo_clean(result) {
-                app.begin_disk_usage_scan();
-                start_disk_usage(context.client.project_dir(), context.queue_tx.clone());
-            }
+        QueueEvent::DiskUsage(request_id, result) => app.apply_disk_usage(request_id, result),
+        QueueEvent::CargoClean(request_id, result) => {
+            let effect = app.apply_cargo_clean(request_id, result);
+            handle_effect(app, context, effect, run_control);
         }
         QueueEvent::GitStatus(git_status) => app.apply_git_status(git_status),
         QueueEvent::Run(event) => {
@@ -316,8 +307,8 @@ fn handle_effect(
                 apply_runtime_settings(context, &app.settings);
             }
         }
-        AppEffect::StartDiscovery => {
-            start_discovery(context.client.clone(), context.queue_tx.clone());
+        AppEffect::StartDiscovery(request_id) => {
+            start_discovery(context.client.clone(), request_id, context.queue_tx.clone());
         }
         AppEffect::StartRun(request) => {
             *run_control = start_run(
@@ -354,18 +345,31 @@ fn handle_effect(
                 }
             }
         }
-        AppEffect::RefreshDiskUsage => {
-            start_disk_usage(context.client.project_dir(), context.queue_tx.clone());
+        AppEffect::RefreshDiskUsage(request_id) => {
+            start_disk_usage(
+                context.client.project_dir(),
+                request_id,
+                context.queue_tx.clone(),
+            );
         }
-        AppEffect::RunCargoClean => {
-            start_cargo_clean(context.client.project_dir(), context.queue_tx.clone());
+        AppEffect::RunCargoClean(request_id) => {
+            start_cargo_clean(
+                context.client.project_dir(),
+                request_id,
+                context.queue_tx.clone(),
+            );
         }
-        AppEffect::RefreshXtasks => {
-            start_xtask_info(context.client.project_dir(), context.queue_tx.clone());
+        AppEffect::RefreshXtasks(request_id) => {
+            start_xtask_info(
+                context.client.project_dir(),
+                request_id,
+                context.queue_tx.clone(),
+            );
         }
-        AppEffect::RunXtask(request) => {
+        AppEffect::RunXtask(request_id, request) => {
             start_xtask_run(
                 context.client.project_dir(),
+                request_id,
                 request,
                 context.queue_tx.clone(),
             );
@@ -396,13 +400,22 @@ struct RunControl {
     stop_tx: mpsc::UnboundedSender<()>,
 }
 
-fn start_discovery(client: NextestClient, tx: QueueSender) -> tokio::task::JoinHandle<()> {
+fn start_discovery(
+    client: NextestClient,
+    request_id: RequestId,
+    tx: QueueSender,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let result = client
             .discover()
             .await
             .map_err(|error| format!("{error:#}"));
-        let _ = tx.send(QueueEvent::Discovery(DiscoveryEvent::Finished(result)));
+        let _ = tx
+            .send(QueueEvent::Discovery(
+                request_id,
+                DiscoveryEvent::Finished(result),
+            ))
+            .await;
     })
 }
 
@@ -415,7 +428,7 @@ fn start_git_status(
         loop {
             ticker.tick().await;
             let status = git_status::load(cwd.clone()).await;
-            if tx.send(QueueEvent::GitStatus(status)).is_err() {
+            if tx.send(QueueEvent::GitStatus(status)).await.is_err() {
                 break;
             }
         }
@@ -424,16 +437,18 @@ fn start_git_status(
 
 fn start_disk_usage(
     cwd: Option<std::path::PathBuf>,
+    request_id: RequestId,
     tx: QueueSender,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let result = disk_usage::load(cwd).await;
-        let _ = tx.send(QueueEvent::DiskUsage(result));
+        let _ = tx.send(QueueEvent::DiskUsage(request_id, result)).await;
     })
 }
 
 fn start_cargo_clean(
     cwd: Option<std::path::PathBuf>,
+    request_id: RequestId,
     tx: QueueSender,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -454,32 +469,43 @@ fn start_cargo_clean(
             }
             Err(error) => Err(format!("failed to run cargo clean: {error}")),
         };
-        let _ = tx.send(QueueEvent::CargoClean(result));
+        let _ = tx.send(QueueEvent::CargoClean(request_id, result)).await;
     })
 }
 
 fn start_xtask_info(
     cwd: Option<std::path::PathBuf>,
+    request_id: RequestId,
     tx: QueueSender,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let result = xtask::load(cwd).await.map_err(|error| format!("{error:#}"));
-        let _ = tx.send(QueueEvent::Xtask(XtaskEvent::InfoLoaded(result)));
+        let _ = tx
+            .send(QueueEvent::Xtask(XtaskEvent::InfoLoaded {
+                request_id,
+                result,
+            }))
+            .await;
     })
 }
 
 fn start_xtask_run(
     cwd: Option<std::path::PathBuf>,
+    request_id: RequestId,
     request: XtaskRunRequest,
     tx: QueueSender,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel();
+        let (chunk_tx, mut chunk_rx) = mpsc::channel(queue::APP_EVENT_QUEUE_CAPACITY);
         let output_tx = tx.clone();
         let output_forwarder = tokio::spawn(async move {
             while let Some(chunk) = chunk_rx.recv().await {
                 if output_tx
-                    .send(QueueEvent::Xtask(XtaskEvent::RunOutput(chunk)))
+                    .send(QueueEvent::Xtask(XtaskEvent::RunOutput {
+                        request_id,
+                        chunk,
+                    }))
+                    .await
                     .is_err()
                 {
                     break;
@@ -490,7 +516,12 @@ fn start_xtask_run(
             .await
             .map_err(|error| format!("{error:#}"));
         let _ = output_forwarder.await;
-        let _ = tx.send(QueueEvent::Xtask(XtaskEvent::RunFinished(result)));
+        let _ = tx
+            .send(QueueEvent::Xtask(XtaskEvent::RunFinished {
+                request_id,
+                result,
+            }))
+            .await;
     })
 }
 
@@ -501,27 +532,31 @@ fn start_run(
     tx: QueueSender,
 ) -> Option<RunControl> {
     tracing::debug!(?request, "starting run request");
-    if !app.begin_run(&request) {
+    let Some(disk_usage_request_id) = app.begin_run(&request) else {
         tracing::debug!(?request, "run request ignored");
         return None;
-    }
+    };
 
-    start_disk_usage(client.project_dir(), tx.clone());
+    start_disk_usage(client.project_dir(), disk_usage_request_id, tx.clone());
 
-    let (run_tx, mut run_rx) = mpsc::unbounded_channel::<RunEvent>();
+    let (run_tx, mut run_rx) = mpsc::channel::<RunEvent>(queue::APP_EVENT_QUEUE_CAPACITY);
     let (stop_tx, stop_rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         if let Err(error) = client.run(request, run_tx.clone(), stop_rx).await {
-            let _ = run_tx.send(RunEvent::RunnerOutput(format!(
-                "nextest failed to start: {error}"
-            )));
-            let _ = run_tx.send(RunEvent::RunnerFinished { exit_code: None });
+            let _ = run_tx
+                .send(RunEvent::RunnerOutput(format!(
+                    "nextest failed to start: {error}"
+                )))
+                .await;
+            let _ = run_tx
+                .send(RunEvent::RunnerFinished { exit_code: None })
+                .await;
         }
     });
 
     tokio::spawn(async move {
         while let Some(event) = run_rx.recv().await {
-            if tx.send(QueueEvent::Run(event)).is_err() {
+            if tx.send(QueueEvent::Run(event)).await.is_err() {
                 break;
             }
         }

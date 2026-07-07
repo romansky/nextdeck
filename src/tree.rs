@@ -5,7 +5,11 @@ use std::{
 
 use serde::Serialize;
 
-use crate::{config::TreeDurationMode, output::TestOutput, state::StatusCounts};
+use crate::{
+    config::TreeDurationMode,
+    output::{TestOutput, append_bounded_text, bounded_text},
+    state::StatusCounts,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TestKey {
@@ -445,12 +449,12 @@ impl Tree {
                 let stdout = if stdout.is_empty() {
                     node.output.stdout.clone()
                 } else {
-                    stdout.clone()
+                    bounded_text(stdout.clone())
                 };
                 let stderr = if stderr.is_empty() {
                     node.output.stderr.clone()
                 } else {
-                    stderr.clone()
+                    bounded_text(stderr.clone())
                 };
                 node.output = TestOutput {
                     stdout,
@@ -484,7 +488,7 @@ impl Tree {
     }
 
     pub fn append_runner_output(&mut self, line: String) {
-        self.runner_output.push(line);
+        self.runner_output.push(bounded_text(line));
         if self.runner_output.len() > 500 {
             self.runner_output.drain(0..100);
         }
@@ -739,9 +743,9 @@ fn append_output_text(target: &mut String, text: &str) {
         return;
     }
     if !target.is_empty() && !target.ends_with('\n') {
-        target.push('\n');
+        append_bounded_text(target, "\n");
     }
-    target.push_str(text);
+    append_bounded_text(target, text);
 }
 
 fn collect_visible<'a>(

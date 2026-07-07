@@ -166,16 +166,22 @@ fn rejects_unknown_enum_defaults() {
 #[test]
 fn live_run_output_appends_while_running() {
     let mut state = XtaskState::default();
-    state.begin_run("cargo xtask release".to_owned());
+    let request_id = state.begin_run("cargo xtask release".to_owned());
 
-    state.apply_event(XtaskEvent::RunOutput(XtaskRunChunk {
-        stream: XtaskOutputStream::Stdout,
-        text: "building\n".to_owned(),
-    }));
-    state.apply_event(XtaskEvent::RunOutput(XtaskRunChunk {
-        stream: XtaskOutputStream::Stderr,
-        text: "warning\n".to_owned(),
-    }));
+    state.apply_event(XtaskEvent::RunOutput {
+        request_id,
+        chunk: XtaskRunChunk {
+            stream: XtaskOutputStream::Stdout,
+            text: "building\n".to_owned(),
+        },
+    });
+    state.apply_event(XtaskEvent::RunOutput {
+        request_id,
+        chunk: XtaskRunChunk {
+            stream: XtaskOutputStream::Stderr,
+            text: "warning\n".to_owned(),
+        },
+    });
 
     let output = state.last_run.as_ref().expect("live output");
     assert!(state.running);
@@ -185,4 +191,96 @@ fn live_run_output_appends_while_running() {
     assert!(state.output_text().contains("Running xtask"));
     assert!(state.output_text().contains("building"));
     assert!(state.output_text().contains("warning"));
+}
+
+#[test]
+fn run_output_uses_output_pane_follow_and_page_size() {
+    let mut state = XtaskState::default();
+    state.output.set_page_size(2);
+    let request_id = state.begin_run("cargo xtask release".to_owned());
+
+    state.apply_event(XtaskEvent::RunOutput {
+        request_id,
+        chunk: XtaskRunChunk {
+            stream: XtaskOutputStream::Stdout,
+            text: "one\ntwo\nthree\nfour\n".to_owned(),
+        },
+    });
+
+    assert!(state.output.follow);
+    assert!(state.output.scroll > 0);
+    let followed_scroll = state.output.scroll;
+
+    state.scroll_output_page_up();
+
+    assert!(!state.output.follow);
+    assert_eq!(state.output.scroll, followed_scroll.saturating_sub(2));
+    let manual_scroll = state.output.scroll;
+
+    state.apply_event(XtaskEvent::RunOutput {
+        request_id,
+        chunk: XtaskRunChunk {
+            stream: XtaskOutputStream::Stdout,
+            text: "five\n".to_owned(),
+        },
+    });
+
+    assert_eq!(state.output.scroll, manual_scroll);
+
+    state.scroll_output_page_down();
+
+    assert_eq!(state.output.scroll, manual_scroll.saturating_add(2));
+}
+
+#[test]
+fn stale_run_output_is_ignored() {
+    let mut state = XtaskState::default();
+    let stale_request_id = state.begin_run("cargo xtask old".to_owned());
+    let current_request_id = state.begin_run("cargo xtask current".to_owned());
+
+    assert!(!state.apply_event(XtaskEvent::RunOutput {
+        request_id: stale_request_id,
+        chunk: XtaskRunChunk {
+            stream: XtaskOutputStream::Stdout,
+            text: "old output\n".to_owned(),
+        },
+    }));
+    assert!(state.apply_event(XtaskEvent::RunOutput {
+        request_id: current_request_id,
+        chunk: XtaskRunChunk {
+            stream: XtaskOutputStream::Stdout,
+            text: "current output\n".to_owned(),
+        },
+    }));
+
+    let output = state.last_run.as_ref().expect("current output");
+    assert_eq!(output.command_line, "cargo xtask current");
+    assert_eq!(output.stdout, "current output\n");
+    assert!(!state.output_text().contains("old output"));
+}
+
+#[test]
+fn live_run_output_is_bounded() {
+    let mut state = XtaskState::default();
+    let request_id = state.begin_run("cargo xtask release".to_owned());
+
+    state.apply_event(XtaskEvent::RunOutput {
+        request_id,
+        chunk: XtaskRunChunk {
+            stream: XtaskOutputStream::Stdout,
+            text: "x".repeat(crate::output::OUTPUT_TEXT_LIMIT_BYTES + 1024),
+        },
+    });
+    state.apply_event(XtaskEvent::RunOutput {
+        request_id,
+        chunk: XtaskRunChunk {
+            stream: XtaskOutputStream::Stdout,
+            text: "tail".to_owned(),
+        },
+    });
+
+    let output = state.last_run.as_ref().expect("live output");
+    assert!(output.stdout.len() <= crate::output::OUTPUT_TEXT_LIMIT_BYTES);
+    assert!(output.stdout.starts_with("[... output truncated"));
+    assert!(output.stdout.ends_with("tail"));
 }

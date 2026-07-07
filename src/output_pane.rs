@@ -1,7 +1,7 @@
 use regex::{Regex, RegexBuilder};
 use tui_textarea::{Input as TextAreaInput, Key as TextAreaKey, TextArea};
 
-use crate::symbols::bool_symbol;
+use crate::{scroll, symbols::bool_symbol};
 
 #[derive(Clone, Debug, Default)]
 pub struct OutputSearchState {
@@ -18,6 +18,134 @@ pub struct OutputSearchState {
     pub draft_case_sensitive: bool,
     pub modal_focus: SearchModalFocus,
     pub current_line: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+pub struct OutputPaneState {
+    pub scroll: u16,
+    pub follow: bool,
+    pub page_size: u16,
+    pub search: OutputSearchState,
+}
+
+impl Default for OutputPaneState {
+    fn default() -> Self {
+        Self {
+            scroll: 0,
+            follow: true,
+            page_size: 1,
+            search: OutputSearchState::default(),
+        }
+    }
+}
+
+impl OutputPaneState {
+    pub fn output_view(&self, source_text: &str) -> OutputView {
+        self.search.filtered_view(source_text)
+    }
+
+    pub fn status(&self, label: &str, text: &str, source_text: &str) -> String {
+        let total = output_line_count(text);
+        let search = self.search.view(source_text).title_fragment();
+        let top = self.render_scroll(text) as usize;
+        let visible = self.page_size.max(1) as usize;
+        let bottom = top.saturating_add(visible).min(total);
+        format!(
+            "{label} <#{}-{bottom}/{total} [s]nap:{}> {search}",
+            top + 1,
+            bool_symbol(self.follow)
+        )
+    }
+
+    pub fn render_scroll(&self, text: &str) -> u16 {
+        output_render_scroll_for_count(output_line_count(text), self.page_size, self.scroll)
+    }
+
+    pub fn set_page_size(&mut self, page_size: u16) {
+        self.page_size = page_size.max(1);
+    }
+
+    pub fn set_line_count(&mut self, line_count: usize) {
+        let max_scroll = self.max_scroll(line_count);
+        if self.follow {
+            self.scroll = max_scroll;
+        } else {
+            self.scroll = self.scroll.min(max_scroll);
+        }
+    }
+
+    pub fn scroll_up(&mut self, amount: u16) {
+        self.scroll = scroll::up(self.scroll as usize, amount as usize) as u16;
+        self.disable_snap();
+    }
+
+    pub fn scroll_down(&mut self, amount: u16) {
+        self.scroll = scroll::down(
+            self.scroll as usize,
+            amount as usize,
+            usize::from(u16::MAX) + 1,
+            1,
+        ) as u16;
+        self.disable_snap();
+    }
+
+    pub fn disable_snap(&mut self) {
+        self.follow = false;
+    }
+
+    pub fn snap_to_bottom(&mut self, line_count: usize) {
+        self.follow = true;
+        self.scroll = self.max_scroll(line_count);
+    }
+
+    pub fn toggle_snap(&mut self, line_count: usize) -> bool {
+        if self.follow {
+            self.follow = false;
+        } else {
+            self.snap_to_bottom(line_count);
+        }
+        self.follow
+    }
+
+    pub fn scroll_top(&mut self) {
+        self.scroll = 0;
+    }
+
+    pub fn set_scroll(&mut self, scroll: u16) {
+        self.scroll = scroll;
+    }
+
+    pub fn reset_for_source_change(&mut self) {
+        self.scroll = 0;
+        self.follow = true;
+        self.search.current_line = None;
+    }
+
+    pub fn reset_for_modal(&mut self) {
+        self.scroll = 0;
+        self.follow = false;
+        self.search.current_line = None;
+    }
+
+    pub fn clamp_following_scroll_to_top(&mut self) {
+        if self.follow {
+            self.scroll = 0;
+        }
+    }
+
+    fn max_scroll(&self, line_count: usize) -> u16 {
+        scroll::max_scroll(line_count, self.page_size as usize).min(u16::MAX as usize) as u16
+    }
+}
+
+pub fn output_render_scroll_for_count(total: usize, page_size: u16, scroll: u16) -> u16 {
+    let visible = page_size.max(1) as usize;
+    let max_scroll = total.saturating_sub(visible).min(u16::MAX as usize) as u16;
+    scroll.min(max_scroll)
+}
+
+pub fn output_line_count(text: &str) -> usize {
+    text.lines().count().max(1)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -233,6 +361,13 @@ impl OutputSearchState {
         self.draft_filter = self.filter;
         self.draft_regex = self.regex;
         self.draft_case_sensitive = self.case_sensitive;
+    }
+
+    pub fn close_interaction(&mut self) {
+        self.input_active = false;
+        self.modal_open = false;
+        self.modal_focus = SearchModalFocus::Query;
+        self.sync_draft_from_applied();
     }
 
     pub fn apply_draft(&mut self) {

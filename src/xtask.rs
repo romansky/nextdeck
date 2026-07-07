@@ -8,7 +8,12 @@ use tokio::{
     sync::mpsc,
 };
 
-use crate::input_field::{InputField, InputFieldInput};
+use crate::{
+    input_field::{InputField, InputFieldInput},
+    output::append_bounded_text,
+    output_pane::OutputPaneState,
+    request::RequestId,
+};
 
 pub const INFO_COMMAND: &str = "nextdeck-info";
 pub const SCHEMA_VERSION: u32 = 1;
@@ -65,17 +70,27 @@ pub enum XtaskValueSpec {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum XtaskDetailFocus {
+    #[default]
+    Parameters,
+    Output,
+}
+
+#[derive(Clone, Debug)]
 pub struct XtaskState {
     pub modal_open: bool,
     pub detail_open: bool,
+    pub load_request_id: RequestId,
+    pub run_request_id: RequestId,
     pub loading: bool,
     pub running: bool,
     pub error: Option<String>,
     pub manifest: Option<XtaskManifest>,
     pub selected_command: usize,
     pub selected_arg: usize,
-    pub output_scroll: u16,
+    pub detail_focus: XtaskDetailFocus,
+    pub output: OutputPaneState,
     pub values: BTreeMap<String, BTreeMap<String, XtaskArgValue>>,
     pub editing: Option<XtaskEditState>,
     pub last_run: Option<XtaskRunOutput>,
@@ -86,13 +101,16 @@ impl Default for XtaskState {
         Self {
             modal_open: false,
             detail_open: false,
+            load_request_id: RequestId::default(),
+            run_request_id: RequestId::default(),
             loading: true,
             running: false,
             error: None,
             manifest: None,
             selected_command: 0,
             selected_arg: 0,
-            output_scroll: 0,
+            detail_focus: XtaskDetailFocus::default(),
+            output: OutputPaneState::default(),
             values: BTreeMap::new(),
             editing: None,
             last_run: None,
@@ -144,9 +162,18 @@ pub struct XtaskRunChunk {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum XtaskEvent {
-    InfoLoaded(Result<XtaskManifest, String>),
-    RunOutput(XtaskRunChunk),
-    RunFinished(Result<XtaskRunOutput, String>),
+    InfoLoaded {
+        request_id: RequestId,
+        result: Result<XtaskManifest, String>,
+    },
+    RunOutput {
+        request_id: RequestId,
+        chunk: XtaskRunChunk,
+    },
+    RunFinished {
+        request_id: RequestId,
+        result: Result<XtaskRunOutput, String>,
+    },
 }
 
 impl XtaskManifest {
@@ -229,7 +256,9 @@ impl XtaskState {
     pub fn close(&mut self) {
         self.modal_open = false;
         self.detail_open = false;
+        self.detail_focus = XtaskDetailFocus::Parameters;
         self.editing = None;
+        self.output.search.close_interaction();
     }
 
     pub fn open_detail(&mut self) -> bool {
@@ -237,27 +266,38 @@ impl XtaskState {
             return false;
         }
         self.detail_open = true;
+        self.detail_focus = XtaskDetailFocus::Parameters;
         self.editing = None;
         self.selected_arg = 0;
-        self.output_scroll = 0;
+        self.output.scroll_top();
+        self.output.search.close_interaction();
         true
     }
 
     pub fn close_detail(&mut self) {
         self.detail_open = false;
+        self.detail_focus = XtaskDetailFocus::Parameters;
         self.editing = None;
+        self.output.search.close_interaction();
     }
 
-    pub fn begin_load(&mut self) {
+    pub fn begin_load(&mut self) -> RequestId {
+        self.load_request_id = self.load_request_id.next();
         self.loading = true;
         self.error = None;
         self.detail_open = false;
+        self.detail_focus = XtaskDetailFocus::Parameters;
         self.editing = None;
+        self.output.search.close_interaction();
+        self.load_request_id
     }
 
-    pub fn apply_event(&mut self, event: XtaskEvent) {
+    pub fn apply_event(&mut self, event: XtaskEvent) -> bool {
         match event {
-            XtaskEvent::InfoLoaded(result) => {
+            XtaskEvent::InfoLoaded { request_id, result } => {
+                if request_id != self.load_request_id {
+                    return false;
+                }
                 self.loading = false;
                 match result {
                     Ok(manifest) => self.set_manifest(manifest),
@@ -268,18 +308,30 @@ impl XtaskState {
                         self.values.clear();
                     }
                 }
+                true
             }
-            XtaskEvent::RunOutput(chunk) => {
+            XtaskEvent::RunOutput { request_id, chunk } => {
+                if request_id != self.run_request_id {
+                    return false;
+                }
                 if let Some(output) = &mut self.last_run {
                     match chunk.stream {
-                        XtaskOutputStream::Stdout => output.stdout.push_str(&chunk.text),
-                        XtaskOutputStream::Stderr => output.stderr.push_str(&chunk.text),
+                        XtaskOutputStream::Stdout => {
+                            append_bounded_text(&mut output.stdout, &chunk.text);
+                        }
+                        XtaskOutputStream::Stderr => {
+                            append_bounded_text(&mut output.stderr, &chunk.text);
+                        }
                     }
                 }
+                self.sync_output_scroll_to_content();
+                true
             }
-            XtaskEvent::RunFinished(result) => {
+            XtaskEvent::RunFinished { request_id, result } => {
+                if request_id != self.run_request_id {
+                    return false;
+                }
                 self.running = false;
-                self.output_scroll = 0;
                 match result {
                     Ok(output) => {
                         self.error = None;
@@ -287,6 +339,8 @@ impl XtaskState {
                     }
                     Err(error) => self.error = Some(error),
                 }
+                self.sync_output_scroll_to_content();
+                true
             }
         }
     }
@@ -300,6 +354,7 @@ impl XtaskState {
         self.values = default_values(&manifest);
         self.manifest = Some(manifest);
         self.detail_open = false;
+        self.detail_focus = XtaskDetailFocus::Parameters;
         self.editing = None;
     }
 
@@ -393,6 +448,7 @@ impl XtaskState {
     }
 
     pub fn begin_edit_selected_arg(&mut self) -> bool {
+        self.detail_focus = XtaskDetailFocus::Parameters;
         let Some(command) = self.selected_command() else {
             return false;
         };
@@ -429,7 +485,8 @@ impl XtaskState {
         self.editing = None;
     }
 
-    pub fn begin_run(&mut self, command_line: String) {
+    pub fn begin_run(&mut self, command_line: String) -> RequestId {
+        self.run_request_id = self.run_request_id.next();
         self.running = true;
         self.error = None;
         self.last_run = Some(XtaskRunOutput {
@@ -439,15 +496,49 @@ impl XtaskState {
             stdout: String::new(),
             stderr: String::new(),
         });
-        self.output_scroll = 0;
+        self.output.reset_for_source_change();
+        self.run_request_id
     }
 
-    pub fn scroll_output_up(&mut self, amount: u16) {
-        self.output_scroll = self.output_scroll.saturating_sub(amount);
+    pub fn scroll_output_page_up(&mut self) {
+        self.output.scroll_up(self.output.page_size);
     }
 
-    pub fn scroll_output_down(&mut self, amount: u16) {
-        self.output_scroll = self.output_scroll.saturating_add(amount);
+    pub fn scroll_output_page_down(&mut self) {
+        self.output.scroll_down(self.output.page_size);
+    }
+
+    pub fn scroll_output_line_up(&mut self) {
+        self.output.scroll_up(1);
+    }
+
+    pub fn scroll_output_line_down(&mut self) {
+        self.output.scroll_down(1);
+    }
+
+    pub fn scroll_output_top(&mut self) {
+        self.output.scroll_top();
+        self.output.disable_snap();
+    }
+
+    pub fn scroll_output_bottom(&mut self) {
+        let line_count = self.output_text().lines().count().max(1);
+        self.output.snap_to_bottom(line_count);
+    }
+
+    pub fn toggle_detail_focus(&mut self) {
+        self.detail_focus = match self.detail_focus {
+            XtaskDetailFocus::Parameters => XtaskDetailFocus::Output,
+            XtaskDetailFocus::Output => XtaskDetailFocus::Parameters,
+        };
+    }
+
+    pub fn focus_output(&mut self) {
+        self.detail_focus = XtaskDetailFocus::Output;
+    }
+
+    pub fn focus_parameters(&mut self) {
+        self.detail_focus = XtaskDetailFocus::Parameters;
     }
 
     pub fn commit_edit(&mut self) -> Result<()> {
@@ -539,6 +630,11 @@ impl XtaskState {
             text.trim_end().to_owned()
         }
     }
+
+    fn sync_output_scroll_to_content(&mut self) {
+        let line_count = self.output_text().lines().count().max(1);
+        self.output.set_line_count(line_count);
+    }
 }
 
 pub async fn load(cwd: Option<PathBuf>) -> Result<XtaskManifest> {
@@ -565,7 +661,7 @@ pub async fn load(cwd: Option<PathBuf>) -> Result<XtaskManifest> {
 pub async fn run_streaming(
     cwd: Option<PathBuf>,
     request: XtaskRunRequest,
-    chunk_tx: mpsc::UnboundedSender<XtaskRunChunk>,
+    chunk_tx: mpsc::Sender<XtaskRunChunk>,
 ) -> Result<XtaskRunOutput> {
     let command_line = request.command_line();
     let mut command = cargo_xtask_command(cwd);
@@ -627,12 +723,12 @@ fn cargo_xtask_command(cwd: Option<PathBuf>) -> Command {
 async fn read_run_stream<R>(
     mut reader: R,
     stream: XtaskOutputStream,
-    chunk_tx: mpsc::UnboundedSender<XtaskRunChunk>,
+    chunk_tx: mpsc::Sender<XtaskRunChunk>,
 ) -> Result<String>
 where
     R: AsyncRead + Unpin,
 {
-    let mut bytes = Vec::new();
+    let mut text = String::new();
     let mut buffer = [0_u8; 8192];
     loop {
         let read = reader.read(&mut buffer).await?;
@@ -640,13 +736,15 @@ where
             break;
         }
         let chunk = String::from_utf8_lossy(&buffer[..read]).to_string();
-        bytes.extend_from_slice(&buffer[..read]);
-        let _ = chunk_tx.send(XtaskRunChunk {
-            stream,
-            text: chunk,
-        });
+        append_bounded_text(&mut text, &chunk);
+        let _ = chunk_tx
+            .send(XtaskRunChunk {
+                stream,
+                text: chunk,
+            })
+            .await;
     }
-    Ok(String::from_utf8_lossy(&bytes).to_string())
+    Ok(text)
 }
 
 fn append_output_text_section(text: &mut String, title: &str, content: &str) {

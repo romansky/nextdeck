@@ -32,7 +32,7 @@ impl InputSource {
                     Ok(event) if should_forward(&event) => {
                         tracing::debug!(?event, "terminal event received");
                         if tx
-                            .send(QueueEvent::Input(InputEvent::Terminal(event)))
+                            .blocking_send(QueueEvent::Input(InputEvent::Terminal(event)))
                             .is_err()
                         {
                             break;
@@ -41,7 +41,8 @@ impl InputSource {
                     Ok(event) => tracing::debug!(?event, "terminal event ignored"),
                     Err(error) => {
                         tracing::debug!(%error, "terminal input error");
-                        let _ = tx.send(QueueEvent::Input(InputEvent::Error(error.to_string())));
+                        let _ = tx
+                            .blocking_send(QueueEvent::Input(InputEvent::Error(error.to_string())));
                         break;
                     }
                 }

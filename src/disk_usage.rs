@@ -4,6 +4,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::request::RequestId;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiskUsageSnapshot {
     pub entries: Vec<DiskUsageEntry>,
@@ -20,6 +22,7 @@ pub struct DiskUsageEntry {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DiskUsageState {
+    pub request_id: RequestId,
     pub loading: bool,
     pub snapshot: Option<DiskUsageSnapshot>,
     pub error: Option<String>,
@@ -50,6 +53,7 @@ impl StorageHealth {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DiskCleanupState {
+    pub request_id: RequestId,
     pub modal_open: bool,
     pub running: bool,
     pub last_result: Option<Result<(), String>>,
@@ -62,9 +66,11 @@ impl DiskUsageSnapshot {
 }
 
 impl DiskUsageState {
-    pub fn begin_scan(&mut self) {
+    pub fn begin_scan(&mut self) -> RequestId {
+        self.request_id = self.request_id.next();
         self.loading = true;
         self.error = None;
+        self.request_id
     }
 
     pub fn apply_result(
@@ -108,6 +114,7 @@ impl DiskCleanupState {
         if self.running {
             return false;
         }
+        self.request_id = self.request_id.next();
         self.running = true;
         self.last_result = None;
         true
