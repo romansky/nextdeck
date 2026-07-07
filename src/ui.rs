@@ -24,7 +24,9 @@ use crate::{
     test_events::{TestEventRunLog, TestEventsFocus, TestEventsState},
     theme::Theme,
     tree::{NodeKind, TestNode, TestStatus},
-    xtask::{XtaskArgValue, XtaskDetailFocus, XtaskState, XtaskValueSpec},
+    xtask::{
+        XtaskArgSpec, XtaskArgValue, XtaskCommandSpec, XtaskDetailFocus, XtaskState, XtaskValueSpec,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,10 +65,19 @@ const XTASK_COMMAND_NAME_MAX_WIDTH: usize = 30;
 const FIELD_HINT_VALUE_COLUMN_WIDTH: usize = 18;
 const FIELD_HINT_MIN_COLUMN_WIDTH: usize = 6;
 const FIELD_HINT_GAP_WIDTH: usize = 2;
+const FIELD_VALUE_GAP_WIDTH: usize = 1;
 const SELECTABLE_FIELD_PREFIX_WIDTH: usize = 2;
 const CUSTOM_RUN_FIELD_LABEL_WIDTH: usize = 15;
+const XTASK_PARAM_LABEL_MAX_WIDTH: usize = 24;
+const XTASK_PARAM_LABEL_MIN_WIDTH: usize = 6;
 const SETTINGS_FIELD_LABEL_WIDTH: usize = 13;
 const DETAIL_FIELD_LABEL_WIDTH: usize = 9;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FieldHintPlacement {
+    Inline,
+    Below,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AutoColumn {
@@ -337,6 +348,64 @@ fn selectable_field_line(
     }
 
     Line::from(spans)
+}
+
+struct SelectableFieldRow<'a> {
+    marker: &'a str,
+    label: &'a str,
+    label_width: usize,
+    value: &'a str,
+    hint: Option<&'a str>,
+    style: Style,
+    hint_style: Style,
+    content_width: usize,
+}
+
+fn selectable_parameter_lines(
+    row: SelectableFieldRow<'_>,
+    hint_placement: FieldHintPlacement,
+) -> Vec<Line<'static>> {
+    if hint_placement == FieldHintPlacement::Inline {
+        return vec![selectable_field_line(
+            row.marker,
+            row.label,
+            row.label_width,
+            row.value,
+            row.hint,
+            row.style,
+            row.hint_style,
+            row.content_width,
+        )];
+    }
+
+    let prefix_width = SELECTABLE_FIELD_PREFIX_WIDTH + row.label_width + FIELD_VALUE_GAP_WIDTH;
+    let value_width = row.content_width.saturating_sub(prefix_width);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            format!(
+                "{} {:<width$}{}",
+                row.marker,
+                row.label,
+                " ".repeat(FIELD_VALUE_GAP_WIDTH),
+                width = row.label_width
+            ),
+            row.style,
+        ),
+        Span::styled(
+            fit_line_prefix(row.value.trim_end(), value_width),
+            row.style,
+        ),
+    ])];
+
+    if let Some(hint) = row.hint {
+        let hint_width = row.content_width.saturating_sub(prefix_width);
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(prefix_width)),
+            Span::styled(fit_line_prefix(hint, hint_width), row.hint_style),
+        ]));
+    }
+
+    lines
 }
 
 fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
@@ -611,17 +680,22 @@ fn custom_run_lines(
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for field in CustomRunField::ALL {
-        lines.push(custom_run_line(custom_run, field, theme, content_width));
+        lines.extend(custom_run_field_lines(
+            custom_run,
+            field,
+            theme,
+            content_width,
+        ));
     }
     lines
 }
 
-fn custom_run_line(
+fn custom_run_field_lines(
     custom_run: &CustomRunState,
     field: CustomRunField,
     theme: &Theme,
     content_width: usize,
-) -> Line<'static> {
+) -> Vec<Line<'static>> {
     let selected = custom_run.selected == field;
     let marker = if selected { ">" } else { " " };
     let style = if selected {
@@ -633,15 +707,18 @@ fn custom_run_line(
     let value_width =
         selectable_field_value_width(content_width, CUSTOM_RUN_FIELD_LABEL_WIDTH, hint.is_some());
     let value = custom_run_value(custom_run, field, value_width);
-    selectable_field_line(
-        marker,
-        field.label(),
-        CUSTOM_RUN_FIELD_LABEL_WIDTH,
-        &value,
-        hint.as_deref(),
-        style,
-        theme.muted(),
-        content_width,
+    selectable_parameter_lines(
+        SelectableFieldRow {
+            marker,
+            label: field.label(),
+            label_width: CUSTOM_RUN_FIELD_LABEL_WIDTH,
+            value: &value,
+            hint: hint.as_deref(),
+            style,
+            hint_style: theme.muted(),
+            content_width,
+        },
+        FieldHintPlacement::Inline,
     )
 }
 
@@ -1153,9 +1230,9 @@ fn xtask_param_lines(
         if command.args.is_empty() {
             lines.push(Line::styled("No parameters.", theme.muted()));
         } else {
-            let value_width = content_width.saturating_sub(10).min(13);
-            let flag_width = content_width.saturating_sub(value_width + 2).max(1);
-            let help_width = content_width.saturating_sub(10);
+            let label_width = xtask_param_label_width(command, content_width);
+            let value_width =
+                content_width.saturating_sub(SELECTABLE_FIELD_PREFIX_WIDTH + label_width);
             for (index, arg) in command.args.iter().enumerate() {
                 let selected = index == xtasks.selected_arg;
                 let active = focused && selected;
@@ -1165,26 +1242,42 @@ fn xtask_param_lines(
                 } else {
                     theme.text()
                 };
-                let value = xtask_arg_value_text(xtasks, &command.name, &arg.name, selected);
-                let kind = xtask_arg_kind(&arg.value);
-                let help = arg.help.as_deref().unwrap_or("");
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{marker} {}", fit_line_prefix(&arg.flag(), flag_width)),
+                let value =
+                    xtask_arg_value_text(xtasks, &command.name, &arg.name, selected, value_width);
+                let label = fit_line_prefix(&arg.flag(), label_width);
+                let hint = xtask_arg_hint(arg);
+                lines.extend(selectable_parameter_lines(
+                    SelectableFieldRow {
+                        marker,
+                        label: &label,
+                        label_width,
+                        value: &value,
+                        hint: hint.as_deref(),
                         style,
-                    ),
-                    Span::styled(fit_line_prefix(&value, value_width), style),
-                ]));
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(format!("{kind:<8}"), theme.muted()),
-                    Span::styled(fit_line_prefix(help, help_width), theme.muted()),
-                ]));
+                        hint_style: theme.muted(),
+                        content_width,
+                    },
+                    FieldHintPlacement::Below,
+                ));
             }
         }
     }
 
     lines
+}
+
+fn xtask_param_label_width(command: &XtaskCommandSpec, content_width: usize) -> usize {
+    let max_available = content_width
+        .saturating_sub(SELECTABLE_FIELD_PREFIX_WIDTH + FIELD_HINT_MIN_COLUMN_WIDTH)
+        .max(1);
+    let cap = XTASK_PARAM_LABEL_MAX_WIDTH.min(max_available).max(1);
+    let longest = command
+        .args
+        .iter()
+        .map(|arg| arg.flag().chars().count())
+        .max()
+        .unwrap_or(XTASK_PARAM_LABEL_MIN_WIDTH);
+    longest.max(XTASK_PARAM_LABEL_MIN_WIDTH).min(cap)
 }
 
 fn draw_xtask_output_panel(
@@ -1226,13 +1319,17 @@ fn xtask_arg_value_text(
     command_name: &str,
     arg_name: &str,
     selected: bool,
+    value_width: usize,
 ) -> String {
     if selected
         && let Some(editing) = &xtasks.editing
         && editing.command == command_name
         && editing.arg == arg_name
     {
-        return format!("[{}]", editing.input.view(16, true));
+        return format!(
+            "[{}]",
+            editing.input.view(value_width.saturating_sub(2), true)
+        );
     }
     xtasks
         .values
@@ -1248,6 +1345,38 @@ fn xtask_arg_kind(value: &XtaskValueSpec) -> &'static str {
         XtaskValueSpec::Number { .. } => "number",
         XtaskValueSpec::String { .. } => "string",
         XtaskValueSpec::Enum { .. } => "enum",
+    }
+}
+
+fn xtask_arg_hint(arg: &XtaskArgSpec) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(options) = xtask_arg_known_options(&arg.value) {
+        parts.push(format!("# {options}"));
+    }
+
+    let mut metadata = vec![xtask_arg_kind(&arg.value).to_owned()];
+    if arg.required {
+        metadata.push("required".to_owned());
+    }
+    parts.push(metadata.join(", "));
+
+    if let Some(help) = arg
+        .help
+        .as_deref()
+        .map(str::trim)
+        .filter(|help| !help.is_empty())
+    {
+        parts.push(help.to_owned());
+    }
+
+    (!parts.is_empty()).then_some(parts.join("  "))
+}
+
+fn xtask_arg_known_options(value: &XtaskValueSpec) -> Option<String> {
+    match value {
+        XtaskValueSpec::Bool { .. } => Some("off, on".to_owned()),
+        XtaskValueSpec::Enum { values, .. } => Some(values.join(", ")),
+        XtaskValueSpec::Number { .. } | XtaskValueSpec::String { .. } => None,
     }
 }
 
@@ -1442,7 +1571,7 @@ fn node_label(node: &TestNode, running_spinner: &str) -> String {
 
 fn draw_details(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     let status = info_status(app);
-    let block = theme.panel_block(&status, Some(info_actions()), false);
+    let block = theme.panel_block(&status, None, false);
     let inner = block.inner(area);
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -1980,10 +2109,6 @@ fn draw_output_panel(
 
 fn tests_actions() -> &'static str {
     "[enter]details [e]vents [r]un [R]run-custom [o]pen-editor [u]update"
-}
-
-fn info_actions() -> &'static str {
-    "[d]disk-refresh [D]cleanup [x]tasks"
 }
 
 fn disk_cleanup_actions() -> &'static str {

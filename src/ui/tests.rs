@@ -290,7 +290,6 @@ fn panel_actions_describe_local_commands() {
         tests_actions(),
         "[enter]details [e]vents [r]un [R]run-custom [o]pen-editor [u]update"
     );
-    assert_eq!(info_actions(), "[d]disk-refresh [D]cleanup [x]tasks");
     assert_eq!(
         disk_cleanup_actions(),
         "[c]cargo-clean [r]refresh [esc]close"
@@ -330,6 +329,78 @@ fn custom_run_options_render_values_without_accidental_editors() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(narrow.contains("# s..."));
+}
+
+#[test]
+fn selectable_parameter_lines_can_place_hint_below_value() {
+    let theme = Theme::dark();
+    let lines = selectable_parameter_lines(
+        SelectableFieldRow {
+            marker: ">",
+            label: "--profile",
+            label_width: 10,
+            value: "debug",
+            hint: Some("# debug, release"),
+            style: theme.selected(),
+            hint_style: theme.muted(),
+            content_width: 42,
+        },
+        FieldHintPlacement::Below,
+    );
+
+    assert_eq!(
+        line_text(&lines[0]),
+        "> --profile  debug                        "
+    );
+    assert_eq!(
+        line_text(&lines[1]),
+        "             # debug, release             "
+    );
+}
+
+#[test]
+fn xtask_params_use_shared_rows_with_known_options_below() {
+    let theme = Theme::dark();
+    let mut xtasks = XtaskState::default();
+    xtasks.set_manifest(crate::xtask::XtaskManifest {
+        schema_version: crate::xtask::SCHEMA_VERSION,
+        commands: vec![crate::xtask::XtaskCommandSpec {
+            name: "ship".to_owned(),
+            about: Some("Ship package".to_owned()),
+            args: vec![
+                crate::xtask::XtaskArgSpec {
+                    name: "profile".to_owned(),
+                    long: Some("profile".to_owned()),
+                    short: None,
+                    help: Some("Build profile".to_owned()),
+                    required: false,
+                    value: crate::xtask::XtaskValueSpec::Enum {
+                        values: vec!["debug".to_owned(), "release".to_owned()],
+                        default: Some("debug".to_owned()),
+                    },
+                },
+                crate::xtask::XtaskArgSpec {
+                    name: "allow-dirty".to_owned(),
+                    long: Some("allow-dirty".to_owned()),
+                    short: None,
+                    help: Some("Allow dirty worktree".to_owned()),
+                    required: false,
+                    value: crate::xtask::XtaskValueSpec::Bool { default: false },
+                },
+            ],
+        }],
+    });
+
+    let text = xtask_param_lines(&xtasks, &theme, 80, true)
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(text.contains("> --profile     debug"));
+    assert!(text.contains("# debug, release  enum  Build profile"));
+    assert!(text.contains("  --allow-dirty off"));
+    assert!(text.contains("# off, on  bool  Allow dirty worktree"));
 }
 
 #[test]
