@@ -19,6 +19,7 @@ use crate::{
     terminal::AppTerminal,
     theme::Theme,
     ui,
+    xtask::{self, XtaskEvent, XtaskRunRequest},
 };
 
 pub async fn run(
@@ -33,6 +34,7 @@ pub async fn run(
     let (queue_tx, queue_rx) = queue::channel();
 
     let discovery = start_discovery(client.clone(), queue_tx.clone());
+    let xtasks = start_xtask_info(client.project_dir(), queue_tx.clone());
     let git_status = start_git_status(client.project_dir(), queue_tx.clone());
     app.begin_disk_usage_scan();
     let disk_usage = start_disk_usage(client.project_dir(), queue_tx.clone());
@@ -48,11 +50,13 @@ pub async fn run(
             editor,
             cli_open_with,
             queue_tx,
+            runtime_settings: RuntimeSettings::from_settings(&app.settings),
         },
         queue_rx,
     )
     .await;
     discovery.abort();
+    xtasks.abort();
     git_status.abort();
     disk_usage.abort();
     ticker.abort();
@@ -111,6 +115,32 @@ struct RunLoopContext<'a> {
     editor: EditorConfig,
     cli_open_with: Option<String>,
     queue_tx: QueueSender,
+    runtime_settings: RuntimeSettings,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeSettings {
+    open_with_command: Option<String>,
+    theme_mode: config::ThemePreference,
+    color_blind_mode: bool,
+}
+
+impl RuntimeSettings {
+    fn from_settings(settings: &AppSettings) -> Self {
+        Self {
+            open_with_command: settings.open_with_command.clone(),
+            theme_mode: settings.theme_mode,
+            color_blind_mode: settings.color_blind_mode,
+        }
+    }
+
+    fn theme_changed(&self, next: &Self) -> bool {
+        self.theme_mode != next.theme_mode || self.color_blind_mode != next.color_blind_mode
+    }
+
+    fn editor_changed(&self, next: &Self) -> bool {
+        self.open_with_command != next.open_with_command
+    }
 }
 
 fn handle_queue_events(
@@ -120,8 +150,18 @@ fn handle_queue_events(
     events: &mut [QueueEvent],
     run_control: &mut Option<RunControl>,
 ) {
+    if events.len() > 1 {
+        tracing::debug!(count = events.len(), "handling pending event batch");
+    }
     for index in 0..events.len() {
-        if should_skip_stale_event(events, index, app.command_context()) {
+        let command_context = app.command_context();
+        if should_skip_stale_event(events, index, command_context) {
+            tracing::debug!(
+                index,
+                event = ?&events[index],
+                context = ?command_context,
+                "stale event skipped"
+            );
             continue;
         }
         handle_queue_event(
@@ -167,6 +207,7 @@ fn latest_only_event(event: &QueueEvent, context: CommandContext) -> Option<Late
         | QueueEvent::DiskUsage(_)
         | QueueEvent::GitStatus(_)
         | QueueEvent::Run(_)
+        | QueueEvent::Xtask(_)
         | QueueEvent::Tick => None,
     }
 }
@@ -203,11 +244,19 @@ fn handle_queue_event(
 ) {
     match event {
         QueueEvent::Input(input) => {
-            let command = command_for_input(&input, app.command_context());
+            let command_context = app.command_context();
+            let command = command_for_input(&input, command_context);
+            tracing::debug!(
+                ?input,
+                context = ?command_context,
+                ?command,
+                "input mapped to command"
+            );
             if let Some(key) = input.key_display() {
                 app.record_key(key_echo_text(key, &command));
             }
             let effect = app.apply_command(command);
+            tracing::debug!(?effect, status = %app.status, "command applied");
             handle_effect(app, context, effect, run_control);
         }
         QueueEvent::Discovery(event) => {
@@ -239,6 +288,7 @@ fn handle_queue_event(
                 *run_control = None;
             }
         }
+        QueueEvent::Xtask(event) => app.apply_xtask_event(event),
         QueueEvent::Tick => app.tick(),
     }
 }
@@ -256,6 +306,7 @@ fn handle_effect(
     effect: AppEffect,
     run_control: &mut Option<RunControl>,
 ) {
+    tracing::debug!(?effect, "handling app effect");
     match effect {
         AppEffect::None => {}
         AppEffect::SaveSettings(settings) => {
@@ -309,15 +360,36 @@ fn handle_effect(
         AppEffect::RunCargoClean => {
             start_cargo_clean(context.client.project_dir(), context.queue_tx.clone());
         }
+        AppEffect::RefreshXtasks => {
+            start_xtask_info(context.client.project_dir(), context.queue_tx.clone());
+        }
+        AppEffect::RunXtask(request) => {
+            start_xtask_run(
+                context.client.project_dir(),
+                request,
+                context.queue_tx.clone(),
+            );
+        }
     }
 }
 
 fn apply_runtime_settings(context: &mut RunLoopContext<'_>, settings: &AppSettings) {
-    context.editor = EditorConfig::resolve(
-        context.cli_open_with.clone(),
-        settings.open_with_command.clone(),
-    );
-    context.theme = Theme::resolve(settings.theme_mode.into(), settings.color_blind_mode);
+    let next = RuntimeSettings::from_settings(settings);
+    if context.runtime_settings.editor_changed(&next) {
+        context.editor = EditorConfig::resolve(
+            context.cli_open_with.clone(),
+            next.open_with_command.clone(),
+        );
+    }
+    if context.runtime_settings.theme_changed(&next) {
+        tracing::debug!(
+            before = ?context.runtime_settings,
+            after = ?next,
+            "theme runtime settings changed"
+        );
+        context.theme = Theme::resolve(next.theme_mode.into(), next.color_blind_mode);
+    }
+    context.runtime_settings = next;
 }
 
 struct RunControl {
@@ -386,13 +458,51 @@ fn start_cargo_clean(
     })
 }
 
+fn start_xtask_info(
+    cwd: Option<std::path::PathBuf>,
+    tx: QueueSender,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let result = xtask::load(cwd).await.map_err(|error| format!("{error:#}"));
+        let _ = tx.send(QueueEvent::Xtask(XtaskEvent::InfoLoaded(result)));
+    })
+}
+
+fn start_xtask_run(
+    cwd: Option<std::path::PathBuf>,
+    request: XtaskRunRequest,
+    tx: QueueSender,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel();
+        let output_tx = tx.clone();
+        let output_forwarder = tokio::spawn(async move {
+            while let Some(chunk) = chunk_rx.recv().await {
+                if output_tx
+                    .send(QueueEvent::Xtask(XtaskEvent::RunOutput(chunk)))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let result = xtask::run_streaming(cwd, request, chunk_tx)
+            .await
+            .map_err(|error| format!("{error:#}"));
+        let _ = output_forwarder.await;
+        let _ = tx.send(QueueEvent::Xtask(XtaskEvent::RunFinished(result)));
+    })
+}
+
 fn start_run(
     app: &mut App,
     client: NextestClient,
     request: RunRequest,
     tx: QueueSender,
 ) -> Option<RunControl> {
+    tracing::debug!(?request, "starting run request");
     if !app.begin_run(&request) {
+        tracing::debug!(?request, "run request ignored");
         return None;
     }
 

@@ -47,6 +47,24 @@ pub enum AppCommand {
     OpenDiskCleanup,
     CloseDiskCleanup,
     RunCargoClean,
+    OpenXtasks,
+    CloseXtasks,
+    RefreshXtasks,
+    OpenSelectedXtask,
+    CloseXtaskDetails,
+    XtaskNextCommand,
+    XtaskPreviousCommand,
+    XtaskNextArg,
+    XtaskPreviousArg,
+    XtaskAdjustLeft,
+    XtaskAdjustRight,
+    XtaskActivateArg,
+    XtaskOutputPageUp,
+    XtaskOutputPageDown,
+    XtaskEdit(InputFieldInput),
+    CommitXtaskEdit,
+    CancelXtaskEdit,
+    RunXtask,
     ToggleShowSuccess,
     ToggleShowFailed,
     ToggleShowIgnored,
@@ -112,6 +130,7 @@ pub enum CommandKind {
     OpenSource,
     OpenOutput,
     OpenSettings,
+    OpenXtasks,
     RefreshDiskUsage,
     OpenDiskCleanup,
     ToggleShowSuccess,
@@ -241,6 +260,13 @@ const COMMANDS: &[CommandInfo] = &[
         keys: "D",
         label: "open disk cleanup",
         ticker: "disk cleanup",
+    },
+    CommandInfo {
+        kind: CommandKind::OpenXtasks,
+        group: CommandGroup::Global,
+        keys: "x",
+        label: "open xtasks",
+        ticker: "xtasks",
     },
     CommandInfo {
         kind: CommandKind::SelectFailed,
@@ -391,6 +417,7 @@ impl AppCommand {
             Self::OpenSource => Some(CommandKind::OpenSource),
             Self::OpenOutput => Some(CommandKind::OpenOutput),
             Self::OpenSettings => Some(CommandKind::OpenSettings),
+            Self::OpenXtasks => Some(CommandKind::OpenXtasks),
             Self::RefreshDiskUsage => Some(CommandKind::RefreshDiskUsage),
             Self::OpenDiskCleanup => Some(CommandKind::OpenDiskCleanup),
             Self::ToggleShowSuccess => Some(CommandKind::ToggleShowSuccess),
@@ -412,6 +439,23 @@ impl AppCommand {
             | Self::CancelOpenWithSetting
             | Self::CloseDiskCleanup
             | Self::RunCargoClean
+            | Self::CloseXtasks
+            | Self::RefreshXtasks
+            | Self::OpenSelectedXtask
+            | Self::CloseXtaskDetails
+            | Self::XtaskNextCommand
+            | Self::XtaskPreviousCommand
+            | Self::XtaskNextArg
+            | Self::XtaskPreviousArg
+            | Self::XtaskAdjustLeft
+            | Self::XtaskAdjustRight
+            | Self::XtaskActivateArg
+            | Self::XtaskOutputPageUp
+            | Self::XtaskOutputPageDown
+            | Self::XtaskEdit(_)
+            | Self::CommitXtaskEdit
+            | Self::CancelXtaskEdit
+            | Self::RunXtask
             | Self::ApplyOutputSearch
             | Self::SearchModalNextControl
             | Self::SearchModalPreviousControl
@@ -455,6 +499,19 @@ impl AppCommand {
             Self::CommitOpenWithSetting => Some("settings save"),
             Self::CancelOpenWithSetting => Some("settings cancel"),
             Self::RunCargoClean => Some("cargo clean"),
+            Self::CloseXtasks => Some("xtasks close"),
+            Self::RefreshXtasks => Some("xtasks refresh"),
+            Self::OpenSelectedXtask => Some("xtasks open"),
+            Self::CloseXtaskDetails => Some("xtasks back"),
+            Self::XtaskNextCommand | Self::XtaskPreviousCommand => Some("xtasks command"),
+            Self::XtaskNextArg | Self::XtaskPreviousArg => Some("xtasks arg"),
+            Self::XtaskAdjustLeft | Self::XtaskAdjustRight => Some("xtasks adjust"),
+            Self::XtaskActivateArg => Some("xtasks edit"),
+            Self::XtaskOutputPageUp | Self::XtaskOutputPageDown => Some("xtasks output"),
+            Self::XtaskEdit(_) => Some("xtasks input"),
+            Self::CommitXtaskEdit => Some("xtasks save"),
+            Self::CancelXtaskEdit => Some("xtasks cancel"),
+            Self::RunXtask => Some("xtasks run"),
             Self::ReportStatus(_) => Some("status"),
             _ => self.info().map(|info| info.ticker),
         }
@@ -501,6 +558,9 @@ pub enum InputMode {
     SettingsOpenWith,
     SettingsModal,
     DiskCleanupModal,
+    XtaskInput,
+    XtaskModal,
+    XtaskCommandModal,
     TestDetailsModal,
     OutputSearchModal,
     OutputSearchInline,
@@ -513,6 +573,7 @@ pub enum OverlayMode {
     DiscoveryError,
     Settings,
     DiskCleanup,
+    Xtasks,
     TestDetails,
     OutputSearch,
 }
@@ -540,6 +601,9 @@ fn command_for_input_mode(code: KeyCode, modifiers: KeyModifiers, input: InputMo
         InputMode::SettingsOpenWith => command_for_settings_open_with_input(code, modifiers),
         InputMode::SettingsModal => command_for_settings_modal(code),
         InputMode::DiskCleanupModal => command_for_disk_cleanup_modal(code),
+        InputMode::XtaskInput => command_for_xtask_input(code, modifiers),
+        InputMode::XtaskModal => command_for_xtask_modal(code),
+        InputMode::XtaskCommandModal => command_for_xtask_command_modal(code, modifiers),
         InputMode::TestDetailsModal => command_for_test_details_modal(code),
         InputMode::OutputSearchModal => command_for_output_search_modal(code, modifiers),
         InputMode::OutputSearchInline => command_for_output_search_input(code, modifiers),
@@ -611,6 +675,51 @@ fn command_for_disk_cleanup_modal(code: KeyCode) -> AppCommand {
         KeyCode::Esc => AppCommand::CloseDiskCleanup,
         KeyCode::Char('c') => AppCommand::RunCargoClean,
         KeyCode::Char('r') | KeyCode::Char('d') => AppCommand::RefreshDiskUsage,
+        _ => AppCommand::Noop,
+    }
+}
+
+fn command_for_xtask_input(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+    match code {
+        KeyCode::Esc => AppCommand::CancelXtaskEdit,
+        KeyCode::Enter => AppCommand::CommitXtaskEdit,
+        _ => input_field_input_for_key(code, modifiers)
+            .map(AppCommand::XtaskEdit)
+            .unwrap_or(AppCommand::Noop),
+    }
+}
+
+fn command_for_xtask_modal(code: KeyCode) -> AppCommand {
+    match code {
+        KeyCode::Esc => AppCommand::CloseXtasks,
+        KeyCode::Char('u') => AppCommand::RefreshXtasks,
+        KeyCode::Up => AppCommand::XtaskPreviousCommand,
+        KeyCode::Down => AppCommand::XtaskNextCommand,
+        KeyCode::Enter | KeyCode::Right => AppCommand::OpenSelectedXtask,
+        _ => AppCommand::Noop,
+    }
+}
+
+fn command_for_xtask_command_modal(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+    match code {
+        KeyCode::Esc | KeyCode::Char('b') => AppCommand::CloseXtaskDetails,
+        KeyCode::Char('/') => AppCommand::StartOutputSearch,
+        KeyCode::Char('n') => AppCommand::FindNextOutputMatch,
+        KeyCode::Char('N') => AppCommand::FindPreviousOutputMatch,
+        KeyCode::Char('f') => AppCommand::ToggleOutputFilter,
+        KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
+            AppCommand::ToggleOutputRegex
+        }
+        KeyCode::Char('c') => AppCommand::ToggleOutputCaseSensitive,
+        KeyCode::Char('o') => AppCommand::OpenOutput,
+        KeyCode::Char('r') => AppCommand::RunXtask,
+        KeyCode::Up | KeyCode::BackTab => AppCommand::XtaskPreviousArg,
+        KeyCode::Down | KeyCode::Tab => AppCommand::XtaskNextArg,
+        KeyCode::Left => AppCommand::XtaskAdjustLeft,
+        KeyCode::Right => AppCommand::XtaskAdjustRight,
+        KeyCode::PageUp => AppCommand::XtaskOutputPageUp,
+        KeyCode::PageDown => AppCommand::XtaskOutputPageDown,
+        KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('e') => AppCommand::XtaskActivateArg,
         _ => AppCommand::Noop,
     }
 }
@@ -699,6 +808,7 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) 
         code if is_help_key(code, modifiers) => AppCommand::ToggleHelp,
         KeyCode::Char('u') => AppCommand::RefreshTests,
         KeyCode::Char(',') => AppCommand::OpenSettings,
+        KeyCode::Char('x') => AppCommand::OpenXtasks,
         KeyCode::Char('d') => AppCommand::RefreshDiskUsage,
         KeyCode::Char('D') => AppCommand::OpenDiskCleanup,
         KeyCode::Tab => AppCommand::ToggleFocus,

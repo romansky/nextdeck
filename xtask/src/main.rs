@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use flate2::{Compression, write::GzEncoder};
 use sha2::{Digest, Sha256};
 use tar::Builder as TarBuilder;
@@ -26,6 +26,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum XtaskCommand {
+    #[command(about = "Print nextdeck xtask integration metadata")]
+    NextdeckInfo {
+        #[arg(long, value_enum, default_value_t = XtaskInfoFormat::Json)]
+        format: XtaskInfoFormat,
+    },
     #[command(about = "Run local checks expected before publishing")]
     Check {
         #[arg(long, help = "Allow cargo package to run with a dirty worktree")]
@@ -87,11 +92,17 @@ enum XtaskCommand {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum XtaskInfoFormat {
+    Json,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let workspace = workspace_root()?;
 
     match cli.command {
+        XtaskCommand::NextdeckInfo { format } => nextdeck_info(format),
         XtaskCommand::Check { allow_dirty } => check(&workspace, allow_dirty),
         XtaskCommand::Package { allow_dirty } => {
             let artifact = package(&workspace, allow_dirty)?;
@@ -128,6 +139,103 @@ fn main() -> Result<()> {
             output,
         } => homebrew_formula(&workspace, version, &github_repo, &dist_dir, &output),
     }
+}
+
+fn nextdeck_info(format: XtaskInfoFormat) -> Result<()> {
+    match format {
+        XtaskInfoFormat::Json => {
+            let manifest = serde_json::json!({
+                "schema_version": 1,
+                "commands": [
+                    {
+                        "name": "check",
+                        "about": "Run local checks expected before publishing",
+                        "args": [
+                            bool_arg("allow-dirty", "Allow cargo package to run with a dirty worktree")
+                        ]
+                    },
+                    {
+                        "name": "package",
+                        "about": "Create a local .crate package in target/package",
+                        "args": [
+                            bool_arg("allow-dirty", "Allow packaging with a dirty worktree")
+                        ]
+                    },
+                    {
+                        "name": "install-path",
+                        "about": "Install the app locally from the current workspace",
+                        "args": []
+                    },
+                    {
+                        "name": "install-package",
+                        "about": "Install the app locally from the generated .crate package",
+                        "args": [
+                            bool_arg("allow-dirty", "Allow packaging with a dirty worktree first")
+                        ]
+                    },
+                    {
+                        "name": "publish-local",
+                        "about": "Package and install the verified package locally",
+                        "args": [
+                            bool_arg("allow-dirty", "Allow packaging with a dirty worktree")
+                        ]
+                    },
+                    {
+                        "name": "release",
+                        "about": "Build, archive, checksum, and sign a release artifact",
+                        "args": [
+                            string_arg("version", false, "Release version. Defaults to the root Cargo.toml version"),
+                            string_arg("target", false, "Rust target triple. Defaults to the host target"),
+                            bool_arg("allow-dirty", "Allow release artifacts with a dirty worktree"),
+                            bool_arg("skip-sign", "Create artifacts without cosign signatures"),
+                            string_arg("github-repo", false, "GitHub repository as owner/repo, used to generate a Homebrew formula")
+                        ]
+                    },
+                    {
+                        "name": "homebrew-formula",
+                        "about": "Generate a Homebrew formula from release artifact checksums",
+                        "args": [
+                            string_arg("version", false, "Formula version. Defaults to the root Cargo.toml version"),
+                            string_arg("github-repo", true, "GitHub repository as owner/repo"),
+                            string_arg_with_default("dist-dir", "target/dist", "Directory containing *.tar.gz.sha256 files"),
+                            string_arg("output", true, "Output formula path")
+                        ]
+                    }
+                ]
+            });
+            serde_json::to_writer_pretty(std::io::stdout(), &manifest)?;
+            println!();
+            Ok(())
+        }
+    }
+}
+
+fn bool_arg(name: &str, help: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "long": name,
+        "help": help,
+        "value": { "type": "bool", "default": false }
+    })
+}
+
+fn string_arg(name: &str, required: bool, help: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "long": name,
+        "required": required,
+        "help": help,
+        "value": { "type": "string" }
+    })
+}
+
+fn string_arg_with_default(name: &str, default: &str, help: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "long": name,
+        "help": help,
+        "value": { "type": "string", "default": default }
+    })
 }
 
 fn check(workspace: &Path, allow_dirty: bool) -> Result<()> {

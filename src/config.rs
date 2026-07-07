@@ -165,8 +165,20 @@ fn config_path() -> Option<PathBuf> {
     home_dir().map(|home| global_config_path(&home))
 }
 
+pub fn debug_log_path() -> Option<PathBuf> {
+    home_dir().map(|home| global_debug_log_path(&home))
+}
+
+fn global_config_dir(home: &Path) -> PathBuf {
+    home.join(".nextdeck")
+}
+
 fn global_config_path(home: &Path) -> PathBuf {
-    home.join(".nextdeck").join("config.json")
+    global_config_dir(home).join("config.json")
+}
+
+fn global_debug_log_path(home: &Path) -> PathBuf {
+    global_config_dir(home).join("debug.log")
 }
 
 fn config_read_paths() -> Vec<PathBuf> {

@@ -30,6 +30,7 @@ impl InputSource {
             loop {
                 match event::read() {
                     Ok(event) if should_forward(&event) => {
+                        tracing::debug!(?event, "terminal event received");
                         if tx
                             .send(QueueEvent::Input(InputEvent::Terminal(event)))
                             .is_err()
@@ -37,8 +38,9 @@ impl InputSource {
                             break;
                         }
                     }
-                    Ok(_) => {}
+                    Ok(event) => tracing::debug!(?event, "terminal event ignored"),
                     Err(error) => {
+                        tracing::debug!(%error, "terminal input error");
                         let _ = tx.send(QueueEvent::Input(InputEvent::Error(error.to_string())));
                         break;
                     }

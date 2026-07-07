@@ -7,6 +7,7 @@ use crate::{
     git_status::GitStatus,
     input::InputEvent,
     nextest::{DiscoveryEvent, RunEvent},
+    xtask::XtaskEvent,
 };
 
 #[derive(Debug, Clone)]
@@ -17,6 +18,7 @@ pub enum QueueEvent {
     DiskUsage(Result<DiskUsageSnapshot, String>),
     GitStatus(GitStatus),
     Run(RunEvent),
+    Xtask(XtaskEvent),
     Tick,
 }
 

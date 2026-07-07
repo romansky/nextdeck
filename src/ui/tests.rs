@@ -45,6 +45,17 @@ fn output_status_shows_clamped_line_ranges() {
 }
 
 #[test]
+fn fit_line_prefix_preserves_xtask_text_prefix() {
+    assert_eq!(
+        fit_line_prefix("Publish the verified package locally", 18),
+        "Publish the ver..."
+    );
+    let fitted = fit_line_prefix("cargo xtask check", 30);
+    assert!(fitted.starts_with("cargo xtask check"));
+    assert_eq!(fitted.len(), 30);
+}
+
+#[test]
 fn filter_hint_includes_toggle_key() {
     assert_eq!(filter_hint("pass", "p", true), "[p]ass:✓");
     assert_eq!(filter_hint("fail", "f", false), "[f]ail:✗");
@@ -177,7 +188,7 @@ fn panel_actions_describe_local_commands() {
         tests_actions(),
         "[enter]details [r]un [R]failed [o]pen-editor [u]update"
     );
-    assert_eq!(info_actions(), "[d]disk-refresh [D]cleanup");
+    assert_eq!(info_actions(), "[d]disk-refresh [D]cleanup [x]tasks");
     assert_eq!(
         disk_cleanup_actions(),
         "[c]cargo-clean [r]refresh [esc]close"

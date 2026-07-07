@@ -1,9 +1,31 @@
 use super::*;
+use crate::command::command_for_input;
+use crate::input::InputEvent;
 use crate::output_pane::{SearchEditorInput, SearchEditorKey};
 use crate::tree::{DiscoveredTest, TestKey, TestStatus};
+use crate::xtask::{SCHEMA_VERSION, XtaskArgSpec, XtaskCommandSpec, XtaskManifest, XtaskValueSpec};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 fn app_with_tree(tree: Tree) -> App {
     App::with_settings(tree, AppSettings::default())
+}
+
+fn sample_xtask_manifest() -> XtaskManifest {
+    XtaskManifest {
+        schema_version: SCHEMA_VERSION,
+        commands: vec![XtaskCommandSpec {
+            name: "ship".to_owned(),
+            about: Some("Ship it".to_owned()),
+            args: vec![XtaskArgSpec {
+                name: "version".to_owned(),
+                long: Some("version".to_owned()),
+                short: None,
+                help: Some("Version".to_owned()),
+                required: true,
+                value: XtaskValueSpec::String { default: None },
+            }],
+        }],
+    }
 }
 
 #[test]
@@ -93,6 +115,139 @@ fn command_context_routes_top_help_overlay_to_help_input() {
         CommandContext {
             input: InputMode::Help,
             overlay: Some(OverlayMode::Help),
+        }
+    );
+}
+
+#[test]
+fn command_context_uses_xtask_modal_and_input_modes() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+
+    app.apply_command(AppCommand::OpenXtasks);
+    assert_eq!(
+        app.command_context(),
+        CommandContext {
+            input: InputMode::XtaskModal,
+            overlay: Some(OverlayMode::Xtasks),
+        }
+    );
+
+    app.xtasks.set_manifest(sample_xtask_manifest());
+    assert_eq!(
+        app.apply_command(AppCommand::OpenSelectedXtask),
+        AppEffect::None
+    );
+    assert_eq!(
+        app.command_context(),
+        CommandContext {
+            input: InputMode::XtaskCommandModal,
+            overlay: Some(OverlayMode::Xtasks),
+        }
+    );
+
+    assert_eq!(
+        app.apply_command(AppCommand::XtaskActivateArg),
+        AppEffect::None
+    );
+    assert_eq!(
+        app.command_context(),
+        CommandContext {
+            input: InputMode::XtaskInput,
+            overlay: Some(OverlayMode::Xtasks),
+        }
+    );
+}
+
+#[test]
+fn xtask_command_frame_reuses_output_search_modes() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    app.xtasks.set_manifest(sample_xtask_manifest());
+    app.apply_command(AppCommand::OpenXtasks);
+    app.apply_command(AppCommand::OpenSelectedXtask);
+
+    app.apply_command(AppCommand::StartOutputSearch);
+    assert_eq!(
+        app.command_context(),
+        CommandContext {
+            input: InputMode::OutputSearchInline,
+            overlay: Some(OverlayMode::Xtasks),
+        }
+    );
+
+    app.apply_command(AppCommand::OpenOutputSearchModal);
+    assert_eq!(
+        app.command_context(),
+        CommandContext {
+            input: InputMode::OutputSearchModal,
+            overlay: Some(OverlayMode::Xtasks),
+        }
+    );
+}
+
+#[test]
+fn xtask_modal_builds_run_effect_with_named_args() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    app.xtasks.set_manifest(sample_xtask_manifest());
+    app.apply_command(AppCommand::OpenXtasks);
+    app.apply_command(AppCommand::OpenSelectedXtask);
+    app.apply_command(AppCommand::XtaskActivateArg);
+    for ch in "1.2.3".chars() {
+        app.apply_command(AppCommand::XtaskEdit(InputFieldInput::char(ch)));
+    }
+    assert_eq!(
+        app.apply_command(AppCommand::CommitXtaskEdit),
+        AppEffect::None
+    );
+
+    let effect = app.apply_command(AppCommand::RunXtask);
+
+    assert_eq!(
+        effect,
+        AppEffect::RunXtask(crate::xtask::XtaskRunRequest {
+            command: "ship".to_owned(),
+            args: vec!["--version".to_owned(), "1.2.3".to_owned()],
+        })
+    );
+    assert!(app.xtasks.running);
+}
+
+#[test]
+fn xtask_command_frame_is_active_output_source() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    app.xtasks.set_manifest(sample_xtask_manifest());
+    app.apply_command(AppCommand::OpenXtasks);
+    app.apply_command(AppCommand::OpenSelectedXtask);
+    app.xtasks.begin_run("cargo xtask ship".to_owned());
+    app.apply_xtask_event(crate::xtask::XtaskEvent::RunOutput(
+        crate::xtask::XtaskRunChunk {
+            stream: crate::xtask::XtaskOutputStream::Stdout,
+            text: "publishing\n".to_owned(),
+        },
+    ));
+
+    assert!(app.output_text().contains("cargo xtask ship"));
+    assert!(app.output_text().contains("publishing"));
+}
+
+#[test]
+fn xtask_detail_close_returns_to_command_picker() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    app.xtasks.set_manifest(sample_xtask_manifest());
+    app.apply_command(AppCommand::OpenXtasks);
+    app.apply_command(AppCommand::OpenSelectedXtask);
+
+    assert!(app.xtasks.modal_open);
+    assert!(app.xtasks.detail_open);
+
+    app.apply_command(AppCommand::CloseXtaskDetails);
+
+    assert!(app.xtasks.modal_open);
+    assert!(!app.xtasks.detail_open);
+    assert_eq!(
+        app.command_context(),
+        CommandContext {
+            input: InputMode::XtaskModal,
+            overlay: Some(OverlayMode::Xtasks),
         }
     );
 }
@@ -190,6 +345,45 @@ fn resize_tests_pane_clamps_to_supported_range() {
 
     assert_eq!(app.settings.tree_width_percent, 25);
     assert_eq!(effect, AppEffect::None);
+}
+
+#[test]
+fn repeated_shift_arrow_resizes_never_start_a_run() {
+    let mut app = App::with_settings(
+        Tree::from_tests(test_rows(1)),
+        AppSettings {
+            tree_width_percent: 50,
+            ..AppSettings::default()
+        },
+    );
+
+    for index in 0..200 {
+        let code = if index % 2 == 0 {
+            KeyCode::Right
+        } else {
+            KeyCode::Left
+        };
+        let event = InputEvent::Terminal(Event::Key(KeyEvent::new(code, KeyModifiers::SHIFT)));
+        let command = command_for_input(&event, app.command_context());
+
+        assert!(
+            matches!(
+                command,
+                AppCommand::WidenTestsPane | AppCommand::NarrowTestsPane
+            ),
+            "shift-arrow mapped to {command:?} at index {index}"
+        );
+
+        let effect = app.apply_command(command);
+
+        assert!(
+            !matches!(effect, AppEffect::StartRun(_)),
+            "shift-arrow emitted StartRun at index {index}"
+        );
+        assert!(!app.running, "app started running at index {index}");
+    }
+
+    assert_eq!(app.settings.tree_width_percent, 50);
 }
 
 #[test]

@@ -81,6 +81,14 @@ fn global_config_path_lives_under_home_nextdeck() {
 }
 
 #[test]
+fn global_debug_log_path_lives_under_home_nextdeck() {
+    assert_eq!(
+        global_debug_log_path(Path::new("/home/demo")),
+        PathBuf::from("/home/demo/.nextdeck/debug.log")
+    );
+}
+
+#[test]
 fn config_read_paths_prefer_global_path_before_legacy_xdg_path() {
     assert_eq!(
         config_read_paths_for(

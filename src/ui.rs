@@ -19,6 +19,7 @@ use crate::{
     symbols::bool_symbol,
     theme::Theme,
     tree::{NodeKind, TestNode, TestStatus},
+    xtask::{XtaskArgValue, XtaskState, XtaskValueSpec},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,10 +87,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         }
         Some(OverlayMode::OutputSearch) => draw_output_search_modal(frame, app, theme),
         Some(OverlayMode::DiskCleanup) => draw_disk_cleanup_modal(frame, app, theme),
+        Some(OverlayMode::Xtasks) => draw_xtasks_modal(frame, app, theme),
         Some(OverlayMode::TestDetails) => draw_test_details_modal(frame, app, theme),
         Some(OverlayMode::Settings) => draw_global_settings_modal(frame, app, theme),
         Some(OverlayMode::Help) => draw_help(frame, app, theme),
         None => {}
+    }
+    if app.xtasks.modal_open && app.output_search.modal_open {
+        draw_output_search_modal(frame, app, theme);
     }
 }
 
@@ -157,6 +162,18 @@ fn fit_line_content(content: &str, width: usize) -> String {
         .chars()
         .skip(char_count.saturating_sub(width))
         .collect()
+}
+
+fn fit_line_prefix(content: &str, width: usize) -> String {
+    let char_count = content.chars().count();
+    if char_count <= width {
+        return format!("{content:<width$}");
+    }
+    if width <= 3 {
+        return content.chars().take(width).collect();
+    }
+    let prefix = content.chars().take(width - 3).collect::<String>();
+    format!("{prefix}...")
 }
 
 fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
@@ -430,6 +447,269 @@ fn disk_cleanup_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     }
 
     lines
+}
+
+fn draw_xtasks_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
+    let area = centered_rect(88, 82, frame.area());
+    let title = xtask_modal_title(&app.xtasks);
+    let inner = draw_modal_shell(
+        frame,
+        theme,
+        area,
+        ModalChrome {
+            title: &title,
+            actions: Some(xtask_actions(&app.xtasks)),
+        },
+    );
+    if app.xtasks.detail_open {
+        draw_xtask_detail_frame(frame, app, theme, inner);
+    } else {
+        let paragraph = Paragraph::new(xtask_list_lines(&app.xtasks, theme))
+            .alignment(Alignment::Left)
+            .style(theme.text())
+            .wrap(Wrap { trim: false });
+        frame.render_widget(paragraph, inner);
+    }
+}
+
+fn xtask_modal_title(xtasks: &XtaskState) -> String {
+    if xtasks.detail_open {
+        if let Some(command) = xtasks.selected_command() {
+            return format!("Xtasks > {}", command.name);
+        }
+    }
+    "Xtasks".to_owned()
+}
+
+fn xtask_list_lines(xtasks: &XtaskState, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if xtasks.loading {
+        lines.push(Line::styled(
+            "Loading cargo xtask metadata...",
+            theme.muted(),
+        ));
+        if xtasks.manifest.is_none() {
+            return lines;
+        }
+    }
+    if let Some(error) = &xtasks.error {
+        lines.push(Line::styled(format!("Error: {error}"), theme.danger()));
+    }
+    let Some(manifest) = &xtasks.manifest else {
+        lines.extend([
+            Line::from(""),
+            Line::styled(
+                "This project has not exposed nextdeck xtask metadata yet.",
+                theme.text(),
+            ),
+            Line::styled(
+                "Expected: cargo xtask nextdeck-info --format json",
+                theme.muted(),
+            ),
+        ]);
+        return lines;
+    };
+    if manifest.commands.is_empty() {
+        lines.push(Line::styled("No xtask commands exposed.", theme.muted()));
+        return lines;
+    }
+
+    for (index, command) in manifest.commands.iter().enumerate() {
+        let selected = index == xtasks.selected_command;
+        let marker = if selected { ">" } else { " " };
+        let style = if selected {
+            theme.selected()
+        } else {
+            theme.text()
+        };
+        let about = command.about.as_deref().unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled(format!("{marker} {:<18}", command.name), style),
+            Span::styled(fit_line_content(about, 46), style),
+        ]));
+    }
+
+    lines
+}
+
+fn draw_xtask_detail_frame(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Length(1),
+            Constraint::Percentage(60),
+        ])
+        .split(area);
+
+    draw_xtask_params_panel(frame, theme, chunks[0], &app.xtasks);
+    frame.render_widget(Clear, chunks[1]);
+    draw_xtask_output_panel(frame, app, theme, chunks[2]);
+}
+
+fn draw_xtask_params_panel(frame: &mut Frame<'_>, theme: &Theme, area: Rect, xtasks: &XtaskState) {
+    let content_width = area.width.saturating_sub(2).max(1) as usize;
+    let block = theme.panel_block("Parameters", Some("[up/down]select"), true);
+    let inner = block.inner(area);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    let paragraph = Paragraph::new(xtask_param_lines(xtasks, theme, content_width))
+        .style(theme.text())
+        .wrap(Wrap { trim: false });
+    let back = Paragraph::new(Line::from(vec![
+        Span::styled("[ Back ]", theme.accent()),
+        Span::styled(" esc/b", theme.muted()),
+    ]))
+    .style(theme.text());
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    frame.render_widget(paragraph, chunks[0]);
+    frame.render_widget(back, chunks[1]);
+}
+
+fn xtask_param_lines(
+    xtasks: &XtaskState,
+    theme: &Theme,
+    content_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if let Some(command) = xtasks.selected_command() {
+        let manual = xtasks
+            .run_request()
+            .map(|request| request.command_line())
+            .unwrap_or_else(|error| error.to_string());
+        lines.push(Line::styled(
+            fit_line_prefix(&format!("Command: {}", command.name), content_width),
+            theme.title(false),
+        ));
+        if let Some(about) = &command.about {
+            lines.push(Line::styled(
+                fit_line_prefix(about, content_width),
+                theme.text(),
+            ));
+        }
+        lines.push(Line::styled(
+            fit_line_prefix(&manual, content_width),
+            theme.muted(),
+        ));
+        lines.push(Line::from(""));
+        if command.args.is_empty() {
+            lines.push(Line::styled("No parameters.", theme.muted()));
+        } else {
+            let value_width = content_width.saturating_sub(10).min(13);
+            let flag_width = content_width.saturating_sub(value_width + 2).max(1);
+            let help_width = content_width.saturating_sub(10);
+            for (index, arg) in command.args.iter().enumerate() {
+                let selected = index == xtasks.selected_arg;
+                let marker = if selected { ">" } else { " " };
+                let style = if selected {
+                    theme.selected()
+                } else {
+                    theme.text()
+                };
+                let value = xtask_arg_value_text(xtasks, &command.name, &arg.name, selected);
+                let kind = xtask_arg_kind(&arg.value);
+                let help = arg.help.as_deref().unwrap_or("");
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{marker} {}", fit_line_prefix(&arg.flag(), flag_width)),
+                        style,
+                    ),
+                    Span::styled(fit_line_prefix(&value, value_width), style),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(format!("{kind:<8}"), theme.muted()),
+                    Span::styled(fit_line_prefix(help, help_width), theme.muted()),
+                ]));
+            }
+        }
+    }
+
+    lines
+}
+
+fn draw_xtask_output_panel(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
+    let source_text = app.xtasks.output_text();
+    let output_view = app.output_search.filtered_view(&source_text);
+    let page_size = area.height.saturating_sub(2).max(1);
+    let label = xtask_output_label(&app.xtasks);
+    let status = output_status_for(
+        label,
+        app,
+        &output_view.text,
+        &source_text,
+        page_size,
+        app.xtasks.output_scroll,
+    );
+    draw_output_panel(
+        frame,
+        theme,
+        area,
+        PanelChrome {
+            status: &status,
+            actions: output_actions(),
+        },
+        output_lines(app, theme, &output_view),
+        true,
+        app.xtasks.output_scroll,
+    );
+}
+
+fn xtask_output_label(xtasks: &XtaskState) -> &'static str {
+    if xtasks.running {
+        "Output: running"
+    } else if let Some(output) = &xtasks.last_run {
+        if output.success {
+            "Output: completed"
+        } else {
+            "Output: failed"
+        }
+    } else {
+        "Output"
+    }
+}
+
+fn xtask_arg_value_text(
+    xtasks: &XtaskState,
+    command_name: &str,
+    arg_name: &str,
+    selected: bool,
+) -> String {
+    if selected
+        && let Some(editing) = &xtasks.editing
+        && editing.command == command_name
+        && editing.arg == arg_name
+    {
+        return format!("[{}]", editing.input.view(16, true));
+    }
+    xtasks
+        .values
+        .get(command_name)
+        .and_then(|values| values.get(arg_name))
+        .map(XtaskArgValue::display)
+        .unwrap_or_default()
+}
+
+fn xtask_arg_kind(value: &XtaskValueSpec) -> &'static str {
+    match value {
+        XtaskValueSpec::Bool { .. } => "bool",
+        XtaskValueSpec::Number { .. } => "number",
+        XtaskValueSpec::String { .. } => "string",
+        XtaskValueSpec::Enum { .. } => "enum",
+    }
+}
+
+fn xtask_actions(xtasks: &XtaskState) -> &'static str {
+    if xtasks.editing.is_some() {
+        "[enter]save [esc]cancel"
+    } else if xtasks.detail_open {
+        "[up/down]param [left/right]change [e]edit [r]run [/]search"
+    } else {
+        "[up/down]command [enter]open [u]refresh [esc]close"
+    }
 }
 
 fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
@@ -1089,7 +1369,7 @@ fn tests_actions() -> &'static str {
 }
 
 fn info_actions() -> &'static str {
-    "[d]disk-refresh [D]cleanup"
+    "[d]disk-refresh [D]cleanup [x]tasks"
 }
 
 fn disk_cleanup_actions() -> &'static str {

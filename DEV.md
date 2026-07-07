@@ -14,4 +14,6 @@ Useful local publishing commands:
 - `cargo xtask install-path`: install directly from the workspace checkout.
 - `cargo xtask release --allow-dirty --skip-sign`: build a local release archive in `target/dist`.
 - `cargo xtask homebrew-formula --github-repo owner/nextdeck --dist-dir target/dist --output Formula/nextdeck.rb`: render a Homebrew formula from release checksums.
+- `cargo xtask nextdeck-info --format json`: expose this repo's xtasks to nextdeck.
 
+See `docs/xtask-integration/README.md` for the JSON contract other repos can expose.

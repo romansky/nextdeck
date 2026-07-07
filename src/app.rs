@@ -17,6 +17,7 @@ use crate::{
     source,
     state::StatusCounts,
     tree::{DiscoveredTest, NodeId, NodeKind, SelectionChange, TestNode, TestViewFilter, Tree},
+    xtask::{XtaskEvent, XtaskRunRequest, XtaskState},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,6 +46,7 @@ pub struct App {
     pub git_status: GitStatus,
     pub disk_usage: DiskUsageState,
     pub disk_cleanup: DiskCleanupState,
+    pub xtasks: XtaskState,
     pub global_settings: GlobalSettingsState,
     pub run: RunState,
     pub settings: AppSettings,
@@ -128,6 +130,8 @@ pub enum AppEffect {
     OpenOutput(OutputOpenRequest),
     RefreshDiskUsage,
     RunCargoClean,
+    RefreshXtasks,
+    RunXtask(XtaskRunRequest),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -158,6 +162,7 @@ impl App {
             git_status: GitStatus::unknown(),
             disk_usage: DiskUsageState::default(),
             disk_cleanup: DiskCleanupState::default(),
+            xtasks: XtaskState::default(),
             global_settings: GlobalSettingsState::default(),
             run: RunState::default(),
             settings: settings.normalized(),
@@ -219,6 +224,8 @@ impl App {
             Some(OverlayMode::Settings)
         } else if self.disk_cleanup.modal_open {
             Some(OverlayMode::DiskCleanup)
+        } else if self.xtasks.modal_open {
+            Some(OverlayMode::Xtasks)
         } else if self.output_search.modal_open {
             Some(OverlayMode::OutputSearch)
         } else if self.show_test_details {
@@ -237,6 +244,15 @@ impl App {
             }
             Some(OverlayMode::Settings) => InputMode::SettingsModal,
             Some(OverlayMode::DiskCleanup) => InputMode::DiskCleanupModal,
+            Some(OverlayMode::Xtasks) if self.output_search.modal_open => {
+                InputMode::OutputSearchModal
+            }
+            Some(OverlayMode::Xtasks) if self.output_search.input_active => {
+                InputMode::OutputSearchInline
+            }
+            Some(OverlayMode::Xtasks) if self.xtasks.editing.is_some() => InputMode::XtaskInput,
+            Some(OverlayMode::Xtasks) if self.xtasks.detail_open => InputMode::XtaskCommandModal,
+            Some(OverlayMode::Xtasks) => InputMode::XtaskModal,
             Some(OverlayMode::OutputSearch) => InputMode::OutputSearchModal,
             Some(OverlayMode::TestDetails) => InputMode::TestDetailsModal,
             Some(OverlayMode::Discovery) => InputMode::DiscoveryRunning,
@@ -330,6 +346,27 @@ impl App {
             Err(error) => self.status = format!("cargo clean failed: {error}"),
         }
         self.disk_cleanup.apply_result(result)
+    }
+
+    pub fn apply_xtask_event(&mut self, event: XtaskEvent) {
+        if let Some(status) = match &event {
+            XtaskEvent::InfoLoaded(Ok(manifest)) => Some(format!(
+                "Discovered {} xtask command(s)",
+                manifest.commands.len()
+            )),
+            XtaskEvent::InfoLoaded(Err(error)) => Some(format!("Xtask discovery failed: {error}")),
+            XtaskEvent::RunOutput(_) => None,
+            XtaskEvent::RunFinished(Ok(output)) if output.success => {
+                Some(format!("Xtask completed: {}", output.command_line))
+            }
+            XtaskEvent::RunFinished(Ok(output)) => {
+                Some(format!("Xtask failed: {}", output.command_line))
+            }
+            XtaskEvent::RunFinished(Err(error)) => Some(format!("Xtask failed: {error}")),
+        } {
+            self.status = status;
+        }
+        self.xtasks.apply_event(event);
     }
 
     fn save_settings_effect(&mut self) -> AppEffect {
@@ -687,6 +724,113 @@ impl App {
                     AppEffect::RunCargoClean
                 } else {
                     AppEffect::None
+                }
+            }
+            AppCommand::OpenXtasks => {
+                self.xtasks.open();
+                self.status = "Xtasks opened".to_owned();
+                AppEffect::None
+            }
+            AppCommand::CloseXtasks => {
+                self.xtasks.close();
+                self.status = "Xtasks closed".to_owned();
+                AppEffect::None
+            }
+            AppCommand::RefreshXtasks => {
+                self.xtasks.begin_load();
+                self.status = "Refreshing xtasks".to_owned();
+                AppEffect::RefreshXtasks
+            }
+            AppCommand::OpenSelectedXtask => {
+                if self.xtasks.open_detail() {
+                    if let Some(command) = self.xtasks.selected_command() {
+                        self.status = format!("Xtask opened: {}", command.name);
+                    }
+                } else {
+                    self.status = "No xtask command selected".to_owned();
+                }
+                AppEffect::None
+            }
+            AppCommand::CloseXtaskDetails => {
+                self.xtasks.close_detail();
+                self.status = "Xtask details closed".to_owned();
+                AppEffect::None
+            }
+            AppCommand::XtaskNextCommand => {
+                self.xtasks.select_next_command();
+                AppEffect::None
+            }
+            AppCommand::XtaskPreviousCommand => {
+                self.xtasks.select_previous_command();
+                AppEffect::None
+            }
+            AppCommand::XtaskNextArg => {
+                self.xtasks.select_next_arg();
+                AppEffect::None
+            }
+            AppCommand::XtaskPreviousArg => {
+                self.xtasks.select_previous_arg();
+                AppEffect::None
+            }
+            AppCommand::XtaskAdjustLeft => {
+                if !self.xtasks.adjust_selected_arg(-1) {
+                    self.status = "Selected xtask argument is not adjustable".to_owned();
+                }
+                AppEffect::None
+            }
+            AppCommand::XtaskAdjustRight => {
+                if !self.xtasks.adjust_selected_arg(1) {
+                    self.status = "Selected xtask argument is not adjustable".to_owned();
+                }
+                AppEffect::None
+            }
+            AppCommand::XtaskActivateArg => {
+                if !self.xtasks.begin_edit_selected_arg() {
+                    let adjusted = self.xtasks.adjust_selected_arg(1);
+                    if !adjusted {
+                        self.status = "Selected xtask argument is not editable".to_owned();
+                    }
+                }
+                AppEffect::None
+            }
+            AppCommand::XtaskOutputPageUp => {
+                self.xtasks.scroll_output_up(8);
+                AppEffect::None
+            }
+            AppCommand::XtaskOutputPageDown => {
+                self.xtasks.scroll_output_down(8);
+                AppEffect::None
+            }
+            AppCommand::XtaskEdit(input) => {
+                self.xtasks.edit_input(input);
+                AppEffect::None
+            }
+            AppCommand::CommitXtaskEdit => {
+                if let Err(error) = self.xtasks.commit_edit() {
+                    self.status = error.to_string();
+                }
+                AppEffect::None
+            }
+            AppCommand::CancelXtaskEdit => {
+                self.xtasks.cancel_edit();
+                AppEffect::None
+            }
+            AppCommand::RunXtask => {
+                if self.xtasks.running {
+                    self.status = "Xtask already running".to_owned();
+                    return AppEffect::None;
+                }
+                match self.xtasks.run_request() {
+                    Ok(request) => {
+                        let command_line = request.command_line();
+                        self.xtasks.begin_run(command_line.clone());
+                        self.status = format!("Running {command_line}");
+                        AppEffect::RunXtask(request)
+                    }
+                    Err(error) => {
+                        self.status = error.to_string();
+                        AppEffect::None
+                    }
                 }
             }
             AppCommand::ToggleShowSuccess => {
@@ -1109,7 +1253,12 @@ impl App {
     }
 
     fn open_output_effect(&mut self) -> AppEffect {
-        let title = if self.discovery.error.is_some() {
+        let title = if self.xtask_output_active() {
+            self.xtasks
+                .selected_command()
+                .map(|command| format!("Xtask: {}", command.name))
+                .unwrap_or_else(|| "Xtask".to_owned())
+        } else if self.discovery.error.is_some() {
             "Discovery failed".to_owned()
         } else {
             self.tree.selected_path()
@@ -1128,11 +1277,17 @@ impl App {
     }
 
     pub(crate) fn output_source_text(&self) -> String {
-        if let Some(error) = &self.discovery.error {
+        if self.xtask_output_active() {
+            self.xtasks.output_text()
+        } else if let Some(error) = &self.discovery.error {
             discovery_error_output(error)
         } else {
             self.tree.selected_output()
         }
+    }
+
+    fn xtask_output_active(&self) -> bool {
+        self.xtasks.modal_open && self.xtasks.detail_open
     }
 
     fn selected_source_location(&self) -> Option<SourceLocation> {
@@ -1302,7 +1457,7 @@ impl App {
         self.output_search.clear_draft();
         self.output_search.apply_draft();
         self.output_search.current_line = None;
-        self.output_scroll = 0;
+        self.reset_active_output_scroll();
         self.output_follow = false;
         self.status = "Output search cleared".to_owned();
     }
@@ -1324,7 +1479,7 @@ impl App {
         self.output_search.modal_open = false;
         if self.output_search.query.is_empty() {
             self.output_search.current_line = None;
-            self.output_scroll = 0;
+            self.reset_active_output_scroll();
             self.output_follow = false;
             self.status = "Output search cleared".to_owned();
         } else {
@@ -1488,7 +1643,19 @@ impl App {
         };
         let view = self.output_view();
         if let Some(view_line) = view.line_index_for_source_line(source_line) {
-            self.output_scroll = view_line.min(u16::MAX as usize) as u16;
+            self.set_active_output_scroll(view_line.min(u16::MAX as usize) as u16);
+        }
+    }
+
+    fn reset_active_output_scroll(&mut self) {
+        self.set_active_output_scroll(0);
+    }
+
+    fn set_active_output_scroll(&mut self, scroll: u16) {
+        if self.xtask_output_active() {
+            self.xtasks.output_scroll = scroll;
+        } else {
+            self.output_scroll = scroll;
         }
     }
 

@@ -20,15 +20,17 @@ mod terminal;
 mod theme;
 mod tree;
 mod ui;
+mod xtask;
 
-use std::{io, path::PathBuf};
+use std::{fs::OpenOptions, io, path::PathBuf, sync::Mutex};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use app::App;
 use clap::{Parser, ValueEnum};
 use nextest::NextestClient;
 use terminal::TerminalSession;
 use theme::{Theme, ThemeMode};
+use tracing_subscriber::EnvFilter;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum ThemeArg {
@@ -59,6 +61,12 @@ struct Cli {
     #[arg(long, help = "Run all discovered tests immediately on startup")]
     run: bool,
 
+    #[arg(
+        long,
+        help = "Write diagnostic logs to ~/.nextdeck/debug.log for later inspection"
+    )]
+    debug: bool,
+
     #[arg(long, value_enum, help = "Theme mode to use")]
     theme: Option<ThemeArg>,
 
@@ -72,6 +80,9 @@ struct Cli {
     #[arg(long, help = "Print discovered tests as JSON and exit")]
     list_json: bool,
 
+    #[arg(long, help = "Print discovered xtasks as JSON and exit")]
+    list_xtasks_json: bool,
+
     #[arg(
         last = true,
         help = "Additional arguments forwarded to cargo nextest list/run"
@@ -81,11 +92,12 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     let cli = Cli::parse();
+    let debug_log_path = init_tracing(cli.debug)?;
+    if let Some(path) = debug_log_path.as_ref() {
+        tracing::debug!(path = %path.display(), "debug logging enabled");
+    }
+
     let run_on_start = cli.run;
     let settings = config::load();
     let editor =
@@ -94,6 +106,12 @@ async fn main() -> Result<()> {
     if cli.list_json {
         let tests = client.discover().await?;
         serde_json::to_writer_pretty(io::stdout(), &tests)?;
+        println!();
+        return Ok(());
+    }
+    if cli.list_xtasks_json {
+        let manifest = xtask::load(client.project_dir()).await?;
+        serde_json::to_writer_pretty(io::stdout(), &manifest)?;
         println!();
         return Ok(());
     }
@@ -117,4 +135,30 @@ async fn main() -> Result<()> {
     .await;
     terminal.restore()?;
     result
+}
+
+fn init_tracing(debug: bool) -> Result<Option<PathBuf>> {
+    if debug {
+        let path = config::debug_log_path()
+            .context("debug logging requires HOME so ~/.nextdeck/debug.log can be created")?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        tracing_subscriber::fmt()
+            .with_env_filter(debug_env_filter())
+            .with_writer(Mutex::new(file))
+            .with_ansi(false)
+            .init();
+        Ok(Some(path))
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .init();
+        Ok(None)
+    }
+}
+
+fn debug_env_filter() -> EnvFilter {
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("nextdeck=debug"))
 }

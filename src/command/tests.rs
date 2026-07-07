@@ -36,6 +36,27 @@ const fn disk_cleanup_modal_context() -> CommandContext {
     }
 }
 
+const fn xtask_modal_context() -> CommandContext {
+    CommandContext {
+        input: InputMode::XtaskModal,
+        overlay: Some(OverlayMode::Xtasks),
+    }
+}
+
+const fn xtask_command_modal_context() -> CommandContext {
+    CommandContext {
+        input: InputMode::XtaskCommandModal,
+        overlay: Some(OverlayMode::Xtasks),
+    }
+}
+
+const fn xtask_input_context() -> CommandContext {
+    CommandContext {
+        input: InputMode::XtaskInput,
+        overlay: Some(OverlayMode::Xtasks),
+    }
+}
+
 const fn test_details_modal_context() -> CommandContext {
     CommandContext {
         input: InputMode::TestDetailsModal,
@@ -215,6 +236,18 @@ fn maps_global_settings_key_across_focus_modes() {
 }
 
 #[test]
+fn maps_global_xtasks_key_across_focus_modes() {
+    assert_eq!(
+        command_for_key(KeyCode::Char('x'), KeyModifiers::NONE, CommandFocus::Tests),
+        AppCommand::OpenXtasks
+    );
+    assert_eq!(
+        command_for_key(KeyCode::Char('x'), KeyModifiers::NONE, CommandFocus::Output),
+        AppCommand::OpenXtasks
+    );
+}
+
+#[test]
 fn settings_modal_uses_settings_commands() {
     let context = settings_modal_context();
     let next = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
@@ -343,6 +376,165 @@ fn disk_cleanup_modal_uses_cleanup_commands() {
 }
 
 #[test]
+fn xtask_modal_uses_xtask_commands() {
+    let context = xtask_modal_context();
+    let next = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+    assert_eq!(
+        command_for_input(&next, context),
+        AppCommand::XtaskNextCommand
+    );
+
+    let open = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&open, context),
+        AppCommand::OpenSelectedXtask
+    );
+
+    let refresh = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('u'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&refresh, context),
+        AppCommand::RefreshXtasks
+    );
+
+    let run = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('r'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(command_for_input(&run, context), AppCommand::Noop);
+
+    let close = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+    assert_eq!(command_for_input(&close, context), AppCommand::CloseXtasks);
+}
+
+#[test]
+fn xtask_command_modal_uses_parameter_and_output_commands() {
+    let context = xtask_command_modal_context();
+    let arg = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+    assert_eq!(command_for_input(&arg, context), AppCommand::XtaskNextArg);
+
+    let adjust = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Right,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&adjust, context),
+        AppCommand::XtaskAdjustRight
+    );
+
+    let edit = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&edit, context),
+        AppCommand::XtaskActivateArg
+    );
+
+    let run = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('r'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(command_for_input(&run, context), AppCommand::RunXtask);
+
+    let regex = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('r'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(
+        command_for_input(&regex, context),
+        AppCommand::ToggleOutputRegex
+    );
+
+    let search = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('/'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&search, context),
+        AppCommand::StartOutputSearch
+    );
+
+    let next_match = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('n'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&next_match, context),
+        AppCommand::FindNextOutputMatch
+    );
+
+    let filter = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('f'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&filter, context),
+        AppCommand::ToggleOutputFilter
+    );
+
+    let open_output = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('o'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&open_output, context),
+        AppCommand::OpenOutput
+    );
+
+    let page = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::PageDown,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&page, context),
+        AppCommand::XtaskOutputPageDown
+    );
+
+    let close = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+    assert_eq!(
+        command_for_input(&close, context),
+        AppCommand::CloseXtaskDetails
+    );
+
+    let back = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('b'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&back, context),
+        AppCommand::CloseXtaskDetails
+    );
+}
+
+#[test]
+fn xtask_input_accepts_text_and_commit() {
+    let context = xtask_input_context();
+    let char = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('v'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&char, context),
+        AppCommand::XtaskEdit(InputFieldInput::char('v'))
+    );
+
+    let enter = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&enter, context),
+        AppCommand::CommitXtaskEdit
+    );
+}
+
+#[test]
 fn test_details_modal_closes_on_escape_only() {
     let context = test_details_modal_context();
     let event = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
@@ -435,6 +627,9 @@ fn command_metadata_contains_help_entries() {
         info.group == CommandGroup::Global
             && info.keys == "Ctrl+C"
             && info.label == "stop running tests"
+    }));
+    assert!(command_infos().iter().any(|info| {
+        info.group == CommandGroup::Global && info.keys == "x" && info.label == "open xtasks"
     }));
     assert!(command_infos().iter().any(|info| {
         info.group == CommandGroup::Output && info.keys == "/" && info.label == "search output"
