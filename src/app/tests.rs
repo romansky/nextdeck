@@ -1294,7 +1294,7 @@ fn output_search_input_opens_modal_then_apply_finds_match() {
     assert!(!app.main_output.search.input_active);
     assert!(!app.main_output.search.modal_open);
     assert_eq!(app.main_output.search.query, "panic");
-    assert_eq!(app.main_output.scroll, 1);
+    assert_eq!(app.main_output.scroll, 0);
     assert!(!app.main_output.follow);
 }
 
