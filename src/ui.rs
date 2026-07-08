@@ -18,7 +18,7 @@ use crate::{
         OutputPaneState, OutputSearchState, OutputView, SearchModalFocus,
         output_render_scroll_for_count,
     },
-    parameter_list::{ParameterList, ParameterListRow, ParameterListStyles},
+    parameter_list::{ParameterDetails, ParameterList, ParameterListRow, ParameterListStyles},
     settings::SettingsField,
     symbols::bool_symbol,
     test_events::{TestEventRunLog, TestEventsFocus, TestEventsState},
@@ -56,6 +56,12 @@ struct OutputPaneContent {
     scroll: u16,
 }
 
+struct DetailListRow {
+    label: String,
+    value: String,
+    value_style: Style,
+}
+
 struct ModalChrome<'a> {
     title: &'a str,
     actions: Option<&'a str>,
@@ -71,7 +77,9 @@ const XTASK_PARAM_LABEL_MAX_WIDTH: usize = 24;
 const XTASK_PARAM_LABEL_MIN_WIDTH: usize = 6;
 const SETTINGS_FIELD_LABEL_WIDTH: usize = 13;
 const DETAIL_FIELD_LABEL_WIDTH: usize = 9;
-const TEST_DETAILS_RUN_CONTENT_WIDTH: usize = 82;
+const DETAIL_LIST_LABEL_WIDTH: usize = DETAIL_FIELD_LABEL_WIDTH - 1;
+#[cfg(test)]
+const TEST_DETAILS_CONTENT_WIDTH: usize = 82;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AutoColumn {
@@ -406,7 +414,7 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
 
 fn draw_test_details_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let area = centered_rect(86, 88, frame.area());
-    draw_modal_lines(
+    let inner = draw_modal_shell(
         frame,
         theme,
         area,
@@ -414,8 +422,16 @@ fn draw_test_details_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
             title: "Test Details",
             actions: Some(test_details_actions(app)),
         },
-        test_details_modal_lines(app, theme),
     );
+    let paragraph = Paragraph::new(test_details_modal_lines_with_width(
+        app,
+        theme,
+        inner.width as usize,
+    ))
+    .alignment(Alignment::Left)
+    .style(theme.text())
+    .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
 }
 
 fn test_details_actions(app: &App) -> &'static str {
@@ -597,6 +613,7 @@ fn custom_run_lines(
     let rows = custom_run_parameter_rows(custom_run, theme, value_width);
     ParameterList {
         rows: &rows,
+        marker_width: SELECTABLE_FIELD_PREFIX_WIDTH,
         label_width,
         content_width,
         styles: ParameterListStyles {
@@ -628,6 +645,7 @@ fn custom_run_parameter_rows(
                 } else {
                     theme.text()
                 },
+                value_style: None,
             }
         })
         .collect()
@@ -706,25 +724,26 @@ fn optional_value(value: Option<u32>) -> String {
         .unwrap_or_else(|| "profile".to_owned())
 }
 
-fn custom_run_option_details(custom_run: &CustomRunState, field: CustomRunField) -> String {
-    let details = match field {
-        CustomRunField::Scope => {
-            "options: selected, workspace, failed; default: selected".to_owned()
-        }
+fn custom_run_option_details(
+    custom_run: &CustomRunState,
+    field: CustomRunField,
+) -> ParameterDetails {
+    match field {
+        CustomRunField::Scope => ParameterDetails::enum_values(["selected", "workspace", "failed"])
+            .with_default("selected"),
         CustomRunField::Profile => {
             let profiles = custom_run
                 .run_config
                 .profiles
                 .iter()
-                .map(|profile| profile.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let profiles = if profiles.trim().is_empty() {
-                "default"
+                .map(|profile| profile.name.clone())
+                .collect::<Vec<_>>();
+            let profiles = if profiles.is_empty() {
+                vec!["default".to_owned()]
             } else {
-                profiles.as_str()
+                profiles
             };
-            format!("profiles: {profiles}; default: default")
+            ParameterDetails::enum_values(profiles).with_default("default")
         }
         CustomRunField::Filterset => {
             let mut options = vec!["none".to_owned()];
@@ -737,28 +756,44 @@ fn custom_run_option_details(custom_run: &CustomRunState, field: CustomRunField)
             );
             if matches!(custom_run.filter, CustomRunFilter::Custom(_)) {
                 options.push("custom".to_owned());
-                format!("options: {}; default: none", options.join(", "))
+                ParameterDetails::enum_values(options).with_default("none")
             } else {
-                format!("options: {}; [e] custom; default: none", options.join(", "))
+                ParameterDetails::enum_values(options)
+                    .with_default("none")
+                    .custom_value()
             }
         }
         CustomRunField::Ignored => {
-            "options: default, only ignored, all; default: default".to_owned()
+            ParameterDetails::enum_values(["default", "only ignored", "all"])
+                .with_default("default")
         }
-        CustomRunField::Retries => "options: profile, 0..10; default: profile".to_owned(),
-        CustomRunField::FlakyResult => "options: profile, pass, fail; default: profile".to_owned(),
-        CustomRunField::FailFast => "options: profile, on, off; default: profile".to_owned(),
-        CustomRunField::MaxFail => {
-            "options: profile, 0..20; [e] custom; default: profile".to_owned()
+        CustomRunField::Retries => ParameterDetails::number()
+            .with_choices(["profile", "0..10"])
+            .with_default("profile"),
+        CustomRunField::FlakyResult => {
+            ParameterDetails::enum_values(["profile", "pass", "fail"]).with_default("profile")
         }
-        CustomRunField::NoCapture => "options: off, on; default: off".to_owned(),
-        CustomRunField::Debugger => {
-            "options: off, rust-lldb --args; [e] custom; default: off".to_owned()
+        CustomRunField::FailFast => {
+            ParameterDetails::enum_values(["profile", "on", "off"]).with_default("profile")
         }
-        CustomRunField::StressCount => "options: off, 0..100; [e] custom; default: off".to_owned(),
-        CustomRunField::StressDuration => "options: off, 30s; [e] custom; default: off".to_owned(),
-    };
-    format!("# {details}")
+        CustomRunField::MaxFail => ParameterDetails::number()
+            .with_choices(["profile", "0..20"])
+            .with_default("profile")
+            .custom_value(),
+        CustomRunField::NoCapture => ParameterDetails::bool(false),
+        CustomRunField::Debugger => ParameterDetails::string()
+            .with_choices(["off", "rust-lldb --args"])
+            .with_default("off")
+            .custom_value(),
+        CustomRunField::StressCount => ParameterDetails::number()
+            .with_choices(["off", "0..100"])
+            .with_default("off")
+            .custom_value(),
+        CustomRunField::StressDuration => ParameterDetails::string()
+            .with_choices(["off", "30s"])
+            .with_default("off")
+            .custom_value(),
+    }
 }
 
 fn disk_cleanup_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
@@ -1136,6 +1171,7 @@ fn xtask_param_lines(
             lines.extend(
                 ParameterList {
                     rows: &rows,
+                    marker_width: SELECTABLE_FIELD_PREFIX_WIDTH,
                     label_width,
                     content_width,
                     styles: ParameterListStyles {
@@ -1204,6 +1240,7 @@ fn xtask_parameter_rows(
                 } else {
                     theme.text()
                 },
+                value_style: None,
             }
         })
         .collect()
@@ -1290,24 +1327,25 @@ fn xtask_arg_hint(arg: &XtaskArgSpec) -> Option<String> {
         .map(|help| format!("# {help}"))
 }
 
-fn xtask_arg_details(arg: &XtaskArgSpec) -> String {
+fn xtask_arg_details(arg: &XtaskArgSpec) -> ParameterDetails {
     match &arg.value {
-        XtaskValueSpec::Bool { default } => {
-            format!("# bool: off, on (default: {})", on_off(*default))
-        }
+        XtaskValueSpec::Bool { default } => ParameterDetails::bool(*default),
         XtaskValueSpec::Number {
             default: Some(default),
-        } => {
-            format!("# number default: {default}")
-        }
-        XtaskValueSpec::Number { default: None } => "# number".to_owned(),
+        } => ParameterDetails::number().with_default(default.to_string()),
+        XtaskValueSpec::Number { default: None } => ParameterDetails::number(),
         XtaskValueSpec::String {
             default: Some(default),
-        } if !default.trim().is_empty() => {
-            format!("# string default: {default}")
+        } if !default.trim().is_empty() => ParameterDetails::string().with_default(default.clone()),
+        XtaskValueSpec::String { .. } => ParameterDetails::string(),
+        XtaskValueSpec::Enum { values, default } => {
+            let details = ParameterDetails::enum_values(values.clone());
+            if let Some(default) = default {
+                details.with_default(default.clone())
+            } else {
+                details
+            }
         }
-        XtaskValueSpec::String { .. } => "# string".to_owned(),
-        XtaskValueSpec::Enum { values, .. } => format!("# enum: {}", values.join(", ")),
     }
 }
 
@@ -1619,7 +1657,16 @@ fn selected_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     lines
 }
 
+#[cfg(test)]
 fn test_details_modal_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
+    test_details_modal_lines_with_width(app, theme, TEST_DETAILS_CONTENT_WIDTH)
+}
+
+fn test_details_modal_lines_with_width(
+    app: &App,
+    theme: &Theme,
+    content_width: usize,
+) -> Vec<Line<'static>> {
     let Some(node) = app.tree.selected_node() else {
         return vec![Line::styled("No selection", theme.muted())];
     };
@@ -1629,82 +1676,76 @@ fn test_details_modal_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::styled(app.tree.selected_path(), theme.title(true)),
         Line::from(""),
-        detail_line("kind", selected_kind_label(node), theme.text(), theme),
-        detail_status_line(node.status, theme),
-        detail_line(
+    ];
+    let mut detail_rows = vec![
+        detail_list_row("kind", selected_kind_label(node), theme.text()),
+        detail_status_list_row(node.status, theme),
+        detail_list_row(
             "duration",
             duration_label(node, app.settings.tree_duration_mode),
             theme.text(),
-            theme,
         ),
-        detail_line("tests", status_counts_label(counts), theme.text(), theme),
+        detail_list_row("tests", status_counts_label(counts), theme.text()),
     ];
 
     match &node.kind {
         NodeKind::Workspace => {}
         NodeKind::Package { name } => {
-            lines.push(detail_line("package", name.clone(), theme.accent(), theme));
+            detail_rows.push(detail_list_row("package", name.clone(), theme.accent()));
         }
         NodeKind::Binary {
             package,
             name,
             kind,
         } => {
-            lines.extend([
-                detail_line("package", package.clone(), theme.accent(), theme),
-                detail_line("binary", name.clone(), theme.text(), theme),
-                detail_line("target", kind.clone(), theme.text(), theme),
-                detail_line("source", first_source_path(node), theme.text(), theme),
+            detail_rows.extend([
+                detail_list_row("package", package.clone(), theme.accent()),
+                detail_list_row("binary", name.clone(), theme.text()),
+                detail_list_row("target", kind.clone(), theme.text()),
+                detail_list_row("source", first_source_path(node), theme.text()),
             ]);
         }
         NodeKind::Module { path } => {
-            lines.push(detail_line("module", path.clone(), theme.accent(), theme));
-            lines.push(detail_line(
+            detail_rows.push(detail_list_row("module", path.clone(), theme.accent()));
+            detail_rows.push(detail_list_row(
                 "source",
                 first_source_path(node),
                 theme.text(),
-                theme,
             ));
         }
         NodeKind::Test(test) => {
-            lines.extend([
-                detail_line("package", test.package.clone(), theme.accent(), theme),
-                detail_line("binary", test.binary.clone(), theme.text(), theme),
-                detail_line("target", test.binary_kind.clone(), theme.text(), theme),
-                detail_line(
+            detail_rows.extend([
+                detail_list_row("package", test.package.clone(), theme.accent()),
+                detail_list_row("binary", test.binary.clone(), theme.text()),
+                detail_list_row("target", test.binary_kind.clone(), theme.text()),
+                detail_list_row(
                     "module",
                     test.module.clone().unwrap_or_else(|| "-".to_owned()),
                     theme.text(),
-                    theme,
                 ),
-                detail_line("ignored", bool_label(test.ignored), theme.text(), theme),
-                detail_line(
+                detail_list_row("ignored", bool_label(test.ignored), theme.text()),
+                detail_list_row(
                     "ignore",
                     test.ignore_reason.clone().unwrap_or_else(|| "-".to_owned()),
                     theme.text(),
-                    theme,
                 ),
-                detail_line(
+                detail_list_row(
                     "source",
                     test.source_path
                         .as_ref()
                         .map(|path| path.display().to_string())
                         .unwrap_or_else(|| "-".to_owned()),
                     theme.text(),
-                    theme,
                 ),
-                detail_line("output", output_summary(node), theme.text(), theme),
+                detail_list_row("output", output_summary(node), theme.text()),
             ]);
         }
     }
 
+    lines.extend(detail_list_lines(detail_rows, theme, content_width));
     lines.push(Line::from(""));
     lines.push(Line::styled("Run", theme.title(true)));
-    lines.extend(custom_run_lines(
-        &app.custom_run,
-        theme,
-        TEST_DETAILS_RUN_CONTENT_WIDTH,
-    ));
+    lines.extend(custom_run_lines(&app.custom_run, theme, content_width));
     lines.push(Line::from(""));
     match app.custom_run_command_preview() {
         Ok(command) => lines.push(Line::styled(command, theme.accent())),
@@ -1892,6 +1933,53 @@ fn run_result_style(app: &App, theme: &Theme) -> ratatui::style::Style {
         crate::app::RunOutcome::Running => theme.accent(),
         crate::app::RunOutcome::NotStarted => theme.muted(),
     }
+}
+
+fn detail_list_row(
+    label: impl Into<String>,
+    value: impl Into<String>,
+    value_style: Style,
+) -> DetailListRow {
+    DetailListRow {
+        label: label.into(),
+        value: value.into(),
+        value_style,
+    }
+}
+
+fn detail_status_list_row(status: TestStatus, theme: &Theme) -> DetailListRow {
+    detail_list_row("status", status_label(status), theme.status(status, false))
+}
+
+fn detail_list_lines(
+    rows: Vec<DetailListRow>,
+    theme: &Theme,
+    content_width: usize,
+) -> Vec<Line<'static>> {
+    let rows = rows
+        .into_iter()
+        .map(|row| ParameterListRow {
+            marker: String::new(),
+            label: row.label,
+            value: row.value,
+            hint: None,
+            details: None,
+            style: theme.muted(),
+            value_style: Some(row.value_style),
+        })
+        .collect::<Vec<_>>();
+    ParameterList {
+        rows: &rows,
+        marker_width: 0,
+        label_width: DETAIL_LIST_LABEL_WIDTH,
+        content_width,
+        styles: ParameterListStyles {
+            hint: theme.muted(),
+            details: theme.muted(),
+            empty_value: theme.warning(),
+        },
+    }
+    .render()
 }
 
 fn detail_line(

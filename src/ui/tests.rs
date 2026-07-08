@@ -313,17 +313,17 @@ fn custom_run_options_render_values_without_accidental_editors() {
 
     assert!(text.contains("> scope"));
     assert!(text.contains("selected"));
-    assert!(text.contains("# options: selected, workspace, failed; default: selected"));
+    assert!(text.contains("# enum: selected, workspace, failed (default: selected)"));
     assert!(text.contains("  profile"));
-    assert!(text.contains("# profiles: default; default: default"));
+    assert!(text.contains("# enum: default (default: default)"));
     assert!(text.contains("  filterset"));
-    assert!(text.contains("# options: none; [e] custom; default: none"));
-    assert!(text.contains("# options: profile, pass, fail; default: profile"));
-    assert!(text.contains("# options: profile, 0..20; [e] custom; default: profile"));
-    assert!(text.contains("# options: off, on; default: off"));
-    assert!(text.contains("# options: off, rust-lldb --args; [e] custom; default: off"));
-    assert!(text.contains("# options: off, 0..100; [e] custom; default: off"));
-    assert!(text.contains("# options: off, 30s; [e] custom; default: off"));
+    assert!(text.contains("# enum: none (default: none; [e] custom)"));
+    assert!(text.contains("# enum: profile, pass, fail (default: profile)"));
+    assert!(text.contains("# number: profile, 0..20 (default: profile; [e] custom)"));
+    assert!(text.contains("# bool: off, on (default: off)"));
+    assert!(text.contains("# string: off, rust-lldb --args (default: off; [e] custom)"));
+    assert!(text.contains("# number: off, 0..100 (default: off; [e] custom)"));
+    assert!(text.contains("# string: off, 30s (default: off; [e] custom)"));
     assert!(!text.contains("stress-durationoff"));
     assert!(!text.contains("[_"));
 
@@ -335,14 +335,14 @@ fn custom_run_options_render_values_without_accidental_editors() {
         .join("\n");
     assert!(text.contains("  filterset"));
     assert!(text.contains("custom: package(demo)"));
-    assert!(text.contains("# options: none, custom; default: none"));
+    assert!(text.contains("# enum: none, custom (default: none)"));
 
     let narrow = custom_run_lines(&app.custom_run, &theme, 32)
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(narrow.contains("# options: selected"));
+    assert!(narrow.contains("# enum: selected"));
 }
 
 #[test]
@@ -677,7 +677,7 @@ fn test_details_modal_includes_live_info_and_run_command() {
     assert!(text.contains("Run"));
     assert!(text.contains("> scope"));
     assert!(text.contains("selected"));
-    assert!(text.contains("# options: selected, workspace, failed; default: selected"));
+    assert!(text.contains("# enum: selected, workspace, failed (default: selected)"));
     assert!(text.contains("cargo nextest run --run-ignored only -p demo --lib 'tests::case one'"));
     assert!(!text.contains("[esc] close"));
 }
