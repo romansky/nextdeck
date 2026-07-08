@@ -11,6 +11,7 @@ use crate::{
     config,
     config::AppSettings,
     diagnostics::{self, ProcessTracker},
+    dirty::UiDirty,
     disk_usage,
     editor::EditorConfig,
     git_status,
@@ -25,6 +26,9 @@ use crate::{
     xtask::{self, XtaskEvent, XtaskRunRequest},
 };
 
+const UI_TICK_INTERVAL: Duration = Duration::from_millis(250);
+const GIT_STATUS_INTERVAL: Duration = Duration::from_secs(10);
+
 pub async fn run(
     terminal: &mut AppTerminal,
     app: &mut App,
@@ -38,7 +42,7 @@ pub async fn run(
 
     let git_status = start_git_status(client.project_dir(), queue_tx.clone());
     let input = InputSource::start(queue_tx.clone());
-    let ticker = queue::start_ticker(queue_tx.clone(), Duration::from_millis(250));
+    let ticker = queue::start_ticker(queue_tx.clone(), UI_TICK_INTERVAL);
     let mut context = RunLoopContext {
         client,
         theme,
@@ -67,29 +71,18 @@ async fn run_loop(
     mut run_control: Option<RunControl>,
 ) -> Result<()> {
     let mut pending_events = Vec::new();
+    let mut dirty = UiDirty::ALL;
     while !app.should_quit {
-        let size = terminal.size()?;
-        let layout = ui::layout(
-            Rect::new(0, 0, size.width, size.height),
-            app.settings.tree_width_percent,
-        );
-        let xtask_output_page_size =
-            ui::xtask_output_page_size(Rect::new(0, 0, size.width, size.height));
-        let test_events_output_page_size =
-            ui::test_events_output_page_size(Rect::new(0, 0, size.width, size.height));
-        app.prepare_frame(
-            layout.tree.height,
-            layout.output.height,
-            xtask_output_page_size,
-            test_events_output_page_size,
-        );
-        terminal.draw(|frame| ui::draw(frame, app, &context.theme))?;
+        if dirty.any() {
+            draw_frame(terminal, app, &context.theme)?;
+            dirty = UiDirty::NONE;
+        }
         let Some(event) = queue_rx.recv().await else {
             break;
         };
         pending_events.push(event);
         drain_pending_events(&mut queue_rx, &mut pending_events);
-        handle_queue_events(
+        dirty |= handle_queue_events(
             app,
             &mut context,
             &mut run_on_start,
@@ -98,6 +91,24 @@ async fn run_loop(
         );
         pending_events.clear();
     }
+    Ok(())
+}
+
+fn draw_frame(terminal: &mut AppTerminal, app: &mut App, theme: &Theme) -> Result<()> {
+    let size = terminal.size()?;
+    let area = Rect::new(0, 0, size.width, size.height);
+    let layout = ui::layout(area, app.settings.tree_width_percent);
+    let xtask_params_page_size = ui::xtask_params_page_size(area);
+    let xtask_output_page_size = ui::xtask_output_page_size(area);
+    let test_events_output_page_size = ui::test_events_output_page_size(area);
+    app.prepare_frame(
+        layout.tree.height,
+        layout.output.height,
+        xtask_params_page_size,
+        xtask_output_page_size,
+        test_events_output_page_size,
+    );
+    terminal.draw(|frame| ui::draw(frame, app, theme))?;
     Ok(())
 }
 
@@ -152,7 +163,8 @@ fn handle_queue_events(
     run_on_start: &mut bool,
     events: &mut [QueueEvent],
     run_control: &mut Option<RunControl>,
-) {
+) -> UiDirty {
+    let mut dirty = UiDirty::NONE;
     if events.len() > 1 {
         tracing::debug!(count = events.len(), "handling pending event batch");
     }
@@ -168,11 +180,12 @@ fn handle_queue_events(
             continue;
         }
         let event = std::mem::replace(&mut events[index], QueueEvent::Tick);
-        handle_queue_event(app, context, run_on_start, event, run_control);
+        dirty |= handle_queue_event(app, context, run_on_start, event, run_control);
         if app.should_quit {
             break;
         }
     }
+    dirty
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -240,7 +253,7 @@ fn handle_queue_event(
     run_on_start: &mut bool,
     event: QueueEvent,
     run_control: &mut Option<RunControl>,
-) {
+) -> UiDirty {
     match event {
         QueueEvent::Input(input) => {
             let command_context = app.command_context();
@@ -257,6 +270,7 @@ fn handle_queue_event(
             let effect = app.apply_command(command);
             tracing::debug!(?effect, status = %app.status, "command applied");
             handle_effect(app, context, effect, run_control);
+            UiDirty::ALL
         }
         QueueEvent::Discovery(request_id, event) => {
             if app.apply_discovery_event(request_id, event) && *run_on_start {
@@ -268,13 +282,21 @@ fn handle_queue_event(
                     context.queue_tx.clone(),
                 );
             }
+            UiDirty::ALL
         }
-        QueueEvent::DiskUsage(request_id, result) => app.apply_disk_usage(request_id, result),
+        QueueEvent::DiskUsage(request_id, result) => {
+            app.apply_disk_usage(request_id, result);
+            UiDirty::DETAILS | UiDirty::STATUS
+        }
         QueueEvent::CargoClean(request_id, result) => {
             let effect = app.apply_cargo_clean(request_id, result);
             handle_effect(app, context, effect, run_control);
+            UiDirty::DETAILS | UiDirty::STATUS | UiDirty::MODAL
         }
-        QueueEvent::GitStatus(git_status) => app.apply_git_status(git_status),
+        QueueEvent::GitStatus(git_status) => {
+            app.apply_git_status(git_status);
+            UiDirty::STATUS
+        }
         QueueEvent::Run(event) => {
             let finished = matches!(
                 event,
@@ -284,6 +306,7 @@ fn handle_queue_event(
             if finished {
                 *run_control = None;
             }
+            UiDirty::TREE | UiDirty::DETAILS | UiDirty::OUTPUT | UiDirty::STATUS | UiDirty::MODAL
         }
         QueueEvent::TestSnapshot(request) => {
             match context.editor.open_text(&request.title, &request.text) {
@@ -294,8 +317,12 @@ fn handle_queue_event(
                     app.status = format!("Failed to open test snapshot: {error}");
                 }
             }
+            UiDirty::STATUS
         }
-        QueueEvent::Xtask(event) => app.apply_xtask_event(event),
+        QueueEvent::Xtask(event) => {
+            app.apply_xtask_event(event);
+            UiDirty::MODAL
+        }
         QueueEvent::Tick => app.tick(),
     }
 }
@@ -330,7 +357,7 @@ fn handle_effect(
             *run_control = start_run(
                 app,
                 context.client.clone(),
-                request,
+                *request,
                 context.queue_tx.clone(),
             );
         }
@@ -447,10 +474,16 @@ fn start_git_status(
     tx: QueueSender,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(2));
+        let mut ticker = tokio::time::interval(GIT_STATUS_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut previous = None;
         loop {
             ticker.tick().await;
             let status = git_status::load(cwd.clone()).await;
+            if previous.as_ref() == Some(&status) {
+                continue;
+            }
+            previous = Some(status.clone());
             if tx.send(QueueEvent::GitStatus(status)).await.is_err() {
                 break;
             }
@@ -596,14 +629,14 @@ fn start_run(
     tokio::spawn(async move {
         let tailer = test_event_run
             .as_ref()
-            .map(|run| test_events::start_tailer(run.id.clone(), run.path.clone(), run_tx.clone()));
-        let test_events_path = test_event_run.as_ref().map(|run| run.path.clone());
+            .map(|run| test_events::start_tailer(run.id.clone(), run.dir.clone(), run_tx.clone()));
+        let test_events_dir = test_event_run.as_ref().map(|run| run.dir.clone());
         if let Err(error) = client
             .run(
                 request,
                 run_tx.clone(),
                 stop_rx,
-                test_events_path,
+                test_events_dir,
                 run_process_tracker,
             )
             .await

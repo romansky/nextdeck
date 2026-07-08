@@ -1,5 +1,42 @@
 pub const DEFAULT_SCROLLOFF: usize = 3;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectionViewport {
+    scroll: usize,
+    page_size: usize,
+}
+
+impl Default for SelectionViewport {
+    fn default() -> Self {
+        Self {
+            scroll: 0,
+            page_size: 1,
+        }
+    }
+}
+
+impl SelectionViewport {
+    pub fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    pub fn page_size(&self) -> usize {
+        self.page_size
+    }
+
+    pub fn set_page_size(&mut self, page_size: usize) {
+        self.page_size = page_size.max(1);
+    }
+
+    pub fn reset(&mut self) {
+        self.scroll = 0;
+    }
+
+    pub fn ensure_visible(&mut self, selected: usize, item_count: usize) {
+        self.scroll = ensure_visible(self.scroll, selected, item_count, self.page_size);
+    }
+}
+
 pub fn max_scroll(item_count: usize, viewport_size: usize) -> usize {
     item_count.saturating_sub(viewport_size.max(1))
 }

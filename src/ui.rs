@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{rc::Rc, time::Duration};
 
 use ratatui::{
     Frame,
@@ -12,22 +12,24 @@ use crate::{
     app::{App, FocusPane},
     command::{CommandGroup, CommandInfo, OverlayMode, command_infos},
     config,
-    custom_run::{CustomRunField, CustomRunFilter, CustomRunState},
+    custom_run::{CustomRunField, CustomRunState},
     disk_usage::{StorageHealth, format_bytes, format_timestamp_utc},
+    field_schema::on_off,
     output_pane::{
         OutputPaneState, OutputSearchState, OutputView, SearchModalFocus,
         output_render_scroll_for_count,
     },
-    parameter_list::{ParameterDetails, ParameterList, ParameterListRow, ParameterListStyles},
+    parameter_list::{ParameterList, ParameterListRow, ParameterListRowKind, ParameterListStyles},
     settings::SettingsField,
     symbols::bool_symbol,
     test_events::{TestEventRunLog, TestEventsFocus, TestEventsState},
     theme::Theme,
     tree::{NodeKind, TestNode, TestStatus},
-    xtask::{
-        XtaskArgSpec, XtaskArgValue, XtaskCommandSpec, XtaskDetailFocus, XtaskState, XtaskValueSpec,
-    },
+    xtask::{XtaskArgValue, XtaskCommandSpec, XtaskDetailFocus, XtaskState},
 };
+
+#[cfg(test)]
+use crate::custom_run::CustomRunFilter;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AppLayout {
@@ -56,30 +58,42 @@ struct OutputPaneContent {
     scroll: u16,
 }
 
-struct DetailListRow {
-    label: String,
-    value: String,
-    value_style: Style,
-}
-
 struct ModalChrome<'a> {
     title: &'a str,
     actions: Option<&'a str>,
 }
 
 const XTASK_COMMAND_NAME_MAX_WIDTH: usize = 30;
-const FIELD_HINT_VALUE_COLUMN_WIDTH: usize = 18;
 const FIELD_HINT_MIN_COLUMN_WIDTH: usize = 6;
-const FIELD_HINT_GAP_WIDTH: usize = 2;
 const SELECTABLE_FIELD_PREFIX_WIDTH: usize = 2;
 const CUSTOM_RUN_FIELD_LABEL_WIDTH: usize = 15;
 const XTASK_PARAM_LABEL_MAX_WIDTH: usize = 24;
 const XTASK_PARAM_LABEL_MIN_WIDTH: usize = 6;
 const SETTINGS_FIELD_LABEL_WIDTH: usize = 13;
 const DETAIL_FIELD_LABEL_WIDTH: usize = 9;
-const DETAIL_LIST_LABEL_WIDTH: usize = DETAIL_FIELD_LABEL_WIDTH - 1;
+const DETAIL_LIST_LABEL_WIDTH: usize = DETAIL_FIELD_LABEL_WIDTH;
+const DETAIL_MODAL_LABEL_WIDTH: usize = DETAIL_FIELD_LABEL_WIDTH - 1;
+const RUN_DETAIL_LABEL_WIDTH: usize = 12;
 #[cfg(test)]
 const TEST_DETAILS_CONTENT_WIDTH: usize = 82;
+
+macro_rules! detail_row {
+    ($theme:expr, status: $status:expr) => {
+        detail_row!($theme, "status" => status_label($status), $theme.status($status, false))
+    };
+    ($theme:expr, $label:expr => $value:expr) => {
+        detail_row!($theme, $label => $value, $theme.text())
+    };
+    ($theme:expr, $label:expr => $value:expr, $value_style:expr) => {
+        ParameterListRow {
+            kind: ParameterListRowKind::Detail,
+            label: ($label).into(),
+            value: ($value).into(),
+            value_style: Some($value_style),
+            ..Default::default()
+        }
+    };
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AutoColumn {
@@ -194,6 +208,16 @@ pub fn xtask_output_page_size(area: Rect) -> u16 {
     output_area.height.saturating_sub(2).max(1)
 }
 
+pub fn xtask_params_page_size(area: Rect) -> u16 {
+    let modal_area = centered_rect(88, 82, area);
+    let inner = modal_area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let params_area = xtask_detail_params_area(inner);
+    params_area.height.saturating_sub(2).max(1)
+}
+
 pub fn test_events_output_page_size(area: Rect) -> u16 {
     let modal_area = centered_rect(88, 82, area);
     let inner = modal_area.inner(Margin {
@@ -235,19 +259,19 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
 }
 
 fn draw_tree(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
-    let selected = app.tree.selected_index();
-    let rows = app.tree.visible_rows();
+    let visible = app.tree.visible_rows_with_selection();
     let visible_height = area.height.saturating_sub(2).max(1) as usize;
-    let items = rows
+    let items = visible
+        .rows
         .iter()
         .enumerate()
-        .skip(app.tree_scroll)
+        .skip(app.tree_viewport.scroll())
         .take(visible_height)
         .map(|(index, row)| {
             tree_item(
                 row.depth,
                 row.node,
-                index == selected,
+                index == visible.selected_index,
                 app.running_test_spinner(),
                 app.settings.tree_duration_mode,
                 theme,
@@ -285,10 +309,6 @@ fn filter_hint(label: &str, key: &str, enabled: bool) -> String {
     format!("{head}[{key}]{tail}:{}", bool_symbol(enabled))
 }
 
-fn on_off(value: bool) -> &'static str {
-    if value { "on" } else { "off" }
-}
-
 fn fit_line_content(content: &str, width: usize) -> String {
     let char_count = content.chars().count();
     if char_count <= width {
@@ -312,47 +332,8 @@ fn fit_line_prefix(content: &str, width: usize) -> String {
     format!("{prefix}...")
 }
 
-fn selectable_field_value_width(content_width: usize, label_width: usize, has_hint: bool) -> usize {
-    let prefix_width = SELECTABLE_FIELD_PREFIX_WIDTH + label_width;
-    if has_hint {
-        FIELD_HINT_VALUE_COLUMN_WIDTH.min(
-            content_width
-                .saturating_sub(prefix_width + FIELD_HINT_GAP_WIDTH + FIELD_HINT_MIN_COLUMN_WIDTH),
-        )
-    } else {
-        content_width.saturating_sub(prefix_width)
-    }
-}
-
 fn parameter_value_width(content_width: usize, label_width: usize) -> usize {
     content_width.saturating_sub(SELECTABLE_FIELD_PREFIX_WIDTH + label_width + 1)
-}
-
-fn selectable_field_line(
-    marker: &str,
-    label: &str,
-    label_width: usize,
-    value: &str,
-    hint: Option<&str>,
-    style: Style,
-    hint_style: Style,
-    content_width: usize,
-) -> Line<'static> {
-    let value_width = selectable_field_value_width(content_width, label_width, hint.is_some());
-    let mut spans = vec![
-        Span::styled(format!("{marker} {label:<label_width$}"), style),
-        Span::styled(fit_line_prefix(value.trim_end(), value_width), style),
-    ];
-
-    if let Some(hint) = hint {
-        let used_width =
-            SELECTABLE_FIELD_PREFIX_WIDTH + label_width + value_width + FIELD_HINT_GAP_WIDTH;
-        let hint_width = content_width.saturating_sub(used_width);
-        spans.push(Span::raw(" ".repeat(FIELD_HINT_GAP_WIDTH)));
-        spans.push(Span::styled(fit_line_prefix(hint, hint_width), hint_style));
-    }
-
-    Line::from(spans)
 }
 
 fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
@@ -610,24 +591,19 @@ fn custom_run_lines(
 ) -> Vec<Line<'static>> {
     let label_width = CUSTOM_RUN_FIELD_LABEL_WIDTH;
     let value_width = parameter_value_width(content_width, label_width);
-    let rows = custom_run_parameter_rows(custom_run, theme, value_width);
-    ParameterList {
-        rows: &rows,
-        marker_width: SELECTABLE_FIELD_PREFIX_WIDTH,
+    let rows = custom_run_parameter_rows(custom_run, value_width);
+    ParameterList::new(
+        &rows,
+        SELECTABLE_FIELD_PREFIX_WIDTH,
         label_width,
         content_width,
-        styles: ParameterListStyles {
-            hint: theme.muted(),
-            details: theme.muted(),
-            empty_value: theme.warning(),
-        },
-    }
+        parameter_list_styles(theme),
+    )
     .render()
 }
 
 fn custom_run_parameter_rows(
     custom_run: &CustomRunState,
-    theme: &Theme,
     value_width: usize,
 ) -> Vec<ParameterListRow> {
     CustomRunField::ALL
@@ -635,164 +611,25 @@ fn custom_run_parameter_rows(
         .map(|field| {
             let selected = custom_run.selected == field;
             ParameterListRow {
-                marker: if selected { ">" } else { " " }.to_owned(),
+                selected,
+                active: selected,
                 label: field.label().to_owned(),
-                value: custom_run_value(custom_run, field, value_width),
-                hint: None,
-                details: Some(custom_run_option_details(custom_run, field)),
-                style: if selected {
-                    theme.selected()
-                } else {
-                    theme.text()
-                },
-                value_style: None,
+                value: custom_run.field_value(field, value_width),
+                details: Some(custom_run.field_details(field)),
+                ..Default::default()
             }
         })
         .collect()
 }
 
-fn custom_run_value(
-    custom_run: &CustomRunState,
-    field: CustomRunField,
-    value_width: usize,
-) -> String {
-    if field
-        .edit_field()
-        .is_some_and(|edit_field| custom_run.editing == Some(edit_field))
-    {
-        return format!(
-            "[{}]",
-            custom_run.input.view(value_width.saturating_sub(2), true)
-        );
-    }
-    let value = match field {
-        CustomRunField::Scope => custom_run.scope.label().to_owned(),
-        CustomRunField::Profile => custom_run
-            .selected_profile()
-            .unwrap_or("default")
-            .to_owned(),
-        CustomRunField::Filterset => custom_run_filter_value(custom_run),
-        CustomRunField::Ignored => custom_run.options.ignored.label().to_owned(),
-        CustomRunField::Retries => optional_value(custom_run.options.retries),
-        CustomRunField::FlakyResult => custom_run
-            .options
-            .flaky_result
-            .map(|value| value.label().to_owned())
-            .unwrap_or_else(|| "profile".to_owned()),
-        CustomRunField::FailFast => custom_run.options.fail_fast.label().to_owned(),
-        CustomRunField::MaxFail => custom_run
-            .options
-            .max_fail
-            .clone()
-            .unwrap_or_else(|| "profile".to_owned()),
-        CustomRunField::NoCapture => on_off(custom_run.options.no_capture).to_owned(),
-        CustomRunField::Debugger => custom_run
-            .options
-            .debugger
-            .clone()
-            .unwrap_or_else(|| "off".to_owned()),
-        CustomRunField::StressCount => custom_run
-            .options
-            .stress_count
-            .clone()
-            .unwrap_or_else(|| "off".to_owned()),
-        CustomRunField::StressDuration => custom_run
-            .options
-            .stress_duration
-            .clone()
-            .unwrap_or_else(|| "off".to_owned()),
-    };
-    value
-}
-
-fn custom_run_filter_value(custom_run: &CustomRunState) -> String {
-    match &custom_run.filter {
-        CustomRunFilter::None => "none".to_owned(),
-        CustomRunFilter::Custom(expression) => format!("custom: {expression}"),
-        CustomRunFilter::Preset(index) => custom_run
-            .run_config
-            .filter_presets
-            .get(*index)
-            .map(|preset| format!("preset: {}", preset.name()))
-            .unwrap_or_else(|| "none".to_owned()),
-    }
-}
-
-fn optional_value(value: Option<u32>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "profile".to_owned())
-}
-
-fn custom_run_option_details(
-    custom_run: &CustomRunState,
-    field: CustomRunField,
-) -> ParameterDetails {
-    match field {
-        CustomRunField::Scope => ParameterDetails::enum_values(["selected", "workspace", "failed"])
-            .with_default("selected"),
-        CustomRunField::Profile => {
-            let profiles = custom_run
-                .run_config
-                .profiles
-                .iter()
-                .map(|profile| profile.name.clone())
-                .collect::<Vec<_>>();
-            let profiles = if profiles.is_empty() {
-                vec!["default".to_owned()]
-            } else {
-                profiles
-            };
-            ParameterDetails::enum_values(profiles).with_default("default")
-        }
-        CustomRunField::Filterset => {
-            let mut options = vec!["none".to_owned()];
-            options.extend(
-                custom_run
-                    .run_config
-                    .filter_presets
-                    .iter()
-                    .map(|preset| preset.name().to_owned()),
-            );
-            if matches!(custom_run.filter, CustomRunFilter::Custom(_)) {
-                options.push("custom".to_owned());
-                ParameterDetails::enum_values(options).with_default("none")
-            } else {
-                ParameterDetails::enum_values(options)
-                    .with_default("none")
-                    .custom_value()
-            }
-        }
-        CustomRunField::Ignored => {
-            ParameterDetails::enum_values(["default", "only ignored", "all"])
-                .with_default("default")
-        }
-        CustomRunField::Retries => ParameterDetails::number()
-            .with_choices(["profile", "0..10"])
-            .with_default("profile"),
-        CustomRunField::FlakyResult => {
-            ParameterDetails::enum_values(["profile", "pass", "fail"]).with_default("profile")
-        }
-        CustomRunField::FailFast => {
-            ParameterDetails::enum_values(["profile", "on", "off"]).with_default("profile")
-        }
-        CustomRunField::MaxFail => ParameterDetails::number()
-            .with_choices(["profile", "0..20"])
-            .with_default("profile")
-            .custom_value(),
-        CustomRunField::NoCapture => ParameterDetails::bool(false),
-        CustomRunField::Debugger => ParameterDetails::string()
-            .with_choices(["off", "rust-lldb --args"])
-            .with_default("off")
-            .custom_value(),
-        CustomRunField::StressCount => ParameterDetails::number()
-            .with_choices(["off", "0..100"])
-            .with_default("off")
-            .custom_value(),
-        CustomRunField::StressDuration => ParameterDetails::string()
-            .with_choices(["off", "30s"])
-            .with_default("off")
-            .custom_value(),
+fn parameter_list_styles(theme: &Theme) -> ParameterListStyles {
+    ParameterListStyles {
+        text: theme.text(),
+        selected: theme.selected(),
+        label: theme.muted(),
+        hint: theme.muted(),
+        details: theme.muted(),
+        empty_value: theme.warning(),
     }
 }
 
@@ -1010,10 +847,10 @@ fn draw_test_event_output_panel(
 }
 
 fn xtask_modal_title(xtasks: &XtaskState) -> String {
-    if xtasks.detail_open {
-        if let Some(command) = xtasks.selected_command() {
-            return format!("Xtasks > {}", command.name);
-        }
+    if xtasks.detail_open
+        && let Some(command) = xtasks.selected_command()
+    {
+        return format!("Xtasks > {}", command.name);
     }
     "Xtasks".to_owned()
 }
@@ -1121,15 +958,22 @@ fn draw_xtask_detail_frame(frame: &mut Frame<'_>, app: &App, theme: &Theme, area
 }
 
 fn xtask_detail_output_area(area: Rect) -> Rect {
-    let chunks = Layout::default()
+    xtask_detail_panel_areas(area)[2]
+}
+
+fn xtask_detail_params_area(area: Rect) -> Rect {
+    xtask_detail_panel_areas(area)[0]
+}
+
+fn xtask_detail_panel_areas(area: Rect) -> Rc<[Rect]> {
+    Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(40),
             Constraint::Length(1),
             Constraint::Percentage(60),
         ])
-        .split(area);
-    chunks[2]
+        .split(area)
 }
 
 fn draw_xtask_params_panel(
@@ -1146,9 +990,11 @@ fn draw_xtask_params_panel(
         focused,
     );
     let inner = block.inner(area);
+    let scroll = xtasks.parameters_viewport.scroll().min(u16::MAX as usize) as u16;
     let paragraph = Paragraph::new(xtask_param_lines(xtasks, theme, content_width, focused))
         .style(theme.text())
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
     frame.render_widget(paragraph, inner);
@@ -1167,19 +1013,15 @@ fn xtask_param_lines(
         } else {
             let label_width = xtask_param_label_width(command, content_width);
             let value_width = parameter_value_width(content_width, label_width);
-            let rows = xtask_parameter_rows(xtasks, command, focused, value_width, theme);
+            let rows = xtask_parameter_rows(xtasks, command, focused, value_width);
             lines.extend(
-                ParameterList {
-                    rows: &rows,
-                    marker_width: SELECTABLE_FIELD_PREFIX_WIDTH,
+                ParameterList::new(
+                    &rows,
+                    SELECTABLE_FIELD_PREFIX_WIDTH,
                     label_width,
                     content_width,
-                    styles: ParameterListStyles {
-                        hint: theme.muted(),
-                        details: theme.muted(),
-                        empty_value: theme.warning(),
-                    },
-                }
+                    parameter_list_styles(theme),
+                )
                 .render(),
             );
         }
@@ -1214,7 +1056,6 @@ fn xtask_parameter_rows(
     command: &XtaskCommandSpec,
     focused: bool,
     value_width: usize,
-    theme: &Theme,
 ) -> Vec<ParameterListRow> {
     command
         .args
@@ -1224,7 +1065,8 @@ fn xtask_parameter_rows(
             let selected = index == xtasks.selected_arg;
             let active = focused && selected;
             ParameterListRow {
-                marker: if selected { ">" } else { " " }.to_owned(),
+                selected,
+                active,
                 label: arg.flag(),
                 value: xtask_arg_value_text(
                     xtasks,
@@ -1233,14 +1075,9 @@ fn xtask_parameter_rows(
                     selected,
                     value_width,
                 ),
-                hint: xtask_arg_hint(arg),
-                details: Some(xtask_arg_details(arg)),
-                style: if active {
-                    theme.selected()
-                } else {
-                    theme.text()
-                },
-                value_style: None,
+                hint: arg.help.clone(),
+                details: Some(arg.value.parameter_details()),
+                ..Default::default()
             }
         })
         .collect()
@@ -1319,36 +1156,6 @@ fn xtask_arg_value_text(
         .unwrap_or_default()
 }
 
-fn xtask_arg_hint(arg: &XtaskArgSpec) -> Option<String> {
-    arg.help
-        .as_deref()
-        .map(str::trim)
-        .filter(|help| !help.is_empty())
-        .map(|help| format!("# {help}"))
-}
-
-fn xtask_arg_details(arg: &XtaskArgSpec) -> ParameterDetails {
-    match &arg.value {
-        XtaskValueSpec::Bool { default } => ParameterDetails::bool(*default),
-        XtaskValueSpec::Number {
-            default: Some(default),
-        } => ParameterDetails::number().with_default(default.to_string()),
-        XtaskValueSpec::Number { default: None } => ParameterDetails::number(),
-        XtaskValueSpec::String {
-            default: Some(default),
-        } if !default.trim().is_empty() => ParameterDetails::string().with_default(default.clone()),
-        XtaskValueSpec::String { .. } => ParameterDetails::string(),
-        XtaskValueSpec::Enum { values, default } => {
-            let details = ParameterDetails::enum_values(values.clone());
-            if let Some(default) = default {
-                details.with_default(default.clone())
-            } else {
-                details
-            }
-        }
-    }
-}
-
 fn xtask_actions(xtasks: &XtaskState) -> &'static str {
     if xtasks.editing.is_some() {
         "[enter]save [esc]cancel"
@@ -1384,14 +1191,15 @@ fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         },
     );
     let content_width = inner.width as usize;
-    let lines = vec![
-        settings_line(app, SettingsField::OpenWith, theme, content_width),
-        settings_line(app, SettingsField::TreeWidth, theme, content_width),
-        settings_line(app, SettingsField::TreeDuration, theme, content_width),
-        settings_line(app, SettingsField::StorageThreshold, theme, content_width),
-        settings_line(app, SettingsField::Theme, theme, content_width),
-        settings_line(app, SettingsField::ColorBlindMode, theme, content_width),
-    ];
+    let rows = settings_rows(app);
+    let lines = ParameterList::new(
+        &rows,
+        SELECTABLE_FIELD_PREFIX_WIDTH,
+        SETTINGS_FIELD_LABEL_WIDTH,
+        content_width,
+        parameter_list_styles(theme),
+    )
+    .render();
     let paragraph = Paragraph::new(lines)
         .alignment(Alignment::Left)
         .style(theme.text())
@@ -1399,30 +1207,21 @@ fn draw_global_settings_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     frame.render_widget(paragraph, inner);
 }
 
-fn settings_line(
-    app: &App,
-    field: SettingsField,
-    theme: &Theme,
-    content_width: usize,
-) -> Line<'static> {
-    let selected = app.global_settings.selected == field;
-    let marker = if selected { ">" } else { " " };
-    let value = settings_value(app, field);
-    let style = if selected {
-        theme.selected()
-    } else {
-        theme.text()
-    };
-    selectable_field_line(
-        marker,
-        field.label(),
-        SETTINGS_FIELD_LABEL_WIDTH,
-        &value,
-        None,
-        style,
-        theme.muted(),
-        content_width,
-    )
+fn settings_rows(app: &App) -> Vec<ParameterListRow> {
+    SettingsField::ALL
+        .into_iter()
+        .map(|field| {
+            let selected = app.global_settings.selected == field;
+            ParameterListRow {
+                selected,
+                active: selected,
+                label: field.label().to_owned(),
+                value: settings_value(app, field),
+                details: Some(field.details()),
+                ..Default::default()
+            }
+        })
+        .collect()
 }
 
 fn settings_value(app: &App, field: SettingsField) -> String {
@@ -1546,10 +1345,10 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
         .split(inner);
-    let run_details = Paragraph::new(selected_details(app, theme))
+    let run_details = Paragraph::new(selected_details(app, theme, columns[0].width as usize))
         .style(theme.text())
         .wrap(Wrap { trim: false });
-    let storage_details = Paragraph::new(storage_details(app, theme))
+    let storage_details = Paragraph::new(storage_details(app, theme, columns[1].width as usize))
         .style(theme.text())
         .wrap(Wrap { trim: false });
     frame.render_widget(Clear, area);
@@ -1558,101 +1357,82 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     frame.render_widget(storage_details, columns[1]);
 }
 
-fn selected_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
+fn selected_details(app: &App, theme: &Theme, content_width: usize) -> Vec<Line<'static>> {
     let Some(node) = app.tree.selected_node() else {
         return vec![Line::styled("No selection", theme.muted())];
     };
 
-    let mut lines = run_details(app, theme);
+    let mut lines = run_details(app, theme, content_width);
     lines.push(Line::from(""));
     lines.push(Line::styled("Selection", theme.title(false)));
 
-    match &node.kind {
-        NodeKind::Workspace => {
-            lines.extend([
-                detail_line("kind", "workspace", theme.text(), theme),
-                detail_status_line(node.status, theme),
-                detail_line("path", app.tree.selected_path(), theme.text(), theme),
-            ]);
-        }
-        NodeKind::Package { name } => {
-            lines.extend([
-                detail_line("kind", "package", theme.text(), theme),
-                detail_line("pkg", name.clone(), theme.accent(), theme),
-                detail_status_line(node.status, theme),
-                detail_line(
-                    "duration",
-                    duration_label(node, app.settings.tree_duration_mode),
-                    theme.text(),
-                    theme,
-                ),
-            ]);
-        }
+    let rows = match &node.kind {
+        NodeKind::Workspace => vec![
+            detail_row!(theme, "kind" => "workspace"),
+            detail_row!(theme, status: node.status),
+            detail_row!(theme, "path" => app.tree.selected_path()),
+        ],
+        NodeKind::Package { name } => vec![
+            detail_row!(theme, "kind" => "package"),
+            detail_row!(theme, "pkg" => name.clone(), theme.accent()),
+            detail_row!(theme, status: node.status),
+            detail_row!(
+                theme,
+                "duration" => duration_label(node, app.settings.tree_duration_mode)
+            ),
+        ],
         NodeKind::Binary {
             package,
             name,
             kind,
         } => {
             let source = first_source_path(node);
-            lines.extend([
-                detail_line("kind", "target", theme.text(), theme),
-                detail_line("pkg", package.clone(), theme.accent(), theme),
-                detail_line("target", name.clone(), theme.accent(), theme),
-                detail_line("type", kind.clone(), theme.text(), theme),
-                detail_line("source", source, theme.text(), theme),
-                detail_status_line(node.status, theme),
-                detail_line(
-                    "duration",
-                    duration_label(node, app.settings.tree_duration_mode),
-                    theme.text(),
+            vec![
+                detail_row!(theme, "kind" => "target"),
+                detail_row!(theme, "pkg" => package.clone(), theme.accent()),
+                detail_row!(theme, "target" => name.clone(), theme.accent()),
+                detail_row!(theme, "type" => kind.clone()),
+                detail_row!(theme, "source" => source),
+                detail_row!(theme, status: node.status),
+                detail_row!(
                     theme,
+                    "duration" => duration_label(node, app.settings.tree_duration_mode)
                 ),
-            ]);
+            ]
         }
-        NodeKind::Module { path } => {
-            lines.extend([
-                detail_line("kind", "module", theme.text(), theme),
-                detail_line("module", path.clone(), theme.accent(), theme),
-                detail_status_line(node.status, theme),
-                detail_line(
-                    "duration",
-                    duration_label(node, app.settings.tree_duration_mode),
-                    theme.text(),
-                    theme,
-                ),
-            ]);
-        }
-        NodeKind::Test(test) => {
-            lines.extend([
-                detail_line("kind", "test", theme.text(), theme),
-                detail_status_line(node.status, theme),
-                detail_line("pkg", test.package.clone(), theme.accent(), theme),
-                detail_line("bin", test.binary.clone(), theme.text(), theme),
-                detail_line(
-                    "module",
-                    test.module.clone().unwrap_or_else(|| "-".to_owned()),
-                    theme.text(),
-                    theme,
-                ),
-                detail_line("test", test.full_name.clone(), theme.accent(), theme),
-                detail_line(
-                    "source",
-                    test.source_path
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "-".to_owned()),
-                    theme.text(),
-                    theme,
-                ),
-                detail_line(
-                    "duration",
-                    duration_label(node, app.settings.tree_duration_mode),
-                    theme.text(),
-                    theme,
-                ),
-            ]);
-        }
-    }
+        NodeKind::Module { path } => vec![
+            detail_row!(theme, "kind" => "module"),
+            detail_row!(theme, "module" => path.clone(), theme.accent()),
+            detail_row!(theme, status: node.status),
+            detail_row!(
+                theme,
+                "duration" => duration_label(node, app.settings.tree_duration_mode)
+            ),
+        ],
+        NodeKind::Test(test) => vec![
+            detail_row!(theme, "kind" => "test"),
+            detail_row!(theme, status: node.status),
+            detail_row!(theme, "pkg" => test.package.clone(), theme.accent()),
+            detail_row!(theme, "bin" => test.binary.clone()),
+            detail_row!(
+                theme,
+                "module" => test.module.clone().unwrap_or_else(|| "-".to_owned())
+            ),
+            detail_row!(theme, "test" => test.full_name.clone(), theme.accent()),
+            detail_row!(
+                theme,
+                "source" => test.source_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "-".to_owned())
+            ),
+            detail_row!(
+                theme,
+                "duration" => duration_label(node, app.settings.tree_duration_mode)
+            ),
+        ],
+    };
+    lines.extend(detail_rows_lines(&rows, theme, content_width));
 
     lines
 }
@@ -1678,20 +1458,19 @@ fn test_details_modal_lines_with_width(
         Line::from(""),
     ];
     let mut detail_rows = vec![
-        detail_list_row("kind", selected_kind_label(node), theme.text()),
-        detail_status_list_row(node.status, theme),
-        detail_list_row(
-            "duration",
-            duration_label(node, app.settings.tree_duration_mode),
-            theme.text(),
+        detail_row!(theme, "kind" => selected_kind_label(node)),
+        detail_row!(theme, status: node.status),
+        detail_row!(
+            theme,
+            "duration" => duration_label(node, app.settings.tree_duration_mode)
         ),
-        detail_list_row("tests", status_counts_label(counts), theme.text()),
+        detail_row!(theme, "tests" => status_counts_label(counts)),
     ];
 
     match &node.kind {
         NodeKind::Workspace => {}
         NodeKind::Package { name } => {
-            detail_rows.push(detail_list_row("package", name.clone(), theme.accent()));
+            detail_rows.push(detail_row!(theme, "package" => name.clone(), theme.accent()));
         }
         NodeKind::Binary {
             package,
@@ -1699,50 +1478,52 @@ fn test_details_modal_lines_with_width(
             kind,
         } => {
             detail_rows.extend([
-                detail_list_row("package", package.clone(), theme.accent()),
-                detail_list_row("binary", name.clone(), theme.text()),
-                detail_list_row("target", kind.clone(), theme.text()),
-                detail_list_row("source", first_source_path(node), theme.text()),
+                detail_row!(theme, "package" => package.clone(), theme.accent()),
+                detail_row!(theme, "binary" => name.clone()),
+                detail_row!(theme, "target" => kind.clone()),
+                detail_row!(theme, "source" => first_source_path(node)),
             ]);
         }
         NodeKind::Module { path } => {
-            detail_rows.push(detail_list_row("module", path.clone(), theme.accent()));
-            detail_rows.push(detail_list_row(
-                "source",
-                first_source_path(node),
-                theme.text(),
-            ));
+            detail_rows.push(detail_row!(theme, "module" => path.clone(), theme.accent()));
+            detail_rows.push(detail_row!(theme, "source" => first_source_path(node)));
         }
         NodeKind::Test(test) => {
             detail_rows.extend([
-                detail_list_row("package", test.package.clone(), theme.accent()),
-                detail_list_row("binary", test.binary.clone(), theme.text()),
-                detail_list_row("target", test.binary_kind.clone(), theme.text()),
-                detail_list_row(
-                    "module",
-                    test.module.clone().unwrap_or_else(|| "-".to_owned()),
-                    theme.text(),
+                detail_row!(theme, "package" => test.package.clone(), theme.accent()),
+                detail_row!(theme, "binary" => test.binary.clone()),
+                detail_row!(theme, "target" => test.binary_kind.clone()),
+                detail_row!(
+                    theme,
+                    "module" => test.module.clone().unwrap_or_else(|| "-".to_owned())
                 ),
-                detail_list_row("ignored", bool_label(test.ignored), theme.text()),
-                detail_list_row(
-                    "ignore",
-                    test.ignore_reason.clone().unwrap_or_else(|| "-".to_owned()),
-                    theme.text(),
+                detail_row!(theme, "ignored" => bool_label(test.ignored)),
+                detail_row!(
+                    theme,
+                    "ignore" => test.ignore_reason.clone().unwrap_or_else(|| "-".to_owned())
                 ),
-                detail_list_row(
-                    "source",
-                    test.source_path
+                detail_row!(
+                    theme,
+                    "source" => test.source_path
                         .as_ref()
                         .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "-".to_owned()),
-                    theme.text(),
+                        .unwrap_or_else(|| "-".to_owned())
                 ),
-                detail_list_row("output", output_summary(node), theme.text()),
+                detail_row!(theme, "output" => output_summary(node)),
             ]);
         }
     }
 
-    lines.extend(detail_list_lines(detail_rows, theme, content_width));
+    lines.extend(
+        ParameterList::new(
+            &detail_rows,
+            0,
+            DETAIL_MODAL_LABEL_WIDTH,
+            content_width,
+            parameter_list_styles(theme),
+        )
+        .render(),
+    );
     lines.push(Line::from(""));
     lines.push(Line::styled("Run", theme.title(true)));
     lines.extend(custom_run_lines(&app.custom_run, theme, content_width));
@@ -1806,80 +1587,61 @@ fn first_source_path(node: &TestNode) -> String {
         .unwrap_or_else(|| "-".to_owned())
 }
 
-fn run_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
+fn run_details(app: &App, theme: &Theme, content_width: usize) -> Vec<Line<'static>> {
     let (finished, total) = app.run_progress();
-    vec![
-        Line::styled("Run", theme.title(false)),
-        detail_line(
-            "run id",
-            app.run.run_id.clone().unwrap_or_else(|| "-".to_owned()),
-            theme.text(),
-            theme,
-        ),
-        detail_line("status", app.run_status_label(), theme.text(), theme),
-        detail_line(
-            "result",
-            app.run_result_label(),
-            run_result_style(app, theme),
-            theme,
-        ),
-        detail_line("profile", app.run.profile.clone(), theme.accent(), theme),
-        detail_line("scope", app.run.scope.label(), theme.text(), theme),
-        detail_line("duration", run_duration_label(app), theme.text(), theme),
-        detail_line("build", build_duration_label(app), theme.text(), theme),
-        detail_line("tests", test_duration_label(app), theme.text(), theme),
-        detail_line(
-            "events",
-            app.test_events.counter_label(),
-            theme.accent(),
-            theme,
-        ),
-        detail_line(
-            "progress",
-            format!("{finished}/{total}"),
-            theme.text(),
-            theme,
-        ),
-    ]
+    let rows = vec![
+        detail_row!(theme, "run id" => app.run.run_id.clone().unwrap_or_else(|| "-".to_owned())),
+        detail_row!(theme, "status" => app.run_status_label()),
+        detail_row!(theme, "result" => app.run_result_label(), run_result_style(app, theme)),
+        detail_row!(theme, "profile" => app.run.profile.clone(), theme.accent()),
+        detail_row!(theme, "scope" => app.run.scope.label()),
+        detail_row!(theme, "duration" => run_duration_label(app)),
+        detail_row!(theme, "build" => build_duration_label(app)),
+        detail_row!(theme, "tests" => test_duration_label(app)),
+        detail_row!(theme, "latest event" => app.test_events.latest_event_label(), theme.accent()),
+        detail_row!(theme, "progress" => format!("{finished}/{total}")),
+    ];
+    let mut lines = vec![Line::styled("Run", theme.title(false))];
+    lines.extend(
+        ParameterList::new(
+            &rows,
+            0,
+            RUN_DETAIL_LABEL_WIDTH,
+            content_width,
+            parameter_list_styles(theme),
+        )
+        .render(),
+    );
+    lines
 }
 
-fn storage_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
-    let mut lines = vec![
-        Line::styled("Storage", theme.title(false)),
-        detail_line(
-            "status",
-            storage_status(app),
-            storage_status_style(app, theme),
-            theme,
-        ),
-    ];
+fn storage_details(app: &App, theme: &Theme, content_width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled("Storage", theme.title(false))];
+    let status_row = [detail_row!(
+        theme,
+        "status" => storage_status(app),
+        storage_status_style(app, theme)
+    )];
+    lines.extend(detail_rows_lines(&status_row, theme, content_width));
 
     if let Some(snapshot) = &app.disk_usage.snapshot {
-        lines.extend([
-            detail_line(
-                "available",
-                snapshot
+        let mut rows = vec![
+            detail_row!(
+                theme,
+                "available" => snapshot
                     .available_bytes
                     .map(format_bytes)
-                    .unwrap_or_else(|| "-".to_owned()),
-                theme.text(),
-                theme,
+                    .unwrap_or_else(|| "-".to_owned())
             ),
-            detail_line(
-                "updated",
-                format_timestamp_utc(snapshot.updated_at),
-                theme.text(),
-                theme,
-            ),
-        ]);
+            detail_row!(theme, "updated" => format_timestamp_utc(snapshot.updated_at)),
+        ];
         for entry in &snapshot.entries {
-            lines.push(detail_line(
-                storage_entry_label(&entry.label),
-                format_bytes(entry.bytes),
-                theme.text(),
+            rows.push(detail_row!(
                 theme,
+                storage_entry_label(entry.label) => format_bytes(entry.bytes)
             ));
         }
+        lines.extend(detail_rows_lines(&rows, theme, content_width));
     } else if app.disk_usage.loading {
         lines.push(Line::styled("Scanning disk usage...", theme.muted()));
     } else if let Some(error) = &app.disk_usage.error {
@@ -1890,10 +1652,11 @@ fn storage_details(app: &App, theme: &Theme) -> Vec<Line<'static>> {
 
     if let Some(result) = &app.disk_cleanup.last_result {
         lines.push(Line::from(""));
-        match result {
-            Ok(()) => lines.push(detail_line("cleanup", "completed", theme.success(), theme)),
-            Err(_) => lines.push(detail_line("cleanup", "failed", theme.danger(), theme)),
-        }
+        let row = [match result {
+            Ok(()) => detail_row!(theme, "cleanup" => "completed", theme.success()),
+            Err(_) => detail_row!(theme, "cleanup" => "failed", theme.danger()),
+        }];
+        lines.extend(detail_rows_lines(&row, theme, content_width));
     }
 
     lines
@@ -1935,76 +1698,19 @@ fn run_result_style(app: &App, theme: &Theme) -> ratatui::style::Style {
     }
 }
 
-fn detail_list_row(
-    label: impl Into<String>,
-    value: impl Into<String>,
-    value_style: Style,
-) -> DetailListRow {
-    DetailListRow {
-        label: label.into(),
-        value: value.into(),
-        value_style,
-    }
-}
-
-fn detail_status_list_row(status: TestStatus, theme: &Theme) -> DetailListRow {
-    detail_list_row("status", status_label(status), theme.status(status, false))
-}
-
-fn detail_list_lines(
-    rows: Vec<DetailListRow>,
+fn detail_rows_lines(
+    rows: &[ParameterListRow],
     theme: &Theme,
     content_width: usize,
 ) -> Vec<Line<'static>> {
-    let rows = rows
-        .into_iter()
-        .map(|row| ParameterListRow {
-            marker: String::new(),
-            label: row.label,
-            value: row.value,
-            hint: None,
-            details: None,
-            style: theme.muted(),
-            value_style: Some(row.value_style),
-        })
-        .collect::<Vec<_>>();
-    ParameterList {
-        rows: &rows,
-        marker_width: 0,
-        label_width: DETAIL_LIST_LABEL_WIDTH,
+    ParameterList::new(
+        rows,
+        0,
+        DETAIL_LIST_LABEL_WIDTH,
         content_width,
-        styles: ParameterListStyles {
-            hint: theme.muted(),
-            details: theme.muted(),
-            empty_value: theme.warning(),
-        },
-    }
-    .render()
-}
-
-fn detail_line(
-    label: impl Into<String>,
-    value: impl Into<String>,
-    value_style: ratatui::style::Style,
-    theme: &Theme,
-) -> Line<'static> {
-    let label = label.into();
-    Line::from(vec![
-        Span::styled(
-            format!("{label:<width$}", width = DETAIL_FIELD_LABEL_WIDTH),
-            theme.muted(),
-        ),
-        Span::styled(value.into(), value_style),
-    ])
-}
-
-fn detail_status_line(status: TestStatus, theme: &Theme) -> Line<'static> {
-    detail_line(
-        "status",
-        status_label(status),
-        theme.status(status, false),
-        theme,
+        parameter_list_styles(theme),
     )
+    .render()
 }
 
 fn duration_label(node: &TestNode, duration_mode: config::TreeDurationMode) -> String {
@@ -2093,7 +1799,7 @@ fn output_pane_content(theme: &Theme, output: OutputPaneRender<'_>) -> OutputPan
     let search_actions = output.state.search_actions(&output.source_text);
     OutputPaneContent {
         status: output.state.status(&output.label, &output_view.text),
-        actions: output_actions(&search_actions, output.state.follow),
+        actions: output_actions(&search_actions),
         lines: output_lines(&output.state.search, theme, &output_view),
         scroll: output.state.scroll,
     }
@@ -2121,18 +1827,15 @@ fn draw_output_panel(
 }
 
 fn tests_actions() -> &'static str {
-    "[enter]details [e]vents [r]un [R]run-custom [o]pen-editor [u]update"
+    "[enter]details [r]un [R]run-custom [o]pen-editor [u]update"
 }
 
 fn disk_cleanup_actions() -> &'static str {
     "[c]cargo-clean [r]refresh [esc]close"
 }
 
-fn output_actions(search_actions: &str, follow: bool) -> String {
-    format!(
-        "{search_actions} [s]nap:{} [o]pen-editor",
-        bool_symbol(follow)
-    )
+fn output_actions(search_actions: &str) -> String {
+    format!("{search_actions} [o]pen-editor")
 }
 
 fn test_events_actions(test_events: &TestEventsState) -> &'static str {
@@ -2165,7 +1868,13 @@ fn output_lines(
                 .get(index)
                 .copied()
                 .unwrap_or(index);
-            highlighted_output_line(search, theme, source_line, line)
+            highlighted_output_line(
+                search,
+                theme,
+                source_line,
+                line,
+                output_line_style(theme, line),
+            )
         })
         .collect::<Vec<_>>();
     if lines.is_empty() {
@@ -2180,16 +1889,17 @@ fn highlighted_output_line(
     theme: &Theme,
     source_line: usize,
     line: &str,
+    base_style: Style,
 ) -> Line<'static> {
     let ranges = match search.match_ranges(line) {
         Ok(ranges) if !ranges.is_empty() => ranges,
-        _ => return Line::styled(line.to_owned(), theme.text()),
+        _ => return Line::styled(line.to_owned(), base_style),
     };
     let mut spans = Vec::new();
     let mut cursor = 0;
     for (start, end) in ranges {
         if start > cursor {
-            spans.push(Span::styled(line[cursor..start].to_owned(), theme.text()));
+            spans.push(Span::styled(line[cursor..start].to_owned(), base_style));
         }
         let match_style = if search.current_line == Some(source_line)
             && search
@@ -2204,9 +1914,27 @@ fn highlighted_output_line(
         cursor = end;
     }
     if cursor < line.len() {
-        spans.push(Span::styled(line[cursor..].to_owned(), theme.text()));
+        spans.push(Span::styled(line[cursor..].to_owned(), base_style));
     }
     Line::from(spans)
+}
+
+fn output_line_style(theme: &Theme, line: &str) -> Style {
+    if line.starts_with("Run passed:") {
+        theme.success()
+    } else if line.starts_with("Run failed:") || line.starts_with("Run command failed:") {
+        theme.danger()
+    } else if line.starts_with("Run stopped:") {
+        theme.warning()
+    } else if line.starts_with("[event error]") {
+        theme.danger()
+    } else if line.starts_with("[event warn]") {
+        theme.warning()
+    } else if line.starts_with("[event ") {
+        theme.accent()
+    } else {
+        theme.text()
+    }
 }
 
 fn draw_status(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: ratatui::layout::Rect) {

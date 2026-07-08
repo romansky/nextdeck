@@ -1,7 +1,8 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::{Read, Seek, SeekFrom},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -20,7 +21,7 @@ static RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TestEventRun {
     pub id: String,
-    pub path: PathBuf,
+    pub dir: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -44,7 +45,7 @@ pub struct TestEventsState {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TestEventRunLog {
     pub id: String,
-    pub path: PathBuf,
+    pub dir: PathBuf,
     pub scope: String,
     pub status: String,
     pub events: Vec<TestEvent>,
@@ -53,6 +54,17 @@ pub struct TestEventRunLog {
 pub struct TestEventTailer {
     stop_tx: oneshot::Sender<()>,
     join: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct EventLogTailState {
+    files: BTreeMap<PathBuf, EventLogFileTail>,
+}
+
+#[derive(Default)]
+struct EventLogFileTail {
+    offset: u64,
+    pending: String,
 }
 
 impl Default for TestEventsState {
@@ -79,7 +91,7 @@ impl TestEventsState {
         self.active_run_id = Some(run.id.clone());
         self.runs.push(TestEventRunLog {
             id: run.id,
-            path: run.path,
+            dir: run.dir,
             scope,
             status: "running".to_owned(),
             events: Vec::new(),
@@ -103,7 +115,7 @@ impl TestEventsState {
         } else {
             self.runs.push(TestEventRunLog {
                 id: run_id.to_owned(),
-                path: PathBuf::new(),
+                dir: PathBuf::new(),
                 scope: "external".to_owned(),
                 status: "unknown".to_owned(),
                 events: vec![event],
@@ -156,13 +168,12 @@ impl TestEventsState {
         self.runs.get(self.selected_run)
     }
 
-    pub fn latest_event_count(&self) -> usize {
-        self.runs.last().map(|run| run.events.len()).unwrap_or(0)
-    }
-
-    pub fn counter_label(&self) -> String {
-        let suffix = if self.unread { "•" } else { "" };
-        format!("{}{}", self.latest_event_count(), suffix)
+    pub fn latest_event_label(&self) -> String {
+        let Some(event) = self.runs.iter().rev().find_map(|run| run.events.last()) else {
+            return "-".to_owned();
+        };
+        let suffix = if self.unread { " •" } else { "" };
+        format!("{}{}", event_summary(event), suffix)
     }
 
     pub fn output_text(&self) -> String {
@@ -172,9 +183,9 @@ impl TestEventsState {
         };
         if run.events.is_empty() {
             return format!(
-                "No events captured for run {}\nfile: {}",
+                "No events captured for run {}\ndir: {}",
                 run.id,
-                run.path.display()
+                run.dir.display()
             );
         }
         render_events(&run.events)
@@ -215,32 +226,26 @@ impl TestEventTailer {
 }
 
 pub fn create_run_file() -> Result<TestEventRun> {
-    let dir = std::env::temp_dir().join("nextdeck").join("test-events");
-    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let root = std::env::temp_dir().join("nextdeck").join("test-events");
+    fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
     let id = run_id();
-    let path = dir.join(format!("{id}.jsonl"));
-    OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&path)
-        .with_context(|| format!("create {}", path.display()))?;
-    Ok(TestEventRun { id, path })
+    let dir = root.join(&id);
+    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    Ok(TestEventRun { id, dir })
 }
 
-pub fn start_tailer(run_id: String, path: PathBuf, tx: mpsc::Sender<RunEvent>) -> TestEventTailer {
+pub fn start_tailer(run_id: String, dir: PathBuf, tx: mpsc::Sender<RunEvent>) -> TestEventTailer {
     let (stop_tx, mut stop_rx) = oneshot::channel();
     let join = tokio::spawn(async move {
-        let mut offset = 0;
-        let mut pending = String::new();
+        let mut state = EventLogTailState::default();
         loop {
-            forward_new_events(&run_id, &path, &mut offset, &mut pending, false, &tx).await;
+            forward_new_events(&run_id, &dir, &mut state, false, &tx).await;
             tokio::select! {
                 _ = tokio::time::sleep(TAIL_INTERVAL) => {}
                 _ = &mut stop_rx => break,
             }
         }
-        forward_new_events(&run_id, &path, &mut offset, &mut pending, true, &tx).await;
+        forward_new_events(&run_id, &dir, &mut state, true, &tx).await;
     });
     TestEventTailer { stop_tx, join }
 }
@@ -289,37 +294,91 @@ fn render_events(events: &[TestEvent]) -> String {
     text
 }
 
+pub fn inline_event_line(event: &TestEvent) -> String {
+    event_summary_with_prefix(event, "event")
+}
+
+fn event_summary(event: &TestEvent) -> String {
+    let target = event.target.as_deref().unwrap_or("-");
+    if target == "-" {
+        format!("{} {}", level_label(event.level), event.message)
+    } else {
+        format!("{} {}: {}", level_label(event.level), target, event.message)
+    }
+}
+
+fn event_summary_with_prefix(event: &TestEvent, prefix: &str) -> String {
+    let target = event.target.as_deref().unwrap_or("-");
+    if target == "-" {
+        format!("[{prefix} {}] {}", level_label(event.level), event.message)
+    } else {
+        format!(
+            "[{prefix} {}] {}: {}",
+            level_label(event.level),
+            target,
+            event.message
+        )
+    }
+}
+
 async fn forward_new_events(
     run_id: &str,
-    path: &PathBuf,
-    offset: &mut u64,
-    pending: &mut String,
+    dir: &Path,
+    state: &mut EventLogTailState,
     final_read: bool,
     tx: &mpsc::Sender<RunEvent>,
 ) {
-    for event in read_new_events(path, offset, pending, final_read) {
-        match event {
-            Ok(event) => {
-                let _ = tx
-                    .send(RunEvent::TestEvent {
-                        run_id: run_id.to_owned(),
-                        event,
-                    })
-                    .await;
-            }
-            Err(error) => {
-                let _ = tx
-                    .send(RunEvent::RunnerOutput(format!(
-                        "test event parse error: {error}"
-                    )))
-                    .await;
+    for file in event_log_files(dir) {
+        let file_state = state.files.entry(file.clone()).or_default();
+        for event in read_new_events(
+            &file,
+            &mut file_state.offset,
+            &mut file_state.pending,
+            final_read,
+        ) {
+            match event {
+                Ok(event) => {
+                    let _ = tx
+                        .send(RunEvent::TestEvent {
+                            run_id: run_id.to_owned(),
+                            event,
+                        })
+                        .await;
+                }
+                Err(error) => {
+                    let _ = tx
+                        .send(RunEvent::RunnerOutput(format!(
+                            "test event parse error: {error}"
+                        )))
+                        .await;
+                }
             }
         }
     }
 }
 
+fn event_log_files(dir: &Path) -> Vec<PathBuf> {
+    if !dir.is_dir() {
+        return Vec::new();
+    }
+
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    files
+}
+
 fn read_new_events(
-    path: &PathBuf,
+    path: &Path,
     offset: &mut u64,
     pending: &mut String,
     final_read: bool,
@@ -362,7 +421,7 @@ fn run_id() -> String {
     format!("{}-{}-{}", millis, std::process::id(), counter)
 }
 
-fn level_label(level: nextdeck_test_events::Level) -> &'static str {
+pub fn level_label(level: nextdeck_test_events::Level) -> &'static str {
     match level {
         nextdeck_test_events::Level::Trace => "trace",
         nextdeck_test_events::Level::Debug => "debug",
@@ -393,19 +452,34 @@ mod tests {
         state.begin_run(
             TestEventRun {
                 id: "run-1".to_owned(),
-                path: PathBuf::from("/tmp/run-1.jsonl"),
+                dir: PathBuf::from("/tmp/run-1"),
             },
             "workspace".to_owned(),
         );
 
         state.append_event("run-1", TestEvent::new(Level::Info, "cache hit"));
 
-        assert_eq!(state.counter_label(), "1•");
+        assert_eq!(state.latest_event_label(), "info cache hit •");
 
         state.open();
 
-        assert_eq!(state.counter_label(), "1");
+        assert_eq!(state.latest_event_label(), "info cache hit");
         assert!(state.output_text().contains("cache hit"));
+    }
+
+    #[test]
+    fn event_log_files_discovers_pid_logs_in_directory() {
+        let dir =
+            std::env::temp_dir().join(format!("nextdeck-test-events-tail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create event dir");
+        let first = dir.join("123.jsonl");
+        let ignored = dir.join("notes.txt");
+        std::fs::write(&first, "").expect("write event file");
+        std::fs::write(ignored, "").expect("write ignored file");
+
+        assert_eq!(event_log_files(&dir), vec![first]);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

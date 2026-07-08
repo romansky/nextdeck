@@ -1,4 +1,5 @@
 use crate::{
+    field_schema::{ParameterDetails, on_off},
     input_field::{InputField, InputFieldInput},
     nextest::{
         FailFast, FilterPreset, FlakyResult, RunConfig, RunIgnored, RunOptions, RunRequest,
@@ -108,6 +109,120 @@ impl CustomRunState {
         match self.filter {
             CustomRunFilter::Preset(index) => self.run_config.filter_presets.get(index),
             CustomRunFilter::None | CustomRunFilter::Custom(_) => None,
+        }
+    }
+
+    pub fn field_value(&self, field: CustomRunField, value_width: usize) -> String {
+        if field
+            .edit_field()
+            .is_some_and(|edit_field| self.editing == Some(edit_field))
+        {
+            return format!("[{}]", self.input.view(value_width.saturating_sub(2), true));
+        }
+
+        match field {
+            CustomRunField::Scope => self.scope.label().to_owned(),
+            CustomRunField::Profile => self.selected_profile().unwrap_or("default").to_owned(),
+            CustomRunField::Filterset => self.filter_value(),
+            CustomRunField::Ignored => self.options.ignored.label().to_owned(),
+            CustomRunField::Retries => optional_value(self.options.retries),
+            CustomRunField::FlakyResult => self
+                .options
+                .flaky_result
+                .map(|value| value.label().to_owned())
+                .unwrap_or_else(|| "profile".to_owned()),
+            CustomRunField::FailFast => self.options.fail_fast.label().to_owned(),
+            CustomRunField::MaxFail => self
+                .options
+                .max_fail
+                .clone()
+                .unwrap_or_else(|| "profile".to_owned()),
+            CustomRunField::NoCapture => on_off(self.options.no_capture).to_owned(),
+            CustomRunField::Debugger => self
+                .options
+                .debugger
+                .clone()
+                .unwrap_or_else(|| "off".to_owned()),
+            CustomRunField::StressCount => self
+                .options
+                .stress_count
+                .clone()
+                .unwrap_or_else(|| "off".to_owned()),
+            CustomRunField::StressDuration => self
+                .options
+                .stress_duration
+                .clone()
+                .unwrap_or_else(|| "off".to_owned()),
+        }
+    }
+
+    pub fn field_details(&self, field: CustomRunField) -> ParameterDetails {
+        match field {
+            CustomRunField::Scope => {
+                ParameterDetails::enum_values(["selected", "workspace", "failed"])
+                    .with_default("selected")
+            }
+            CustomRunField::Profile => {
+                let profiles = self
+                    .run_config
+                    .profiles
+                    .iter()
+                    .map(|profile| profile.name.clone())
+                    .collect::<Vec<_>>();
+                let profiles = if profiles.is_empty() {
+                    vec!["default".to_owned()]
+                } else {
+                    profiles
+                };
+                ParameterDetails::enum_values(profiles).with_default("default")
+            }
+            CustomRunField::Filterset => {
+                let mut options = vec!["none".to_owned()];
+                options.extend(
+                    self.run_config
+                        .filter_presets
+                        .iter()
+                        .map(|preset| preset.name().to_owned()),
+                );
+                if matches!(self.filter, CustomRunFilter::Custom(_)) {
+                    options.push("custom".to_owned());
+                    ParameterDetails::enum_values(options).with_default("none")
+                } else {
+                    ParameterDetails::enum_values(options)
+                        .with_default("none")
+                        .custom_value()
+                }
+            }
+            CustomRunField::Ignored => {
+                ParameterDetails::enum_values(["default", "only ignored", "all"])
+                    .with_default("default")
+            }
+            CustomRunField::Retries => ParameterDetails::number()
+                .with_choices(["profile", "0..10"])
+                .with_default("profile"),
+            CustomRunField::FlakyResult => {
+                ParameterDetails::enum_values(["profile", "pass", "fail"]).with_default("profile")
+            }
+            CustomRunField::FailFast => {
+                ParameterDetails::enum_values(["profile", "on", "off"]).with_default("profile")
+            }
+            CustomRunField::MaxFail => ParameterDetails::number()
+                .with_choices(["profile", "0..20"])
+                .with_default("profile")
+                .custom_value(),
+            CustomRunField::NoCapture => ParameterDetails::bool(false),
+            CustomRunField::Debugger => ParameterDetails::string()
+                .with_choices(["off", "rust-lldb --args"])
+                .with_default("off")
+                .custom_value(),
+            CustomRunField::StressCount => ParameterDetails::number()
+                .with_choices(["off", "0..100"])
+                .with_default("off")
+                .custom_value(),
+            CustomRunField::StressDuration => ParameterDetails::string()
+                .with_choices(["off", "30s"])
+                .with_default("off")
+                .custom_value(),
         }
     }
 
@@ -306,6 +421,19 @@ impl CustomRunState {
             }
         }
     }
+
+    fn filter_value(&self) -> String {
+        match &self.filter {
+            CustomRunFilter::None => "none".to_owned(),
+            CustomRunFilter::Custom(expression) => format!("custom: {expression}"),
+            CustomRunFilter::Preset(index) => self
+                .run_config
+                .filter_presets
+                .get(*index)
+                .map(|preset| format!("preset: {}", preset.name()))
+                .unwrap_or_else(|| "none".to_owned()),
+        }
+    }
 }
 
 impl CustomRunScope {
@@ -458,6 +586,12 @@ fn wrap_index(index: usize, count: usize, delta: i8) -> usize {
 fn empty_to_none(value: String) -> Option<String> {
     let value = value.trim().to_owned();
     (!value.is_empty()).then_some(value)
+}
+
+fn optional_value(value: Option<u32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "profile".to_owned())
 }
 
 fn default_debugger_command() -> String {

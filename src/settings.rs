@@ -1,7 +1,22 @@
 use crate::{
-    config::AppSettings,
+    config::{
+        AppSettings, DEFAULT_OPEN_WITH_LABEL, DEFAULT_STORAGE_LOW_SPACE_THRESHOLD_GB,
+        DEFAULT_TREE_WIDTH_PERCENT, MAX_STORAGE_LOW_SPACE_THRESHOLD_GB, MAX_TREE_WIDTH_PERCENT,
+        MIN_STORAGE_LOW_SPACE_THRESHOLD_GB, MIN_TREE_WIDTH_PERCENT, ThemePreference,
+        TreeDurationMode,
+    },
+    field_schema::ParameterDetails,
     input_field::{InputField, InputFieldInput},
 };
+
+pub(crate) const OPEN_WITH_PRESETS: &[Option<&str>] = &[
+    None,
+    Some("idea"),
+    Some("code"),
+    Some("cursor"),
+    Some("zed"),
+    Some("open"),
+];
 
 #[derive(Clone, Debug, Default)]
 pub struct GlobalSettingsState {
@@ -23,6 +38,15 @@ pub enum SettingsField {
 }
 
 impl SettingsField {
+    pub const ALL: [Self; 6] = [
+        Self::OpenWith,
+        Self::TreeWidth,
+        Self::TreeDuration,
+        Self::StorageThreshold,
+        Self::Theme,
+        Self::ColorBlindMode,
+    ];
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::OpenWith => "open with",
@@ -31,6 +55,38 @@ impl SettingsField {
             Self::StorageThreshold => "low disk",
             Self::Theme => "theme",
             Self::ColorBlindMode => "color-blind",
+        }
+    }
+
+    pub(crate) fn details(self) -> ParameterDetails {
+        match self {
+            Self::OpenWith => ParameterDetails::string()
+                .with_choices(
+                    OPEN_WITH_PRESETS
+                        .iter()
+                        .map(|preset| preset.as_deref().unwrap_or(DEFAULT_OPEN_WITH_LABEL)),
+                )
+                .with_default(DEFAULT_OPEN_WITH_LABEL)
+                .custom_value(),
+            Self::TreeWidth => ParameterDetails::number()
+                .with_choices([format!(
+                    "{MIN_TREE_WIDTH_PERCENT}..{MAX_TREE_WIDTH_PERCENT}%"
+                )])
+                .with_default(format!("{DEFAULT_TREE_WIDTH_PERCENT}%")),
+            Self::TreeDuration => {
+                ParameterDetails::enum_values(TreeDurationMode::ALL.map(TreeDurationMode::label))
+                    .with_default(TreeDurationMode::Wall.label())
+            }
+            Self::StorageThreshold => ParameterDetails::number()
+                .with_choices([format!(
+                    "{MIN_STORAGE_LOW_SPACE_THRESHOLD_GB}..{MAX_STORAGE_LOW_SPACE_THRESHOLD_GB} GiB"
+                )])
+                .with_default(format!("{DEFAULT_STORAGE_LOW_SPACE_THRESHOLD_GB} GiB")),
+            Self::Theme => {
+                ParameterDetails::enum_values(ThemePreference::ALL.map(ThemePreference::label))
+                    .with_default(ThemePreference::Auto.label())
+            }
+            Self::ColorBlindMode => ParameterDetails::bool(false),
         }
     }
 
@@ -99,5 +155,38 @@ impl GlobalSettingsState {
     pub fn cancel_open_with_edit(&mut self, settings: &AppSettings) {
         self.open_with_editing = false;
         self.sync_open_with(settings);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_fields_describe_their_value_domains() {
+        assert_eq!(
+            SettingsField::OpenWith.details().render(),
+            "# string: env/default, idea, code, cursor, zed, open (default: env/default; [e] custom)"
+        );
+        assert_eq!(
+            SettingsField::TreeWidth.details().render(),
+            "# number: 25..70% (default: 45%)"
+        );
+        assert_eq!(
+            SettingsField::TreeDuration.details().render(),
+            "# enum: wall, aggregate (default: wall)"
+        );
+        assert_eq!(
+            SettingsField::StorageThreshold.details().render(),
+            "# number: 1..1024 GiB (default: 10 GiB)"
+        );
+        assert_eq!(
+            SettingsField::Theme.details().render(),
+            "# enum: auto, dark, light (default: auto)"
+        );
+        assert_eq!(
+            SettingsField::ColorBlindMode.details().render(),
+            "# bool: off, on (default: off)"
+        );
     }
 }

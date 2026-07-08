@@ -18,6 +18,17 @@ mod tests {
     }
 
     #[test]
+    fn pass_emits_nextdeck_event() {
+        nextdeck_test_events::event!(
+            level: nextdeck_test_events::Level::Info,
+            target: "fixture",
+            "event from fixture";
+            "phase" => "arrange",
+        );
+        println!("EVENT_STDOUT: fixture stdout");
+    }
+
+    #[test]
     fn fail_prints_stdout_and_stderr() {
         println!("FAIL_STDOUT: lib fail stdout");
         eprintln!("FAIL_STDERR: lib fail stderr");

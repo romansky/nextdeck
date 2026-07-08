@@ -32,3 +32,14 @@ fn scrolling_clamps_to_content() {
     assert_eq!(up(3, 10), 0);
     assert_eq!(down(0, 50, 20, 5), 15);
 }
+
+#[test]
+fn selection_viewport_keeps_selected_item_visible() {
+    let mut viewport = SelectionViewport::default();
+    viewport.set_page_size(5);
+
+    viewport.ensure_visible(9, 20);
+
+    assert_eq!(viewport.scroll(), 7);
+    assert_eq!(viewport.page_size(), 5);
+}

@@ -226,6 +226,18 @@ fn maps_refresh_and_view_filter_keys() {
 }
 
 #[test]
+fn maps_events_key_across_main_focus_modes() {
+    assert_eq!(
+        command_for_key(KeyCode::Char('e'), KeyModifiers::NONE, CommandFocus::Tests),
+        AppCommand::OpenTestEvents
+    );
+    assert_eq!(
+        command_for_key(KeyCode::Char('e'), KeyModifiers::NONE, CommandFocus::Output),
+        AppCommand::OpenTestEvents
+    );
+}
+
+#[test]
 fn test_details_modal_maps_snapshot_key() {
     assert_eq!(
         command_for_test_details_modal(KeyCode::Char('s')),
@@ -598,6 +610,15 @@ fn xtask_command_modal_uses_parameter_and_output_commands() {
         AppCommand::ToggleOutputRegex
     );
 
+    let clear = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(
+        command_for_input(&clear, output_context),
+        AppCommand::ClearOutputSearch
+    );
+
     let search = InputEvent::Terminal(Event::Key(KeyEvent::new(
         KeyCode::Char('/'),
         KeyModifiers::NONE,
@@ -739,6 +760,14 @@ fn output_focus_uses_output_search_commands() {
     assert_eq!(
         command_for_key(KeyCode::Char('c'), KeyModifiers::NONE, CommandFocus::Output),
         AppCommand::ToggleOutputCaseSensitive
+    );
+    assert_eq!(
+        command_for_key(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+            CommandFocus::Output
+        ),
+        AppCommand::ClearOutputSearch
     );
     assert_eq!(
         command_for_key(KeyCode::Char('n'), KeyModifiers::NONE, CommandFocus::Output),

@@ -102,7 +102,7 @@ pub enum NodeKind {
     Module {
         path: String,
     },
-    Test(DiscoveredTest),
+    Test(Box<DiscoveredTest>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -235,6 +235,11 @@ pub struct TreeRow<'a> {
     pub node: &'a TestNode,
 }
 
+pub struct VisibleTreeRows<'a> {
+    pub rows: Vec<TreeRow<'a>>,
+    pub selected_index: usize,
+}
+
 pub struct Tree {
     pub root: TestNode,
     pub view_filter: TestViewFilter,
@@ -269,6 +274,18 @@ impl Tree {
         rows
     }
 
+    pub fn visible_rows_with_selection(&self) -> VisibleTreeRows<'_> {
+        let rows = self.visible_rows();
+        let selected_index = rows
+            .iter()
+            .position(|row| row.node.id == self.selected)
+            .unwrap_or(0);
+        VisibleTreeRows {
+            rows,
+            selected_index,
+        }
+    }
+
     pub fn set_view_filter(&mut self, filter: TestViewFilter) {
         self.set_view_filter_preserving_selection(filter);
     }
@@ -290,10 +307,7 @@ impl Tree {
     }
 
     pub fn selected_index(&self) -> usize {
-        self.visible_rows()
-            .iter()
-            .position(|row| row.node.id == self.selected)
-            .unwrap_or(0)
+        self.visible_rows_with_selection().selected_index
     }
 
     pub fn selected_node(&self) -> Option<&TestNode> {
@@ -305,17 +319,19 @@ impl Tree {
     }
 
     pub fn select_next(&mut self) {
-        let rows = self.visible_rows();
+        let visible = self.visible_rows_with_selection();
+        let rows = visible.rows;
         if !rows.is_empty() {
-            let index = self.selected_index().saturating_add(1).min(rows.len() - 1);
+            let index = visible.selected_index.saturating_add(1).min(rows.len() - 1);
             self.selected = rows[index].node.id.clone();
         }
     }
 
     pub fn select_previous(&mut self) {
-        let rows = self.visible_rows();
+        let visible = self.visible_rows_with_selection();
+        let rows = visible.rows;
         if !rows.is_empty() {
-            let index = self.selected_index().saturating_sub(1);
+            let index = visible.selected_index.saturating_sub(1);
             self.selected = rows[index].node.id.clone();
         }
     }
@@ -333,10 +349,11 @@ impl Tree {
     }
 
     pub fn select_next_page(&mut self, page_size: usize) {
-        let rows = self.visible_rows();
+        let visible = self.visible_rows_with_selection();
+        let rows = visible.rows;
         if !rows.is_empty() {
-            let index = self
-                .selected_index()
+            let index = visible
+                .selected_index
                 .saturating_add(page_size.max(1))
                 .min(rows.len().saturating_sub(1));
             self.selected = rows[index].node.id.clone();
@@ -344,9 +361,10 @@ impl Tree {
     }
 
     pub fn select_previous_page(&mut self, page_size: usize) {
-        let rows = self.visible_rows();
+        let visible = self.visible_rows_with_selection();
+        let rows = visible.rows;
         if !rows.is_empty() {
-            let index = self.selected_index().saturating_sub(page_size.max(1));
+            let index = visible.selected_index.saturating_sub(page_size.max(1));
             self.selected = rows[index].node.id.clone();
         }
     }
@@ -447,16 +465,8 @@ impl Tree {
                 node.status = status;
                 node.started_at = None;
                 node.finished_at = Some(Instant::now());
-                let stdout = if stdout.is_empty() {
-                    node.output.stdout.clone()
-                } else {
-                    bounded_text(stdout.clone())
-                };
-                let stderr = if stderr.is_empty() {
-                    node.output.stderr.clone()
-                } else {
-                    bounded_text(stderr.clone())
-                };
+                let stdout = merge_finished_output(&node.output.stdout, &stdout);
+                let stderr = merge_finished_output(&node.output.stderr, &stderr);
                 node.output = TestOutput {
                     stdout,
                     stderr,
@@ -474,6 +484,20 @@ impl Tree {
                 append_output_text(&mut node.output.stderr, &stderr);
             }
         });
+    }
+
+    pub fn append_test_event(
+        &mut self,
+        event: &nextdeck_test_events::TestEvent,
+        line: &str,
+    ) -> bool {
+        let Some(target) = self.event_target_node_id(event) else {
+            return false;
+        };
+        self.with_id_mut(&target, |node| {
+            append_output_text(&mut node.output.stdout, line);
+        });
+        true
     }
 
     pub fn stop_running_tests(&mut self) {
@@ -534,11 +558,12 @@ impl Tree {
     }
 
     pub fn select_next_failed(&mut self) -> bool {
-        let rows = self.visible_rows();
+        let visible = self.visible_rows_with_selection();
+        let rows = visible.rows;
         if rows.is_empty() {
             return false;
         }
-        let start = self.selected_index().saturating_add(1);
+        let start = visible.selected_index.saturating_add(1);
         if let Some(index) = rows
             .iter()
             .enumerate()
@@ -554,11 +579,12 @@ impl Tree {
     }
 
     pub fn select_previous_failed(&mut self) -> bool {
-        let rows = self.visible_rows();
+        let visible = self.visible_rows_with_selection();
+        let rows = visible.rows;
         if rows.is_empty() {
             return false;
         }
-        let start = self.selected_index();
+        let start = visible.selected_index;
         let mut indices = (0..start).rev().chain((start + 1..rows.len()).rev());
         if let Some(index) = indices.find(|index| rows[*index].node.status == TestStatus::Failed) {
             self.selected = rows[index].node.id.clone();
@@ -680,7 +706,7 @@ impl Tree {
                 key: test.key.clone(),
             },
             test.name.clone(),
-            NodeKind::Test(test.clone()),
+            NodeKind::Test(Box::new(test.clone())),
         );
         node.status = test.status;
         node.expanded = false;
@@ -712,6 +738,18 @@ impl Tree {
 
     fn node(&self, id: &NodeId) -> Option<&TestNode> {
         node(&self.root, id)
+    }
+
+    fn event_target_node_id(&self, event: &nextdeck_test_events::TestEvent) -> Option<NodeId> {
+        event_thread_name(event)
+            .and_then(|name| {
+                unique_test_node_id(&self.root, |node, test| {
+                    event_thread_matches_test(name, node, test)
+                })
+            })
+            .or_else(|| {
+                unique_test_node_id(&self.root, |node, _| node.status == TestStatus::Running)
+            })
     }
 
     fn is_selected_visible(&self) -> bool {
@@ -747,6 +785,61 @@ fn append_output_text(target: &mut String, text: &str) {
         append_bounded_text(target, "\n");
     }
     append_bounded_text(target, text);
+}
+
+fn merge_finished_output(existing: &str, finished: &str) -> String {
+    if finished.is_empty() {
+        return existing.to_owned();
+    }
+    if existing.is_empty() {
+        return bounded_text(finished.to_owned());
+    }
+    let mut merged = existing.to_owned();
+    append_output_text(&mut merged, finished);
+    merged
+}
+
+fn event_thread_name(event: &nextdeck_test_events::TestEvent) -> Option<&str> {
+    event
+        .thread
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .filter(|name| !matches!(*name, "main" | "tokio-runtime-worker"))
+}
+
+fn unique_test_node_id(
+    root: &TestNode,
+    mut predicate: impl FnMut(&TestNode, &DiscoveredTest) -> bool,
+) -> Option<NodeId> {
+    let mut matches = Vec::new();
+    visit(root, &mut |node| {
+        if let NodeKind::Test(test) = &node.kind
+            && predicate(node, test)
+        {
+            matches.push(node.id.clone());
+        }
+    });
+    if matches.len() == 1 {
+        matches.pop()
+    } else {
+        None
+    }
+}
+
+fn event_thread_matches_test(name: &str, node: &TestNode, test: &DiscoveredTest) -> bool {
+    node_matches(
+        node,
+        &TestKey {
+            binary_id: None,
+            event_prefix: None,
+            name: name.to_owned(),
+        },
+    ) || test.full_name == name
+        || test
+            .full_name
+            .strip_suffix(test.name.as_str())
+            .is_some_and(|prefix| prefix.ends_with("::") && test.name == name)
 }
 
 fn collect_visible<'a>(

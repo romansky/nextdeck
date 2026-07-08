@@ -144,7 +144,7 @@ fn search_actions_expand_when_search_has_value() {
 
     assert_eq!(
         search.view("panic line").actions_fragment(),
-        "[/]search<[panic       ] 0/1 [n/N]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
+        "[/]search<[panic       ] 0/1 [C+u]clear [n/N]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
     );
 }
 

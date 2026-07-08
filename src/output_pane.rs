@@ -50,7 +50,11 @@ impl OutputPaneState {
         let top = self.render_scroll(text) as usize;
         let visible = self.page_size.max(1) as usize;
         let bottom = top.saturating_add(visible).min(total);
-        format!("{label} <#{}-{bottom}/{total}>", top + 1)
+        format!(
+            "{label} [PageUp/PageDown]<#{}-{bottom}/{total}> [s]nap:{}",
+            top + 1,
+            bool_symbol(self.follow)
+        )
     }
 
     pub fn search_actions(&self, source_text: &str) -> String {
@@ -225,12 +229,18 @@ impl SearchBoxView {
         } else {
             ""
         };
+        let clear_action = if !self.input_active && self.has_value {
+            " [C+u]clear"
+        } else {
+            ""
+        };
         format!(
-            "[/]search<{}{}{}{} [n/N]ext [f]ilter:{} [r]egex:{} [c]ase-sensitive:{}>",
+            "[/]search<{}{}{}{}{} [n/N]ext [f]ilter:{} [r]egex:{} [c]ase-sensitive:{}>",
             self.box_text,
             summary,
             invalid,
             input_actions,
+            clear_action,
             bool_symbol(self.filter),
             bool_symbol(self.regex),
             bool_symbol(self.case_sensitive)

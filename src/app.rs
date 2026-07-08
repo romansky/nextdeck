@@ -4,6 +4,7 @@ use crate::{
     command::{AppCommand, CommandContext, CommandFocus, InputMode, OverlayMode},
     config::{self, AppSettings, STORAGE_LOW_SPACE_THRESHOLD_STEP_GB, TREE_WIDTH_STEP_PERCENT},
     custom_run::{CustomRunScope, CustomRunState},
+    dirty::UiDirty,
     disk_usage::{DiskCleanupState, DiskUsageSnapshot, DiskUsageState},
     editor::SourceLocation,
     git_status::GitStatus,
@@ -18,7 +19,7 @@ use crate::{
     },
     request::RequestId,
     scroll,
-    settings::{GlobalSettingsState, SettingsField},
+    settings::{GlobalSettingsState, OPEN_WITH_PRESETS, SettingsField},
     source,
     state::StatusCounts,
     test_events::{TestEventRun, TestEventsFocus, TestEventsState},
@@ -44,7 +45,7 @@ enum OutputPaneId {
 
 pub struct App {
     pub tree: Tree,
-    pub tree_scroll: usize,
+    pub tree_viewport: scroll::SelectionViewport,
     pub status: String,
     pub key_echo: Option<KeyEcho>,
     pub ui_ticks: usize,
@@ -54,7 +55,6 @@ pub struct App {
     pub focus: FocusPane,
     pub show_help: bool,
     pub show_test_details: bool,
-    pub tree_page_size: usize,
     pub discovery: DiscoveryState,
     pub git_status: GitStatus,
     pub disk_usage: DiskUsageState,
@@ -140,7 +140,7 @@ pub enum AppEffect {
     None,
     SaveSettings(AppSettings),
     StartDiscovery(RequestId),
-    StartRun(RunRequest),
+    StartRun(Box<RunRequest>),
     StopRun,
     CaptureTestSnapshot(TestSnapshotRequest),
     OpenSource(SourceLocation),
@@ -166,7 +166,7 @@ impl App {
     pub fn with_settings(tree: Tree, settings: AppSettings) -> Self {
         Self {
             tree,
-            tree_scroll: 0,
+            tree_viewport: scroll::SelectionViewport::default(),
             status: "Ready".to_owned(),
             key_echo: None,
             ui_ticks: 0,
@@ -176,7 +176,6 @@ impl App {
             focus: FocusPane::Tree,
             show_help: false,
             show_test_details: false,
-            tree_page_size: 1,
             discovery: DiscoveryState::default(),
             git_status: GitStatus::unknown(),
             disk_usage: DiskUsageState::default(),
@@ -216,12 +215,14 @@ impl App {
         &mut self,
         tree_height: u16,
         output_height: u16,
+        xtask_params_height: u16,
         xtask_output_height: u16,
         test_events_output_height: u16,
     ) {
         self.set_viewport_sizes(
             tree_height,
             output_height,
+            xtask_params_height,
             xtask_output_height,
             test_events_output_height,
         );
@@ -241,12 +242,15 @@ impl App {
         &mut self,
         tree_height: u16,
         output_height: u16,
+        xtask_params_height: u16,
         xtask_output_height: u16,
         test_events_output_height: u16,
     ) {
-        self.tree_page_size = tree_height.saturating_sub(2).max(1) as usize;
+        self.tree_viewport
+            .set_page_size(tree_height.saturating_sub(2).max(1) as usize);
         self.main_output
             .set_page_size(output_height.saturating_sub(2).max(1));
+        self.xtasks.set_parameters_page_size(xtask_params_height);
         self.xtasks.output.set_page_size(xtask_output_height);
         self.test_events
             .output
@@ -347,7 +351,24 @@ impl App {
         });
     }
 
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self) -> UiDirty {
+        let mut dirty = UiDirty::NONE;
+        if self.discovery.running {
+            dirty |= UiDirty::MODAL;
+        }
+        if self.running {
+            dirty |= UiDirty::TREE | UiDirty::DETAILS | UiDirty::STATUS;
+        }
+        if self.xtasks.running {
+            dirty |= UiDirty::MODAL;
+        }
+        if self.key_echo.is_some() {
+            dirty |= UiDirty::STATUS;
+        }
+        if !dirty.any() {
+            return dirty;
+        }
+
         self.ui_ticks = self.ui_ticks.saturating_add(1);
         if self.discovery.running {
             self.discovery.ticks = self.discovery.ticks.saturating_add(1);
@@ -358,6 +379,7 @@ impl App {
                 self.key_echo = None;
             }
         }
+        dirty
     }
 
     pub fn begin_discovery(&mut self) -> RequestId {
@@ -384,7 +406,7 @@ impl App {
                 let count = tests.len();
                 self.tree.refresh_from_tests(tests);
                 self.custom_run.update_run_config(run_config);
-                self.tree_scroll = 0;
+                self.tree_viewport.reset();
                 self.reset_output_for_source_change();
                 self.discovery.running = false;
                 self.discovery.error = None;
@@ -534,25 +556,17 @@ impl App {
     }
 
     fn cycle_open_with_setting(&mut self, direction: i8) -> AppEffect {
-        const PRESETS: &[Option<&str>] = &[
-            None,
-            Some("idea"),
-            Some("code"),
-            Some("cursor"),
-            Some("zed"),
-            Some("open"),
-        ];
         let current = self.settings.open_with_command.as_deref();
-        let index = PRESETS
+        let index = OPEN_WITH_PRESETS
             .iter()
             .position(|preset| *preset == current)
             .unwrap_or(0);
         let next = if direction < 0 {
-            index.checked_sub(1).unwrap_or(PRESETS.len() - 1)
+            index.checked_sub(1).unwrap_or(OPEN_WITH_PRESETS.len() - 1)
         } else {
-            (index + 1) % PRESETS.len()
+            (index + 1) % OPEN_WITH_PRESETS.len()
         };
-        self.settings.open_with_command = PRESETS[next].map(ToOwned::to_owned);
+        self.settings.open_with_command = OPEN_WITH_PRESETS[next].map(ToOwned::to_owned);
         self.sync_settings_open_with();
         self.status = format!("Open with: {}", self.settings.open_with_label());
         self.save_settings_effect()
@@ -772,7 +786,7 @@ impl App {
                     self.status = "Discovering tests".to_owned();
                     AppEffect::None
                 } else {
-                    AppEffect::StartRun(RunRequest::new(self.selected_scope()))
+                    AppEffect::StartRun(Box::new(RunRequest::new(self.selected_scope())))
                 }
             }
             AppCommand::OpenCustomRun => {
@@ -1174,12 +1188,12 @@ impl App {
     }
 
     pub fn select_next_page(&mut self) {
-        let page_size = self.tree_page_size;
+        let page_size = self.tree_viewport.page_size();
         self.with_selection_reset(|tree| tree.select_next_page(page_size));
     }
 
     pub fn select_previous_page(&mut self) {
-        let page_size = self.tree_page_size;
+        let page_size = self.tree_viewport.page_size();
         self.with_selection_reset(|tree| tree.select_previous_page(page_size));
     }
 
@@ -1409,6 +1423,10 @@ impl App {
                 None
             }
             RunEvent::TestEvent { run_id, event } => {
+                let inline = crate::test_events::inline_event_line(&event);
+                if !self.tree.append_test_event(&event, &inline) {
+                    self.tree.append_runner_output(inline);
+                }
                 self.test_events.append_event(&run_id, event);
                 None
             }
@@ -1524,7 +1542,7 @@ impl App {
             Ok(request) => {
                 self.custom_run.close();
                 self.show_test_details = false;
-                AppEffect::StartRun(request)
+                AppEffect::StartRun(Box::new(request))
             }
             Err(error) => {
                 self.status = error;
@@ -1585,7 +1603,48 @@ impl App {
         if let Some(error) = &self.discovery.error {
             discovery_error_output(error)
         } else {
-            self.tree.selected_output()
+            self.output_with_run_summary(self.tree.selected_output())
+        }
+    }
+
+    fn output_with_run_summary(&self, mut output: String) -> String {
+        let Some(summary) = self.run_output_summary() else {
+            return output;
+        };
+
+        if output.trim().is_empty() {
+            return summary;
+        }
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+        if !output.ends_with("\n\n") {
+            output.push('\n');
+        }
+        output.push_str(&summary);
+        output
+    }
+
+    fn run_output_summary(&self) -> Option<String> {
+        let counts = self.tree.status_counts_for_scope(&self.run.scope);
+        match self.run.outcome {
+            RunOutcome::Passed => Some(format!(
+                "Run passed: {} passed, {} skipped, {} ignored",
+                counts.passed, counts.skipped, counts.ignored
+            )),
+            RunOutcome::Failed => Some(format!(
+                "Run failed: {} passed, {} failed, {} skipped, {} ignored",
+                counts.passed, counts.failed, counts.skipped, counts.ignored
+            )),
+            RunOutcome::CommandFailed => Some(match self.run.exit_code {
+                Some(code) => format!("Run command failed: nextest exited with {code}"),
+                None => "Run command failed: nextest did not complete".to_owned(),
+            }),
+            RunOutcome::Stopped => Some(format!(
+                "Run stopped: {} passed, {} failed, {} pending, {} skipped, {} ignored",
+                counts.passed, counts.failed, counts.pending, counts.skipped, counts.ignored
+            )),
+            RunOutcome::Running | RunOutcome::NotStarted => None,
         }
     }
 
@@ -1715,12 +1774,8 @@ impl App {
 
     fn ensure_tree_selection_visible(&mut self) {
         let rows_len = self.tree.visible_rows().len();
-        self.tree_scroll = scroll::ensure_visible(
-            self.tree_scroll,
-            self.tree.selected_index(),
-            rows_len,
-            self.tree_page_size,
-        );
+        self.tree_viewport
+            .ensure_visible(self.tree.selected_index(), rows_len);
     }
 
     fn clamp_output_scroll(&mut self) {

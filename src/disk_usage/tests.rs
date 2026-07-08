@@ -65,3 +65,28 @@ fn reports_storage_health_for_transient_states() {
         StorageHealth::NotScanned
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn dir_size_counts_hard_links_once() {
+    let root = env::temp_dir().join(format!(
+        "nextdeck-disk-usage-hard-links-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("artifact");
+    let link = root.join("artifact-link");
+    fs::write(&file, vec![1; 4096]).unwrap();
+    fs::hard_link(&file, &link).unwrap();
+
+    let root_bytes = disk_usage_bytes(&fs::symlink_metadata(&root).unwrap());
+    let file_bytes = disk_usage_bytes(&fs::symlink_metadata(&file).unwrap());
+
+    assert_eq!(dir_size(&root).unwrap(), root_bytes + file_bytes);
+
+    fs::remove_dir_all(root).unwrap();
+}

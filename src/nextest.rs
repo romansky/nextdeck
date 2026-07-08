@@ -557,7 +557,7 @@ impl NextestClient {
         request: RunRequest,
         tx: mpsc::Sender<RunEvent>,
         mut stop_rx: mpsc::UnboundedReceiver<()>,
-        test_events_path: Option<PathBuf>,
+        test_events_dir: Option<PathBuf>,
         process_tracker: ProcessTracker,
     ) -> Result<()> {
         let arg_sets = request.scope.nextest_arg_sets();
@@ -580,7 +580,7 @@ impl NextestClient {
                     &request.options,
                     &tx,
                     &mut stop_rx,
-                    test_events_path.as_ref(),
+                    test_events_dir.as_deref(),
                     &process_tracker,
                 )
                 .await?
@@ -607,10 +607,10 @@ impl NextestClient {
         options: &RunOptions,
         tx: &mpsc::Sender<RunEvent>,
         stop_rx: &mut mpsc::UnboundedReceiver<()>,
-        test_events_path: Option<&PathBuf>,
+        test_events_dir: Option<&Path>,
         process_tracker: &ProcessTracker,
     ) -> Result<RunProcessOutcome> {
-        let mut command = self.run_command(scope_args, options, test_events_path);
+        let mut command = self.run_command(scope_args, options, test_events_dir);
         configure_run_command(&mut command);
         let mut child = command
             .kill_on_drop(true)
@@ -726,7 +726,7 @@ impl NextestClient {
         &self,
         scope_args: Vec<String>,
         options: &RunOptions,
-        test_events_path: Option<&PathBuf>,
+        test_events_dir: Option<&Path>,
     ) -> Command {
         let mut command = Command::new("cargo");
         if let Some(path) = &self.current_dir {
@@ -755,8 +755,8 @@ impl NextestClient {
         command.args(options.nextest_args());
         command.args(scope_args);
         command.env("NEXTEST_EXPERIMENTAL_LIBTEST_JSON", "1");
-        if let Some(path) = test_events_path {
-            command.env(nextdeck_test_events::ENV_VAR, path);
+        if let Some(dir) = test_events_dir {
+            command.env(nextdeck_test_events::ENV_VAR, dir);
         }
         command
     }

@@ -275,20 +275,26 @@ fn test_events_modal_opens_from_tests_focus_and_uses_dedicated_output_search() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
     app.begin_test_event_run(TestEventRun {
         id: "run-1".to_owned(),
-        path: std::path::PathBuf::from("/tmp/run-1.jsonl"),
+        dir: std::path::PathBuf::from("/tmp/run-1"),
     });
     app.apply_run_event(RunEvent::TestEvent {
         run_id: "run-1".to_owned(),
         event: TestEvent::new(Level::Info, "cache hit").with_target("artifact-cache"),
     });
 
-    assert_eq!(app.test_events.counter_label(), "1•");
+    assert_eq!(
+        app.test_events.latest_event_label(),
+        "info artifact-cache: cache hit •"
+    );
 
     let effect = app.apply_command(AppCommand::OpenTestEvents);
 
     assert_eq!(effect, AppEffect::None);
     assert!(app.test_events.modal_open);
-    assert_eq!(app.test_events.counter_label(), "1");
+    assert_eq!(
+        app.test_events.latest_event_label(),
+        "info artifact-cache: cache hit"
+    );
     assert_eq!(
         app.command_context(),
         CommandContext {
@@ -308,12 +314,35 @@ fn test_events_modal_opens_from_tests_focus_and_uses_dedicated_output_search() {
 }
 
 #[test]
+fn test_event_run_events_are_inlined_into_matching_test_output() {
+    nextdeck_test_events::event!(
+        "verifying inline test event output";
+        "component" => "app",
+    );
+
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    let mut event = TestEvent::new(Level::Info, "cache hit").with_target("artifact-cache");
+    event.thread = Some("tests::case_00".to_owned());
+
+    app.apply_run_event(RunEvent::TestEvent {
+        run_id: "run-1".to_owned(),
+        event,
+    });
+    app.tree.select_next();
+    app.tree.select_next();
+    app.tree.select_next();
+
+    let output = app.tree.selected_output();
+    assert!(output.contains("[event info] artifact-cache: cache hit"));
+}
+
+#[test]
 fn test_events_run_finishes_with_run_result_label() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
     assert!(app.begin_run(&RunRequest::default()).is_some());
     app.begin_test_event_run(TestEventRun {
         id: "run-1".to_owned(),
-        path: std::path::PathBuf::from("/tmp/run-1.jsonl"),
+        dir: std::path::PathBuf::from("/tmp/run-1"),
     });
 
     app.apply_run_event(RunEvent::RunnerFinished { exit_code: Some(0) });
@@ -468,25 +497,25 @@ fn xtask_detail_close_returns_to_command_picker() {
 fn tree_scroll_follows_selection_past_viewport() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(30)));
     expand_all(&mut app.tree.root);
-    app.set_viewport_sizes(7, 7, 1, 1);
+    app.set_viewport_sizes(7, 7, 1, 1, 1);
 
     for _ in 0..20 {
         app.select_next();
         assert_selection_visible(&app);
     }
 
-    assert!(app.tree_scroll > 0);
+    assert!(app.tree_viewport.scroll() > 0);
 }
 
 #[test]
 fn tree_scroll_reclamps_when_viewport_height_changes() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(30)));
     expand_all(&mut app.tree.root);
-    app.set_viewport_sizes(16, 7, 1, 1);
+    app.set_viewport_sizes(16, 7, 1, 1, 1);
     app.select_last();
     assert_selection_visible(&app);
 
-    app.set_viewport_sizes(5, 7, 1, 1);
+    app.set_viewport_sizes(5, 7, 1, 1, 1);
     assert_selection_visible(&app);
 }
 
@@ -812,6 +841,10 @@ fn command_failure_before_test_start_records_build_time_only() {
     assert!(app.run_duration().is_some());
     assert!(app.build_duration().is_some());
     assert_eq!(app.test_duration(), None);
+    assert!(
+        app.output_text()
+            .contains("Run command failed: nextest exited with 101")
+    );
 }
 
 #[test]
@@ -836,6 +869,7 @@ fn failing_test_run_reports_failed_result() {
     assert_eq!(app.run_result_label(), "failed");
     assert!(app.status.starts_with("Failed:"));
     assert!(app.status.contains("1 failed"));
+    assert!(app.output_text().contains("Run failed: 0 passed, 1 failed"));
 }
 
 #[test]
@@ -858,6 +892,10 @@ fn scoped_run_summary_counts_only_the_scope() {
     assert_eq!(app.run.outcome, RunOutcome::Passed);
     assert_eq!(app.run_progress(), (1, 1));
     assert_eq!(app.status, "Passed: 1 passed, 0 skipped, 0 ignored");
+    assert!(
+        app.output_text()
+            .contains("Run passed: 1 passed, 0 skipped, 0 ignored")
+    );
 }
 
 #[test]
@@ -1380,7 +1418,7 @@ fn output_search_clear_keeps_input_active_and_resets_match() {
 #[test]
 fn discovery_error_uses_output_scroll_and_search() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(3)));
-    app.set_viewport_sizes(5, 5, 1, 1);
+    app.set_viewport_sizes(5, 5, 1, 1, 1);
 
     app.apply_discovery_event(
         app.discovery.request_id,
@@ -1500,16 +1538,15 @@ fn output_search_editor_can_insert_at_cursor_and_apply() {
 
 fn assert_selection_visible(app: &App) {
     let selected = app.tree.selected_index();
+    let scroll = app.tree_viewport.scroll();
+    let page_size = app.tree_viewport.page_size();
     assert!(
-        selected >= app.tree_scroll,
-        "selected {selected} should be >= scroll {}",
-        app.tree_scroll
+        selected >= scroll,
+        "selected {selected} should be >= scroll {scroll}"
     );
     assert!(
-        selected < app.tree_scroll + app.tree_page_size,
-        "selected {selected} should be < scroll {} + page {}",
-        app.tree_scroll,
-        app.tree_page_size
+        selected < scroll + page_size,
+        "selected {selected} should be < scroll {scroll} + page {page_size}"
     );
 }
 

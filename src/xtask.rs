@@ -9,10 +9,12 @@ use tokio::{
 };
 
 use crate::{
+    field_schema::{ParameterDetails, on_off},
     input_field::{InputField, InputFieldInput},
     output::append_bounded_text,
     output_pane::OutputPaneState,
     request::RequestId,
+    scroll::SelectionViewport,
 };
 
 pub const INFO_COMMAND: &str = "nextdeck-info";
@@ -89,6 +91,7 @@ pub struct XtaskState {
     pub manifest: Option<XtaskManifest>,
     pub selected_command: usize,
     pub selected_arg: usize,
+    pub parameters_viewport: SelectionViewport,
     pub detail_focus: XtaskDetailFocus,
     pub output: OutputPaneState,
     pub values: BTreeMap<String, BTreeMap<String, XtaskArgValue>>,
@@ -109,6 +112,7 @@ impl Default for XtaskState {
             manifest: None,
             selected_command: 0,
             selected_arg: 0,
+            parameters_viewport: SelectionViewport::default(),
             detail_focus: XtaskDetailFocus::default(),
             output: OutputPaneState::default(),
             values: BTreeMap::new(),
@@ -234,16 +238,36 @@ impl XtaskArgSpec {
     }
 }
 
+impl XtaskValueSpec {
+    pub(crate) fn parameter_details(&self) -> ParameterDetails {
+        match self {
+            Self::Bool { default } => ParameterDetails::bool(*default),
+            Self::Number {
+                default: Some(default),
+            } => ParameterDetails::number().with_default(default.to_string()),
+            Self::Number { default: None } => ParameterDetails::number(),
+            Self::String {
+                default: Some(default),
+            } if !default.trim().is_empty() => {
+                ParameterDetails::string().with_default(default.clone())
+            }
+            Self::String { .. } => ParameterDetails::string(),
+            Self::Enum { values, default } => {
+                let details = ParameterDetails::enum_values(values.clone());
+                if let Some(default) = default {
+                    details.with_default(default.clone())
+                } else {
+                    details
+                }
+            }
+        }
+    }
+}
+
 impl XtaskArgValue {
     pub fn display(&self) -> String {
         match self {
-            Self::Bool(value) => {
-                if *value {
-                    "on".to_owned()
-                } else {
-                    "off".to_owned()
-                }
-            }
+            Self::Bool(value) => on_off(*value).to_owned(),
             Self::Number(value) | Self::String(value) | Self::Enum(value) => value.clone(),
         }
     }
@@ -270,6 +294,8 @@ impl XtaskState {
         self.detail_focus = XtaskDetailFocus::Parameters;
         self.editing = None;
         self.selected_arg = 0;
+        self.parameters_viewport.reset();
+        self.ensure_selected_parameter_visible();
         self.output.scroll_top();
         self.output.search.close_interaction();
         true
@@ -366,6 +392,7 @@ impl XtaskState {
         self.manifest = Some(manifest);
         self.detail_open = false;
         self.detail_focus = XtaskDetailFocus::Parameters;
+        self.parameters_viewport.reset();
         self.editing = None;
     }
 
@@ -388,6 +415,8 @@ impl XtaskState {
         }
         self.selected_command = (self.selected_command + 1) % manifest.commands.len();
         self.selected_arg = 0;
+        self.parameters_viewport.reset();
+        self.ensure_selected_parameter_visible();
     }
 
     pub fn select_previous_command(&mut self) {
@@ -400,6 +429,8 @@ impl XtaskState {
         self.selected_command =
             (self.selected_command + manifest.commands.len() - 1) % manifest.commands.len();
         self.selected_arg = 0;
+        self.parameters_viewport.reset();
+        self.ensure_selected_parameter_visible();
     }
 
     pub fn select_next_arg(&mut self) {
@@ -408,9 +439,11 @@ impl XtaskState {
         };
         if command.args.is_empty() {
             self.selected_arg = 0;
+            self.parameters_viewport.reset();
             return;
         }
         self.selected_arg = (self.selected_arg + 1) % command.args.len();
+        self.ensure_selected_parameter_visible();
     }
 
     pub fn select_previous_arg(&mut self) {
@@ -419,9 +452,16 @@ impl XtaskState {
         };
         if command.args.is_empty() {
             self.selected_arg = 0;
+            self.parameters_viewport.reset();
             return;
         }
         self.selected_arg = (self.selected_arg + command.args.len() - 1) % command.args.len();
+        self.ensure_selected_parameter_visible();
+    }
+
+    pub fn set_parameters_page_size(&mut self, page_size: u16) {
+        self.parameters_viewport.set_page_size(page_size as usize);
+        self.ensure_selected_parameter_visible();
     }
 
     pub fn adjust_selected_arg(&mut self, delta: i8) -> bool {
@@ -645,6 +685,53 @@ impl XtaskState {
     fn sync_output_scroll_to_content(&mut self) {
         let line_count = self.output_text().lines().count().max(1);
         self.output.set_line_count(line_count);
+    }
+
+    fn ensure_selected_parameter_visible(&mut self) {
+        let Some((selected_line, line_count)) = self.selected_parameter_line() else {
+            self.parameters_viewport.reset();
+            return;
+        };
+        self.parameters_viewport
+            .ensure_visible(selected_line, line_count);
+    }
+
+    fn selected_parameter_line(&self) -> Option<(usize, usize)> {
+        let command = self.selected_command()?;
+        Some((
+            command.parameter_line_index(self.selected_arg),
+            command.parameter_line_count(),
+        ))
+    }
+}
+
+impl XtaskCommandSpec {
+    fn parameter_line_count(&self) -> usize {
+        if self.args.is_empty() {
+            return 1;
+        }
+        self.args
+            .iter()
+            .map(XtaskArgSpec::parameter_line_count)
+            .sum()
+    }
+
+    fn parameter_line_index(&self, selected_arg: usize) -> usize {
+        self.args
+            .iter()
+            .take(selected_arg.min(self.args.len()))
+            .map(XtaskArgSpec::parameter_line_count)
+            .sum()
+    }
+}
+
+impl XtaskArgSpec {
+    fn parameter_line_count(&self) -> usize {
+        let help_line = self
+            .help
+            .as_deref()
+            .is_some_and(|help| !help.trim().is_empty()) as usize;
+        2 + help_line
     }
 }
 

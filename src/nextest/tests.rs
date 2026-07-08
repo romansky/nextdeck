@@ -87,6 +87,25 @@ async fn fixture_run_preserves_child_like_success_output() {
 }
 
 #[tokio::test]
+async fn fixture_run_captures_nextdeck_test_events() {
+    nextdeck_test_events::event!(
+        "running nextdeck event fixture";
+        "fixture" => "pass_emits_nextdeck_event",
+    );
+
+    let events =
+        run_output_fixture_with_events("pass_emits_nextdeck_event", Vec::new(), true).await;
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        RunEvent::TestEvent { event, .. }
+            if event.message == "event from fixture"
+                && event.target.as_deref() == Some("fixture")
+                && event.pid.is_some()
+    )));
+}
+
+#[tokio::test]
 async fn fixture_run_captures_failed_output_from_json_event() {
     let events = run_output_fixture("fail_prints_stdout_and_stderr", Vec::new()).await;
 
@@ -516,6 +535,14 @@ struct FinishedTestOutput {
 }
 
 async fn run_output_fixture(filter: &str, passthrough_args: Vec<String>) -> Vec<RunEvent> {
+    run_output_fixture_with_events(filter, passthrough_args, false).await
+}
+
+async fn run_output_fixture_with_events(
+    filter: &str,
+    passthrough_args: Vec<String>,
+    capture_events: bool,
+) -> Vec<RunEvent> {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/output-workspace");
     let client = NextestClient::new(None, Some(fixture), passthrough_args);
     let (tx, mut rx) = tokio::sync::mpsc::channel(crate::queue::APP_EVENT_QUEUE_CAPACITY);
@@ -525,6 +552,14 @@ async fn run_output_fixture(filter: &str, passthrough_args: Vec<String>) -> Vec<
     } else {
         ("nextdeck_output_fixture", "lib")
     };
+    let test_event_run = if capture_events {
+        Some(crate::test_events::create_run_file().expect("create test event run"))
+    } else {
+        None
+    };
+    let tailer = test_event_run
+        .as_ref()
+        .map(|run| crate::test_events::start_tailer(run.id.clone(), run.dir.clone(), tx.clone()));
 
     client
         .run(
@@ -539,11 +574,14 @@ async fn run_output_fixture(filter: &str, passthrough_args: Vec<String>) -> Vec<
             },
             tx,
             stop_rx,
-            None,
+            test_event_run.as_ref().map(|run| run.dir.clone()),
             ProcessTracker::default(),
         )
         .await
         .expect("run output fixture");
+    if let Some(tailer) = tailer {
+        tailer.stop().await;
+    }
 
     let mut events = Vec::new();
     while let Ok(event) = rx.try_recv() {

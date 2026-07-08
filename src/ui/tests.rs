@@ -13,7 +13,10 @@ fn output_status_shows_all_when_text_fits() {
     app.main_output.page_size = 5;
     let text = "one\ntwo";
 
-    assert_eq!(app.main_output.status("Output", text), "Output <#1-2/2>");
+    assert_eq!(
+        app.main_output.status("Output", text),
+        "Output [PageUp/PageDown]<#1-2/2> [s]nap:✓"
+    );
 }
 
 #[test]
@@ -23,15 +26,24 @@ fn output_status_shows_clamped_line_ranges() {
     let text = "1\n2\n3\n4\n5\n6";
 
     app.main_output.scroll = 0;
-    assert_eq!(app.main_output.status("Output", text), "Output <#1-3/6>");
+    assert_eq!(
+        app.main_output.status("Output", text),
+        "Output [PageUp/PageDown]<#1-3/6> [s]nap:✓"
+    );
 
     app.main_output.scroll = 2;
     app.main_output.follow = false;
-    assert_eq!(app.main_output.status("Output", text), "Output <#3-5/6>");
+    assert_eq!(
+        app.main_output.status("Output", text),
+        "Output [PageUp/PageDown]<#3-5/6> [s]nap:✗"
+    );
 
     app.main_output.scroll = 3;
     app.main_output.follow = true;
-    assert_eq!(app.main_output.status("Output", text), "Output <#4-6/6>");
+    assert_eq!(
+        app.main_output.status("Output", text),
+        "Output [PageUp/PageDown]<#4-6/6> [s]nap:✓"
+    );
 }
 
 #[test]
@@ -48,22 +60,24 @@ fn fit_line_prefix_preserves_xtask_text_prefix() {
 #[test]
 fn xtask_list_uses_auto_command_column_width() {
     let theme = Theme::dark();
-    let mut xtasks = XtaskState::default();
-    xtasks.manifest = Some(crate::xtask::XtaskManifest {
-        schema_version: crate::xtask::SCHEMA_VERSION,
-        commands: vec![
-            xtask_command(
-                "tui-check",
-                "Run local TUI checks expected before publishing",
-            ),
-            xtask_command(
-                "tui-homebrew-formula",
-                "Generate a Homebrew formula from TUI release artifact checksums",
-            ),
-        ],
-    });
-    xtasks.loading = false;
-    xtasks.selected_command = 1;
+    let xtasks = XtaskState {
+        manifest: Some(crate::xtask::XtaskManifest {
+            schema_version: crate::xtask::SCHEMA_VERSION,
+            commands: vec![
+                xtask_command(
+                    "tui-check",
+                    "Run local TUI checks expected before publishing",
+                ),
+                xtask_command(
+                    "tui-homebrew-formula",
+                    "Generate a Homebrew formula from TUI release artifact checksums",
+                ),
+            ],
+        }),
+        loading: false,
+        selected_command: 1,
+        ..Default::default()
+    };
 
     let lines = xtask_list_lines(&xtasks, &theme, 96);
     let selected = line_text(&lines[1]);
@@ -75,15 +89,17 @@ fn xtask_list_uses_auto_command_column_width() {
 #[test]
 fn xtask_list_caps_long_command_column_width() {
     let theme = Theme::dark();
-    let mut xtasks = XtaskState::default();
-    xtasks.manifest = Some(crate::xtask::XtaskManifest {
-        schema_version: crate::xtask::SCHEMA_VERSION,
-        commands: vec![xtask_command(
-            "this-command-name-is-too-long-for-the-picker",
-            "Visible description still gets space",
-        )],
-    });
-    xtasks.loading = false;
+    let xtasks = XtaskState {
+        manifest: Some(crate::xtask::XtaskManifest {
+            schema_version: crate::xtask::SCHEMA_VERSION,
+            commands: vec![xtask_command(
+                "this-command-name-is-too-long-for-the-picker",
+                "Visible description still gets space",
+            )],
+        }),
+        loading: false,
+        ..Default::default()
+    };
 
     let lines = xtask_list_lines(&xtasks, &theme, 50);
     let text = line_text(&lines[0]);
@@ -181,12 +197,12 @@ fn info_columns_keep_run_and_storage_details_separate() {
     });
     app.settings.storage_low_space_threshold_gb = 1;
 
-    let run_text = run_details(&app, &Theme::dark())
+    let run_text = run_details(&app, &Theme::dark(), 80)
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
         .join("\n");
-    let storage_text = storage_details(&app, &Theme::dark())
+    let storage_text = storage_details(&app, &Theme::dark(), 80)
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
@@ -194,6 +210,7 @@ fn info_columns_keep_run_and_storage_details_separate() {
 
     assert_eq!(footer_run_status(&app), app.run_status_label());
     assert!(run_text.contains("run id"));
+    assert!(run_text.contains("latest event"));
     assert!(run_text.contains(app.run_status_label()));
     assert!(!run_text.contains("not running"));
     assert!(!run_text.contains("target"));
@@ -265,6 +282,27 @@ fn settings_modal_includes_storage_and_duration_settings() {
         settings_value(&app, SettingsField::StorageThreshold),
         "10 GiB"
     );
+
+    let rows = settings_rows(&app);
+    let text = ParameterList::new(
+        &rows,
+        SELECTABLE_FIELD_PREFIX_WIDTH,
+        SETTINGS_FIELD_LABEL_WIDTH,
+        100,
+        parameter_list_styles(&Theme::dark()),
+    )
+    .render()
+    .iter()
+    .map(line_text)
+    .collect::<Vec<_>>()
+    .join("\n");
+
+    assert!(text.contains("# string: env/default, idea, code, cursor, zed, open"));
+    assert!(text.contains("# number: 25..70% (default: 45%)"));
+    assert!(text.contains("# enum: wall, aggregate (default: wall)"));
+    assert!(text.contains("# number: 1..1024 GiB (default: 10 GiB)"));
+    assert!(text.contains("# enum: auto, dark, light (default: auto)"));
+    assert!(text.contains("# bool: off, on (default: off)"));
 }
 
 #[test]
@@ -288,19 +326,19 @@ fn footer_includes_run_and_storage_status_before_key() {
 fn panel_actions_describe_local_commands() {
     assert_eq!(
         tests_actions(),
-        "[enter]details [e]vents [r]un [R]run-custom [o]pen-editor [u]update"
+        "[enter]details [r]un [R]run-custom [o]pen-editor [u]update"
     );
     assert_eq!(
         disk_cleanup_actions(),
         "[c]cargo-clean [r]refresh [esc]close"
     );
     assert_eq!(
-        output_actions("[/]search<[            ]>", true),
-        "[/]search<[            ]> [s]nap:✓ [o]pen-editor"
+        output_actions("[/]search<[            ]>"),
+        "[/]search<[            ]> [o]pen-editor"
     );
     assert_eq!(
-        discovery_error_actions("[/]search<[            ]> [s]nap:✗ [o]pen-editor"),
-        "[u]retry [/]search<[            ]> [s]nap:✗ [o]pen-editor [q]quit"
+        discovery_error_actions("[/]search<[            ]> [o]pen-editor"),
+        "[u]retry [/]search<[            ]> [o]pen-editor [q]quit"
     );
 }
 
@@ -801,8 +839,12 @@ fn running_test_spinner_advances_with_app_tick() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
 
     assert_eq!(app.running_test_spinner(), "⠋");
+    assert!(!app.tick().any());
+    assert_eq!(app.running_test_spinner(), "⠋");
 
-    app.tick();
+    app.begin_run(&crate::nextest::RunRequest::default())
+        .expect("run starts");
+    assert!(app.tick().any());
 
     assert_eq!(app.running_test_spinner(), "⠙");
 }
@@ -816,7 +858,7 @@ fn output_actions_include_search_flags_when_search_has_value() {
 
     assert_eq!(
         app.main_output.search_actions(text),
-        "[/]search<[panic       ] 0/1 [n/N]ext [f]ilter:✓ [r]egex:✗ [c]ase-sensitive:✗>"
+        "[/]search<[panic       ] 0/1 [C+u]clear [n/N]ext [f]ilter:✓ [r]egex:✗ [c]ase-sensitive:✗>"
     );
 }
 
@@ -835,6 +877,25 @@ fn output_lines_marks_current_search_result_differently() {
 
     assert_eq!(lines[0].spans[0].style, theme.search_match());
     assert_eq!(lines[1].spans[0].style, theme.active_search_match());
+}
+
+#[test]
+fn output_lines_color_run_result_summaries() {
+    let app = app_with_tree(Tree::from_tests(Vec::new()));
+    let theme = Theme::dark();
+    let output_view = crate::output_pane::OutputView {
+        text: "Run passed: 1 passed\nRun failed: 1 failed\nRun command failed: nextest exited with 101\n[event info] fixture: cached\n[event warn] fixture: slow\n[event error] fixture: failed".to_owned(),
+        source_lines: vec![0, 1, 2, 3, 4, 5],
+    };
+
+    let lines = output_lines(&app.main_output.search, &theme, &output_view);
+
+    assert_eq!(lines[0].style, theme.success());
+    assert_eq!(lines[1].style, theme.danger());
+    assert_eq!(lines[2].style, theme.danger());
+    assert_eq!(lines[3].style, theme.accent());
+    assert_eq!(lines[4].style, theme.warning());
+    assert_eq!(lines[5].style, theme.danger());
 }
 
 #[test]

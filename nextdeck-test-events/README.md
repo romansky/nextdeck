@@ -2,8 +2,9 @@
 
 Tiny optional test-run event side channel for projects launched by NextDeck.
 
-The crate writes JSONL only when `NEXTDECK_TEST_EVENTS` points at a file. In
-normal test runs it is a no-op.
+The crate writes JSONL only when `NEXTDECK_TEST_EVENTS` points at a directory.
+In normal test runs it is a no-op. Events append to `<pid>.jsonl` inside that
+directory so NextDeck can treat each test process as its own event stream.
 
 ```rust
 nextdeck_test_events::event!(
@@ -21,6 +22,8 @@ Each line is a schema-versioned generic event:
 {
   "schema_version": 1,
   "time": 1783420000000,
+  "pid": 12345,
+  "thread": "tests::cache_hit",
   "level": "info",
   "target": "artifact-cache",
   "message": "cache hit",

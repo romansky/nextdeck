@@ -1,8 +1,8 @@
 use std::{
     collections::BTreeMap,
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -36,6 +36,10 @@ pub struct SourceLocation {
 pub struct TestEvent {
     pub schema_version: u32,
     pub time: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
     pub level: Level,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
@@ -51,6 +55,8 @@ impl TestEvent {
         Self {
             schema_version: SCHEMA_VERSION,
             time: now_millis(),
+            pid: Some(std::process::id()),
+            thread: current_thread_name(),
             level,
             target: None,
             message: message.into(),
@@ -92,6 +98,7 @@ pub fn event_file_path() -> Option<PathBuf> {
     std::env::var_os(ENV_VAR)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+        .map(|dir| pid_event_file_path(&dir))
 }
 
 pub fn emit(event: &TestEvent) -> io::Result<()> {
@@ -100,6 +107,9 @@ pub fn emit(event: &TestEvent) -> io::Result<()> {
     };
     let mut line = serde_json::to_vec(event).map_err(io::Error::other)?;
     line.push(b'\n');
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(&line)
 }
@@ -127,13 +137,29 @@ pub fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+#[doc(hidden)]
+pub fn field_value(value: impl Serialize) -> Value {
+    serde_json::to_value(value).unwrap_or_else(|error| {
+        Value::String(format!("<event field serialization failed: {error}>"))
+    })
+}
+
+fn pid_event_file_path(dir: &Path) -> PathBuf {
+    dir.join(format!("{}.jsonl", std::process::id()))
+}
+
+fn current_thread_name() -> Option<String> {
+    let thread = std::thread::current();
+    thread.name().map(ToOwned::to_owned)
+}
+
 #[macro_export]
 macro_rules! event {
     (level: $level:expr, target: $target:expr, $message:expr; $($key:literal => $value:expr),* $(,)?) => {{
         if $crate::enabled() {
             let mut fields = std::collections::BTreeMap::new();
             $(
-                fields.insert($key.to_string(), serde_json::json!($value));
+                fields.insert($key.to_string(), $crate::field_value(&$value));
             )*
             let _ = $crate::emit_with_fields(
                 $level,
@@ -163,7 +189,7 @@ macro_rules! event {
         if $crate::enabled() {
             let mut fields = std::collections::BTreeMap::new();
             $(
-                fields.insert($key.to_string(), serde_json::json!($value));
+                fields.insert($key.to_string(), $crate::field_value(&$value));
             )*
             let _ = $crate::emit_with_fields(
                 $crate::Level::Info,
@@ -218,9 +244,29 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
 
         assert!(json.contains("\"schema_version\":1"));
+        assert!(json.contains("\"pid\":"));
         assert!(json.contains("\"level\":\"info\""));
         assert!(json.contains("\"target\":\"artifact-cache\""));
         assert!(json.contains("\"message\":\"cache hit\""));
         assert!(json.contains("\"module\":\"demo::tests\""));
+    }
+
+    #[test]
+    fn event_target_directory_resolves_to_pid_file() {
+        let dir = std::env::temp_dir().join(format!("nextdeck-test-events-{}", std::process::id()));
+
+        assert_eq!(
+            pid_event_file_path(&dir),
+            dir.join(format!("{}.jsonl", std::process::id()))
+        );
+    }
+
+    #[test]
+    fn event_macro_field_values_do_not_move_callers_values() {
+        let key = String::from("abc");
+
+        event!("cache hit"; "key" => key);
+
+        assert_eq!(key, "abc");
     }
 }

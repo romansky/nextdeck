@@ -415,6 +415,38 @@ fn early_success_output_survives_empty_finished_event() {
 }
 
 #[test]
+fn inline_event_survives_finished_event_with_stdout() {
+    let mut tree = Tree::from_tests(vec![discovered_test(
+        "demo::demo",
+        "demo",
+        "tests",
+        "works",
+    )]);
+    let key = TestKey {
+        binary_id: Some("demo::demo".to_owned()),
+        event_prefix: Some("demo::demo".to_owned()),
+        name: "tests::works".to_owned(),
+    };
+    let mut event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Info, "hit");
+    event.thread = Some("tests::works".to_owned());
+
+    assert!(tree.append_test_event(&event, "[event info] cache: hit"));
+    tree.finish_test(
+        &key,
+        TestStatus::Failed,
+        "final stdout".to_owned(),
+        String::new(),
+        Some(std::time::Duration::from_millis(12)),
+    );
+    expand_all(&mut tree);
+    select_label(&mut tree, "works");
+
+    let output = tree.selected_output();
+    assert!(output.contains("[event info] cache: hit"));
+    assert!(output.contains("final stdout"));
+}
+
+#[test]
 fn appended_test_output_is_bounded() {
     let mut tree = Tree::from_tests(vec![discovered_test(
         "demo::demo",

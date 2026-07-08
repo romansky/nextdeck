@@ -220,6 +220,40 @@ fn manifest_refresh_drops_values_that_no_longer_match_spec() {
 }
 
 #[test]
+fn parameter_viewport_follows_selected_arg_lines() {
+    let mut state = XtaskState::default();
+    state.set_manifest(XtaskManifest {
+        schema_version: SCHEMA_VERSION,
+        commands: vec![XtaskCommandSpec {
+            name: "ship".to_owned(),
+            about: None,
+            args: (0..12)
+                .map(|index| XtaskArgSpec {
+                    name: format!("arg-{index}"),
+                    long: None,
+                    short: None,
+                    help: Some(format!("Argument {index}")),
+                    required: false,
+                    value: XtaskValueSpec::String { default: None },
+                })
+                .collect(),
+        }],
+    });
+    state.open_detail();
+    state.set_parameters_page_size(5);
+
+    for _ in 0..8 {
+        state.select_next_arg();
+    }
+
+    let (selected_line, _) = state.selected_parameter_line().expect("selected line");
+    let scroll = state.parameters_viewport.scroll();
+    assert!(scroll > 0);
+    assert!(selected_line >= scroll);
+    assert!(selected_line < scroll + state.parameters_viewport.page_size());
+}
+
+#[test]
 fn live_run_output_appends_while_running() {
     let mut state = XtaskState::default();
     let request_id = state.begin_run("cargo xtask release".to_owned());

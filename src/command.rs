@@ -293,7 +293,7 @@ const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         kind: CommandKind::OpenTestEvents,
-        group: CommandGroup::Runs,
+        group: CommandGroup::Global,
         keys: "e",
         label: "open test events",
         ticker: "events",
@@ -847,6 +847,9 @@ fn command_for_xtask_output(code: KeyCode, modifiers: KeyModifiers) -> AppComman
         KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
             AppCommand::ToggleOutputRegex
         }
+        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+            AppCommand::ClearOutputSearch
+        }
         KeyCode::Char('c') => AppCommand::ToggleOutputCaseSensitive,
         KeyCode::Char('o') => AppCommand::OpenOutput,
         _ => AppCommand::Noop,
@@ -893,6 +896,9 @@ fn command_for_test_event_output(code: KeyCode, modifiers: KeyModifiers) -> AppC
         KeyCode::Char('s') => AppCommand::ToggleOutputSnap,
         KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
             AppCommand::ToggleOutputRegex
+        }
+        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+            AppCommand::ClearOutputSearch
         }
         KeyCode::Char('c') => AppCommand::ToggleOutputCaseSensitive,
         KeyCode::Char('o') => AppCommand::OpenOutput,
@@ -991,10 +997,10 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) 
         KeyCode::Char('q') => AppCommand::Quit,
         code if is_stop_key(code, modifiers) => AppCommand::StopRun,
         code if is_help_key(code, modifiers) => AppCommand::ToggleHelp,
-        KeyCode::Char('u') => AppCommand::RefreshTests,
+        KeyCode::Char('u') if modifiers.is_empty() => AppCommand::RefreshTests,
         KeyCode::Char(',') => AppCommand::OpenSettings,
         KeyCode::Char('x') => AppCommand::OpenXtasks,
-        KeyCode::Char('e') if focus == CommandFocus::Tests => AppCommand::OpenTestEvents,
+        KeyCode::Char('e') => AppCommand::OpenTestEvents,
         KeyCode::Char('d') => AppCommand::RefreshDiskUsage,
         KeyCode::Char('D') => AppCommand::OpenDiskCleanup,
         KeyCode::Tab => AppCommand::ToggleFocus,
@@ -1010,7 +1016,7 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) 
         KeyCode::Char(']') => AppCommand::WidenTestsPane,
         _ => match focus {
             CommandFocus::Tests => command_for_tests_key(code),
-            CommandFocus::Output => command_for_output_key(code),
+            CommandFocus::Output => command_for_output_key(code, modifiers),
         },
     }
 }
@@ -1034,7 +1040,7 @@ fn command_for_tests_key(code: KeyCode) -> AppCommand {
     }
 }
 
-fn command_for_output_key(code: KeyCode) -> AppCommand {
+fn command_for_output_key(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
     match code {
         KeyCode::Char('/') => AppCommand::StartOutputSearch,
         KeyCode::Char('n') => AppCommand::FindNextOutputMatch,
@@ -1042,6 +1048,9 @@ fn command_for_output_key(code: KeyCode) -> AppCommand {
         KeyCode::Char('f') => AppCommand::ToggleOutputFilter,
         KeyCode::Char('s') => AppCommand::ToggleOutputSnap,
         KeyCode::Char('r') => AppCommand::ToggleOutputRegex,
+        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+            AppCommand::ClearOutputSearch
+        }
         KeyCode::Char('c') => AppCommand::ToggleOutputCaseSensitive,
         KeyCode::Char('o') => AppCommand::OpenOutput,
         _ => AppCommand::Noop,

@@ -13,6 +13,7 @@ pub const DEFAULT_STORAGE_LOW_SPACE_THRESHOLD_GB: u16 = 10;
 pub const MIN_STORAGE_LOW_SPACE_THRESHOLD_GB: u16 = 1;
 pub const MAX_STORAGE_LOW_SPACE_THRESHOLD_GB: u16 = 1024;
 pub const STORAGE_LOW_SPACE_THRESHOLD_STEP_GB: u16 = 1;
+pub const DEFAULT_OPEN_WITH_LABEL: &str = "env/default";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -23,6 +24,8 @@ pub enum TreeDurationMode {
 }
 
 impl TreeDurationMode {
+    pub const ALL: [Self; 2] = [Self::Wall, Self::Aggregate];
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::Wall => "wall",
@@ -52,6 +55,8 @@ pub enum ThemePreference {
 }
 
 impl ThemePreference {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Dark, Self::Light];
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::Auto => "auto",
@@ -112,7 +117,9 @@ impl AppSettings {
     }
 
     pub fn open_with_label(&self) -> &str {
-        self.open_with_command.as_deref().unwrap_or("env/default")
+        self.open_with_command
+            .as_deref()
+            .unwrap_or(DEFAULT_OPEN_WITH_LABEL)
     }
 
     pub fn storage_low_space_threshold_bytes(&self) -> u64 {

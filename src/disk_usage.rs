@@ -4,6 +4,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(unix)]
+use std::collections::HashSet;
+
 use crate::request::RequestId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -161,20 +164,73 @@ fn disk_roots(cwd: Option<PathBuf>) -> Result<Vec<(&'static str, PathBuf)>, Stri
 }
 
 fn dir_size(path: &Path) -> io::Result<u64> {
+    let mut seen = SeenFiles::default();
+    dir_size_with_seen(path, &mut seen)
+}
+
+fn dir_size_with_seen(path: &Path, seen: &mut SeenFiles) -> io::Result<u64> {
     let metadata = fs::symlink_metadata(path)?;
-    if metadata.is_file() {
-        return Ok(metadata.len());
-    }
-    if !metadata.is_dir() {
+    if !seen.should_count(&metadata) {
         return Ok(0);
     }
+    if !metadata.is_dir() {
+        return Ok(disk_usage_bytes(&metadata));
+    }
 
-    let mut total = 0;
+    let mut total = disk_usage_bytes(&metadata);
     for entry in fs::read_dir(path)? {
         let entry = entry?;
-        total += dir_size(&entry.path())?;
+        total += dir_size_with_seen(&entry.path(), seen)?;
     }
     Ok(total)
+}
+
+#[cfg(unix)]
+#[derive(Default)]
+struct SeenFiles {
+    hard_links: HashSet<FileId>,
+}
+
+#[cfg(unix)]
+type FileId = (u64, u64);
+
+#[cfg(unix)]
+impl SeenFiles {
+    fn should_count(&mut self, metadata: &fs::Metadata) -> bool {
+        use std::os::unix::fs::MetadataExt;
+
+        if metadata.is_dir() || metadata.nlink() <= 1 {
+            return true;
+        }
+        self.hard_links.insert((metadata.dev(), metadata.ino()))
+    }
+}
+
+#[cfg(not(unix))]
+#[derive(Default)]
+struct SeenFiles;
+
+#[cfg(not(unix))]
+impl SeenFiles {
+    fn should_count(&mut self, _metadata: &fs::Metadata) -> bool {
+        true
+    }
+}
+
+#[cfg(unix)]
+fn disk_usage_bytes(metadata: &fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+
+    metadata.blocks().saturating_mul(512)
+}
+
+#[cfg(not(unix))]
+fn disk_usage_bytes(metadata: &fs::Metadata) -> u64 {
+    if metadata.is_file() {
+        metadata.len()
+    } else {
+        0
+    }
 }
 
 #[cfg(unix)]
