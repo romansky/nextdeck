@@ -29,17 +29,10 @@ const fn settings_open_with_input_context() -> CommandContext {
     }
 }
 
-const fn custom_run_modal_context() -> CommandContext {
-    CommandContext {
-        input: InputMode::CustomRunModal,
-        overlay: Some(OverlayMode::CustomRun),
-    }
-}
-
 const fn custom_run_input_context() -> CommandContext {
     CommandContext {
         input: InputMode::CustomRunInput,
-        overlay: Some(OverlayMode::CustomRun),
+        overlay: Some(OverlayMode::TestDetails),
     }
 }
 
@@ -239,6 +232,22 @@ fn test_details_modal_maps_snapshot_key() {
         AppCommand::CaptureTestSnapshot
     );
     assert_eq!(
+        command_for_test_details_modal(KeyCode::Down),
+        AppCommand::CustomRunNext
+    );
+    assert_eq!(
+        command_for_test_details_modal(KeyCode::Left),
+        AppCommand::CustomRunAdjustLeft
+    );
+    assert_eq!(
+        command_for_test_details_modal(KeyCode::Char('e')),
+        AppCommand::CustomRunActivate
+    );
+    assert_eq!(
+        command_for_test_details_modal(KeyCode::Enter),
+        AppCommand::RunCustom
+    );
+    assert_eq!(
         command_for_test_details_modal(KeyCode::Esc),
         AppCommand::CloseTestDetails
     );
@@ -425,8 +434,8 @@ fn disk_cleanup_modal_uses_cleanup_commands() {
 }
 
 #[test]
-fn custom_run_modal_uses_custom_run_commands() {
-    let context = custom_run_modal_context();
+fn test_details_modal_uses_custom_run_commands() {
+    let context = test_details_modal_context();
     assert_eq!(
         command_for_input(
             &InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))),
@@ -459,7 +468,7 @@ fn custom_run_modal_uses_custom_run_commands() {
             &InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
             context
         ),
-        AppCommand::CloseCustomRun
+        AppCommand::CloseTestDetails
     );
 }
 
@@ -670,7 +679,7 @@ fn xtask_input_accepts_text_and_commit() {
 }
 
 #[test]
-fn test_details_modal_closes_on_escape_only() {
+fn test_details_modal_routes_run_options_and_close_keys() {
     let context = test_details_modal_context();
     let event = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
     assert_eq!(
@@ -678,10 +687,23 @@ fn test_details_modal_closes_on_escape_only() {
         AppCommand::CloseTestDetails
     );
 
-    for code in [KeyCode::Enter, KeyCode::Char('q'), KeyCode::Down] {
-        let event = InputEvent::Terminal(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
-        assert_eq!(command_for_input(&event, context), AppCommand::Noop);
-    }
+    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+    assert_eq!(
+        command_for_input(&event, context),
+        AppCommand::CustomRunNext
+    );
+
+    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(command_for_input(&event, context), AppCommand::RunCustom);
+
+    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('q'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(command_for_input(&event, context), AppCommand::Noop);
 }
 
 #[test]
@@ -739,7 +761,7 @@ fn output_focus_uses_output_search_commands() {
 #[test]
 fn command_metadata_drives_ticker_labels() {
     assert_eq!(AppCommand::RunSelected.ticker_label(), Some("run"));
-    assert_eq!(AppCommand::OpenCustomRun.ticker_label(), Some("custom run"));
+    assert_eq!(AppCommand::OpenCustomRun.ticker_label(), Some("run-custom"));
     assert_eq!(AppCommand::ToggleOutputRegex.ticker_label(), Some("regex"));
     assert_eq!(AppCommand::CloseHelp.ticker_label(), Some("close help"));
 }

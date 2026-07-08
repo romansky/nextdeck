@@ -14,11 +14,11 @@ use crate::{
     config,
     custom_run::{CustomRunField, CustomRunFilter, CustomRunState},
     disk_usage::{StorageHealth, format_bytes, format_timestamp_utc},
-    nextest::{manual_run_command, manual_test_command},
     output_pane::{
         OutputPaneState, OutputSearchState, OutputView, SearchModalFocus,
         output_render_scroll_for_count,
     },
+    parameter_list::{ParameterList, ParameterListRow, ParameterListStyles},
     settings::SettingsField,
     symbols::bool_symbol,
     test_events::{TestEventRunLog, TestEventsFocus, TestEventsState},
@@ -65,19 +65,13 @@ const XTASK_COMMAND_NAME_MAX_WIDTH: usize = 30;
 const FIELD_HINT_VALUE_COLUMN_WIDTH: usize = 18;
 const FIELD_HINT_MIN_COLUMN_WIDTH: usize = 6;
 const FIELD_HINT_GAP_WIDTH: usize = 2;
-const FIELD_VALUE_GAP_WIDTH: usize = 1;
 const SELECTABLE_FIELD_PREFIX_WIDTH: usize = 2;
 const CUSTOM_RUN_FIELD_LABEL_WIDTH: usize = 15;
 const XTASK_PARAM_LABEL_MAX_WIDTH: usize = 24;
 const XTASK_PARAM_LABEL_MIN_WIDTH: usize = 6;
 const SETTINGS_FIELD_LABEL_WIDTH: usize = 13;
 const DETAIL_FIELD_LABEL_WIDTH: usize = 9;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FieldHintPlacement {
-    Inline,
-    Below,
-}
+const TEST_DETAILS_RUN_CONTENT_WIDTH: usize = 82;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AutoColumn {
@@ -217,7 +211,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
             draw_output_search_modal(frame, app.active_output_search(), theme);
         }
         Some(OverlayMode::DiskCleanup) => draw_disk_cleanup_modal(frame, app, theme),
-        Some(OverlayMode::CustomRun) => draw_custom_run_modal(frame, app, theme),
         Some(OverlayMode::Xtasks) => draw_xtasks_modal(frame, app, theme),
         Some(OverlayMode::TestEvents) => draw_test_events_modal(frame, app, theme),
         Some(OverlayMode::TestDetails) => draw_test_details_modal(frame, app, theme),
@@ -323,6 +316,10 @@ fn selectable_field_value_width(content_width: usize, label_width: usize, has_hi
     }
 }
 
+fn parameter_value_width(content_width: usize, label_width: usize) -> usize {
+    content_width.saturating_sub(SELECTABLE_FIELD_PREFIX_WIDTH + label_width + 1)
+}
+
 fn selectable_field_line(
     marker: &str,
     label: &str,
@@ -348,64 +345,6 @@ fn selectable_field_line(
     }
 
     Line::from(spans)
-}
-
-struct SelectableFieldRow<'a> {
-    marker: &'a str,
-    label: &'a str,
-    label_width: usize,
-    value: &'a str,
-    hint: Option<&'a str>,
-    style: Style,
-    hint_style: Style,
-    content_width: usize,
-}
-
-fn selectable_parameter_lines(
-    row: SelectableFieldRow<'_>,
-    hint_placement: FieldHintPlacement,
-) -> Vec<Line<'static>> {
-    if hint_placement == FieldHintPlacement::Inline {
-        return vec![selectable_field_line(
-            row.marker,
-            row.label,
-            row.label_width,
-            row.value,
-            row.hint,
-            row.style,
-            row.hint_style,
-            row.content_width,
-        )];
-    }
-
-    let prefix_width = SELECTABLE_FIELD_PREFIX_WIDTH + row.label_width + FIELD_VALUE_GAP_WIDTH;
-    let value_width = row.content_width.saturating_sub(prefix_width);
-    let mut lines = vec![Line::from(vec![
-        Span::styled(
-            format!(
-                "{} {:<width$}{}",
-                row.marker,
-                row.label,
-                " ".repeat(FIELD_VALUE_GAP_WIDTH),
-                width = row.label_width
-            ),
-            row.style,
-        ),
-        Span::styled(
-            fit_line_prefix(row.value.trim_end(), value_width),
-            row.style,
-        ),
-    ])];
-
-    if let Some(hint) = row.hint {
-        let hint_width = row.content_width.saturating_sub(prefix_width);
-        lines.push(Line::from(vec![
-            Span::raw(" ".repeat(prefix_width)),
-            Span::styled(fit_line_prefix(hint, hint_width), row.hint_style),
-        ]));
-    }
-
-    lines
 }
 
 fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
@@ -466,7 +405,7 @@ fn draw_discovery_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
 }
 
 fn draw_test_details_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
-    let area = centered_rect(74, 72, frame.area());
+    let area = centered_rect(86, 88, frame.area());
     draw_modal_lines(
         frame,
         theme,
@@ -480,14 +419,17 @@ fn draw_test_details_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
 }
 
 fn test_details_actions(app: &App) -> &'static str {
+    if app.custom_run.editing.is_some() {
+        return "[enter]save [esc]cancel";
+    }
     if app
         .tree
         .selected_node()
         .is_some_and(|node| matches!(node.kind, NodeKind::Test(_)))
     {
-        "[s]snapshot [esc]close"
+        "[up/down]option [left/right]change [e]edit [r/enter]run [s]snapshot [esc]close"
     } else {
-        "[esc]close"
+        "[up/down]option [left/right]change [e]edit [r/enter]run [esc]close"
     }
 }
 
@@ -645,81 +587,50 @@ fn draw_disk_cleanup_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     );
 }
 
-fn draw_custom_run_modal(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
-    let area = centered_rect(88, 82, frame.area());
-    draw_modal_lines(
-        frame,
-        theme,
-        area,
-        ModalChrome {
-            title: "Custom Run",
-            actions: Some(custom_run_actions(&app.custom_run)),
-        },
-        custom_run_modal_lines(app, theme, area.width.saturating_sub(4) as usize),
-    );
-}
-
-fn custom_run_modal_lines(app: &App, theme: &Theme, content_width: usize) -> Vec<Line<'static>> {
-    let mut lines = custom_run_lines(&app.custom_run, theme, content_width);
-    lines.push(Line::from(""));
-    lines.push(Line::styled("Command", theme.title(false)));
-    match app.custom_run_command_preview() {
-        Ok(command) => lines.push(Line::styled(
-            fit_line_prefix(&command, content_width),
-            theme.accent(),
-        )),
-        Err(error) => lines.push(Line::styled(error, theme.danger())),
-    }
-    lines
-}
-
 fn custom_run_lines(
     custom_run: &CustomRunState,
     theme: &Theme,
     content_width: usize,
 ) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for field in CustomRunField::ALL {
-        lines.extend(custom_run_field_lines(
-            custom_run,
-            field,
-            theme,
-            content_width,
-        ));
+    let label_width = CUSTOM_RUN_FIELD_LABEL_WIDTH;
+    let value_width = parameter_value_width(content_width, label_width);
+    let rows = custom_run_parameter_rows(custom_run, theme, value_width);
+    ParameterList {
+        rows: &rows,
+        label_width,
+        content_width,
+        styles: ParameterListStyles {
+            hint: theme.muted(),
+            details: theme.muted(),
+            empty_value: theme.warning(),
+        },
     }
-    lines
+    .render()
 }
 
-fn custom_run_field_lines(
+fn custom_run_parameter_rows(
     custom_run: &CustomRunState,
-    field: CustomRunField,
     theme: &Theme,
-    content_width: usize,
-) -> Vec<Line<'static>> {
-    let selected = custom_run.selected == field;
-    let marker = if selected { ">" } else { " " };
-    let style = if selected {
-        theme.selected()
-    } else {
-        theme.text()
-    };
-    let hint = custom_run_options_hint(custom_run, field);
-    let value_width =
-        selectable_field_value_width(content_width, CUSTOM_RUN_FIELD_LABEL_WIDTH, hint.is_some());
-    let value = custom_run_value(custom_run, field, value_width);
-    selectable_parameter_lines(
-        SelectableFieldRow {
-            marker,
-            label: field.label(),
-            label_width: CUSTOM_RUN_FIELD_LABEL_WIDTH,
-            value: &value,
-            hint: hint.as_deref(),
-            style,
-            hint_style: theme.muted(),
-            content_width,
-        },
-        FieldHintPlacement::Inline,
-    )
+    value_width: usize,
+) -> Vec<ParameterListRow> {
+    CustomRunField::ALL
+        .into_iter()
+        .map(|field| {
+            let selected = custom_run.selected == field;
+            ParameterListRow {
+                marker: if selected { ">" } else { " " }.to_owned(),
+                label: field.label().to_owned(),
+                value: custom_run_value(custom_run, field, value_width),
+                hint: None,
+                details: Some(custom_run_option_details(custom_run, field)),
+                style: if selected {
+                    theme.selected()
+                } else {
+                    theme.text()
+                },
+            }
+        })
+        .collect()
 }
 
 fn custom_run_value(
@@ -773,7 +684,7 @@ fn custom_run_value(
             .clone()
             .unwrap_or_else(|| "off".to_owned()),
     };
-    fit_line_prefix(&value, value_width)
+    value
 }
 
 fn custom_run_filter_value(custom_run: &CustomRunState) -> String {
@@ -795,51 +706,59 @@ fn optional_value(value: Option<u32>) -> String {
         .unwrap_or_else(|| "profile".to_owned())
 }
 
-fn custom_run_options_hint(custom_run: &CustomRunState, field: CustomRunField) -> Option<String> {
-    let hint = match field {
-        CustomRunField::Scope => "selected, workspace, failed".to_owned(),
-        CustomRunField::Profile => custom_run
-            .run_config
-            .profiles
-            .iter()
-            .map(|profile| profile.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
-        CustomRunField::Filterset => {
-            if custom_run.run_config.filter_presets.is_empty() {
-                "none, custom".to_owned()
+fn custom_run_option_details(custom_run: &CustomRunState, field: CustomRunField) -> String {
+    let details = match field {
+        CustomRunField::Scope => {
+            "options: selected, workspace, failed; default: selected".to_owned()
+        }
+        CustomRunField::Profile => {
+            let profiles = custom_run
+                .run_config
+                .profiles
+                .iter()
+                .map(|profile| profile.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let profiles = if profiles.trim().is_empty() {
+                "default"
             } else {
-                let mut options = vec!["none".to_owned()];
-                options.extend(
-                    custom_run
-                        .run_config
-                        .filter_presets
-                        .iter()
-                        .map(|preset| preset.name().to_owned()),
-                );
+                profiles.as_str()
+            };
+            format!("profiles: {profiles}; default: default")
+        }
+        CustomRunField::Filterset => {
+            let mut options = vec!["none".to_owned()];
+            options.extend(
+                custom_run
+                    .run_config
+                    .filter_presets
+                    .iter()
+                    .map(|preset| preset.name().to_owned()),
+            );
+            if matches!(custom_run.filter, CustomRunFilter::Custom(_)) {
                 options.push("custom".to_owned());
-                options.join(", ")
+                format!("options: {}; default: none", options.join(", "))
+            } else {
+                format!("options: {}; [e] custom; default: none", options.join(", "))
             }
         }
-        CustomRunField::Ignored => "default, only ignored, all".to_owned(),
-        CustomRunField::Retries => "profile, 0..10".to_owned(),
-        CustomRunField::FlakyResult => "profile, pass, fail".to_owned(),
-        CustomRunField::FailFast => "profile, on, off".to_owned(),
-        CustomRunField::NoCapture => "off, on".to_owned(),
-        CustomRunField::MaxFail
-        | CustomRunField::Debugger
-        | CustomRunField::StressCount
-        | CustomRunField::StressDuration => return None,
+        CustomRunField::Ignored => {
+            "options: default, only ignored, all; default: default".to_owned()
+        }
+        CustomRunField::Retries => "options: profile, 0..10; default: profile".to_owned(),
+        CustomRunField::FlakyResult => "options: profile, pass, fail; default: profile".to_owned(),
+        CustomRunField::FailFast => "options: profile, on, off; default: profile".to_owned(),
+        CustomRunField::MaxFail => {
+            "options: profile, 0..20; [e] custom; default: profile".to_owned()
+        }
+        CustomRunField::NoCapture => "options: off, on; default: off".to_owned(),
+        CustomRunField::Debugger => {
+            "options: off, rust-lldb --args; [e] custom; default: off".to_owned()
+        }
+        CustomRunField::StressCount => "options: off, 0..100; [e] custom; default: off".to_owned(),
+        CustomRunField::StressDuration => "options: off, 30s; [e] custom; default: off".to_owned(),
     };
-    (!hint.is_empty()).then_some(format!("# {hint}"))
-}
-
-fn custom_run_actions(custom_run: &CustomRunState) -> &'static str {
-    if custom_run.editing.is_some() {
-        "[enter]save [esc]cancel"
-    } else {
-        "[up/down]select [left/right]change [e]edit [enter]run [esc]close"
-    }
+    format!("# {details}")
 }
 
 fn disk_cleanup_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
@@ -1208,62 +1127,86 @@ fn xtask_param_lines(
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(command) = xtasks.selected_command() {
-        let manual = xtasks
-            .run_request()
-            .map(|request| request.command_line())
-            .unwrap_or_else(|error| error.to_string());
-        lines.push(Line::styled(
-            fit_line_prefix(&format!("Command: {}", command.name), content_width),
-            theme.title(false),
-        ));
-        if let Some(about) = &command.about {
+        if command.args.is_empty() {
+            lines.push(Line::styled("No parameters.", theme.muted()));
+        } else {
+            let label_width = xtask_param_label_width(command, content_width);
+            let value_width = parameter_value_width(content_width, label_width);
+            let rows = xtask_parameter_rows(xtasks, command, focused, value_width, theme);
+            lines.extend(
+                ParameterList {
+                    rows: &rows,
+                    label_width,
+                    content_width,
+                    styles: ParameterListStyles {
+                        hint: theme.muted(),
+                        details: theme.muted(),
+                        empty_value: theme.warning(),
+                    },
+                }
+                .render(),
+            );
+        }
+
+        lines.push(Line::from(""));
+        if let Some(about) = command
+            .about
+            .as_deref()
+            .map(str::trim)
+            .filter(|about| !about.is_empty())
+        {
             lines.push(Line::styled(
                 fit_line_prefix(about, content_width),
                 theme.text(),
             ));
         }
+        let manual = xtasks
+            .run_request()
+            .map(|request| request.command_line())
+            .unwrap_or_else(|error| error.to_string());
         lines.push(Line::styled(
             fit_line_prefix(&manual, content_width),
-            theme.muted(),
+            theme.accent(),
         ));
-        lines.push(Line::from(""));
-        if command.args.is_empty() {
-            lines.push(Line::styled("No parameters.", theme.muted()));
-        } else {
-            let label_width = xtask_param_label_width(command, content_width);
-            let value_width =
-                content_width.saturating_sub(SELECTABLE_FIELD_PREFIX_WIDTH + label_width);
-            for (index, arg) in command.args.iter().enumerate() {
-                let selected = index == xtasks.selected_arg;
-                let active = focused && selected;
-                let marker = if selected { ">" } else { " " };
-                let style = if active {
-                    theme.selected()
-                } else {
-                    theme.text()
-                };
-                let value =
-                    xtask_arg_value_text(xtasks, &command.name, &arg.name, selected, value_width);
-                let label = fit_line_prefix(&arg.flag(), label_width);
-                let hint = xtask_arg_hint(arg);
-                lines.extend(selectable_parameter_lines(
-                    SelectableFieldRow {
-                        marker,
-                        label: &label,
-                        label_width,
-                        value: &value,
-                        hint: hint.as_deref(),
-                        style,
-                        hint_style: theme.muted(),
-                        content_width,
-                    },
-                    FieldHintPlacement::Below,
-                ));
-            }
-        }
     }
 
     lines
+}
+
+fn xtask_parameter_rows(
+    xtasks: &XtaskState,
+    command: &XtaskCommandSpec,
+    focused: bool,
+    value_width: usize,
+    theme: &Theme,
+) -> Vec<ParameterListRow> {
+    command
+        .args
+        .iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            let selected = index == xtasks.selected_arg;
+            let active = focused && selected;
+            ParameterListRow {
+                marker: if selected { ">" } else { " " }.to_owned(),
+                label: arg.flag(),
+                value: xtask_arg_value_text(
+                    xtasks,
+                    &command.name,
+                    &arg.name,
+                    selected,
+                    value_width,
+                ),
+                hint: xtask_arg_hint(arg),
+                details: Some(xtask_arg_details(arg)),
+                style: if active {
+                    theme.selected()
+                } else {
+                    theme.text()
+                },
+            }
+        })
+        .collect()
 }
 
 fn xtask_param_label_width(command: &XtaskCommandSpec, content_width: usize) -> usize {
@@ -1339,44 +1282,32 @@ fn xtask_arg_value_text(
         .unwrap_or_default()
 }
 
-fn xtask_arg_kind(value: &XtaskValueSpec) -> &'static str {
-    match value {
-        XtaskValueSpec::Bool { .. } => "bool",
-        XtaskValueSpec::Number { .. } => "number",
-        XtaskValueSpec::String { .. } => "string",
-        XtaskValueSpec::Enum { .. } => "enum",
-    }
-}
-
 fn xtask_arg_hint(arg: &XtaskArgSpec) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(options) = xtask_arg_known_options(&arg.value) {
-        parts.push(format!("# {options}"));
-    }
-
-    let mut metadata = vec![xtask_arg_kind(&arg.value).to_owned()];
-    if arg.required {
-        metadata.push("required".to_owned());
-    }
-    parts.push(metadata.join(", "));
-
-    if let Some(help) = arg
-        .help
+    arg.help
         .as_deref()
         .map(str::trim)
         .filter(|help| !help.is_empty())
-    {
-        parts.push(help.to_owned());
-    }
-
-    (!parts.is_empty()).then_some(parts.join("  "))
+        .map(|help| format!("# {help}"))
 }
 
-fn xtask_arg_known_options(value: &XtaskValueSpec) -> Option<String> {
-    match value {
-        XtaskValueSpec::Bool { .. } => Some("off, on".to_owned()),
-        XtaskValueSpec::Enum { values, .. } => Some(values.join(", ")),
-        XtaskValueSpec::Number { .. } | XtaskValueSpec::String { .. } => None,
+fn xtask_arg_details(arg: &XtaskArgSpec) -> String {
+    match &arg.value {
+        XtaskValueSpec::Bool { default } => {
+            format!("# bool: off, on (default: {})", on_off(*default))
+        }
+        XtaskValueSpec::Number {
+            default: Some(default),
+        } => {
+            format!("# number default: {default}")
+        }
+        XtaskValueSpec::Number { default: None } => "# number".to_owned(),
+        XtaskValueSpec::String {
+            default: Some(default),
+        } if !default.trim().is_empty() => {
+            format!("# string default: {default}")
+        }
+        XtaskValueSpec::String { .. } => "# string".to_owned(),
+        XtaskValueSpec::Enum { values, .. } => format!("# enum: {}", values.join(", ")),
     }
 }
 
@@ -1767,16 +1698,18 @@ fn test_details_modal_lines(app: &App, theme: &Theme) -> Vec<Line<'static>> {
         }
     }
 
-    lines.extend([
-        Line::from(""),
-        Line::styled("Manual", theme.title(true)),
-        detail_line(
-            "cargo",
-            selected_manual_command(app, node),
-            theme.accent(),
-            theme,
-        ),
-    ]);
+    lines.push(Line::from(""));
+    lines.push(Line::styled("Run", theme.title(true)));
+    lines.extend(custom_run_lines(
+        &app.custom_run,
+        theme,
+        TEST_DETAILS_RUN_CONTENT_WIDTH,
+    ));
+    lines.push(Line::from(""));
+    match app.custom_run_command_preview() {
+        Ok(command) => lines.push(Line::styled(command, theme.accent())),
+        Err(error) => lines.push(Line::styled(error, theme.danger())),
+    }
     lines
 }
 
@@ -1800,14 +1733,6 @@ fn status_counts_label(counts: crate::state::StatusCounts) -> String {
         counts.ignored,
         counts.skipped
     )
-}
-
-fn selected_manual_command(app: &App, node: &TestNode) -> String {
-    if let NodeKind::Test(test) = &node.kind {
-        manual_test_command(test)
-    } else {
-        manual_run_command(&app.selected_scope())
-    }
 }
 
 fn bool_label(value: bool) -> &'static str {
@@ -2172,17 +2097,21 @@ fn highlighted_output_line(
         Ok(ranges) if !ranges.is_empty() => ranges,
         _ => return Line::styled(line.to_owned(), theme.text()),
     };
-    let match_style = if search.current_line == Some(source_line) {
-        theme.active_search_match()
-    } else {
-        theme.search_match()
-    };
     let mut spans = Vec::new();
     let mut cursor = 0;
     for (start, end) in ranges {
         if start > cursor {
             spans.push(Span::styled(line[cursor..start].to_owned(), theme.text()));
         }
+        let match_style = if search.current_line == Some(source_line)
+            && search
+                .current_range
+                .is_none_or(|range| range == (start, end))
+        {
+            theme.active_search_match()
+        } else {
+            theme.search_match()
+        };
         spans.push(Span::styled(line[start..end].to_owned(), match_style));
         cursor = end;
     }

@@ -50,6 +50,43 @@ fn finds_next_and_previous_matches() {
 }
 
 #[test]
+fn finds_next_match_occurrences_on_same_line() {
+    let mut search = OutputSearchState {
+        query: "case".to_owned(),
+        ..OutputSearchState::default()
+    };
+
+    let first = search
+        .next_match("case_1 case_2\nother", SearchDirection::Next)
+        .expect("valid search")
+        .expect("match");
+    assert_eq!(
+        (first.line, first.start, first.end, first.index, first.total),
+        (0, 0, 4, 0, 2)
+    );
+
+    search.set_current_match(first);
+    let second = search
+        .next_match("case_1 case_2\nother", SearchDirection::Next)
+        .expect("valid search")
+        .expect("match");
+    assert_eq!(
+        (
+            second.line,
+            second.start,
+            second.end,
+            second.index,
+            second.total
+        ),
+        (0, 7, 11, 1, 2)
+    );
+    assert_eq!(search.match_summary("case_1 case_2\nother"), Some((1, 2)));
+
+    search.set_current_match(second);
+    assert_eq!(search.match_summary("case_1 case_2\nother"), Some((2, 2)));
+}
+
+#[test]
 fn search_box_view_is_fixed_width_and_marks_active_input() {
     let search = OutputSearchState {
         draft_query: "panic".to_owned(),

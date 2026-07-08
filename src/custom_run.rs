@@ -8,7 +8,6 @@ use crate::{
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CustomRunState {
-    pub modal_open: bool,
     pub selected: CustomRunField,
     pub editing: Option<CustomRunEditField>,
     pub input: InputField,
@@ -64,7 +63,6 @@ pub enum CustomRunEditField {
 impl Default for CustomRunState {
     fn default() -> Self {
         Self {
-            modal_open: false,
             selected: CustomRunField::Scope,
             editing: None,
             input: InputField::default(),
@@ -91,13 +89,11 @@ impl CustomRunState {
     }
 
     pub fn open(&mut self) {
-        self.modal_open = true;
         self.editing = None;
         self.selected = CustomRunField::Scope;
     }
 
     pub fn close(&mut self) {
-        self.modal_open = false;
         self.editing = None;
     }
 

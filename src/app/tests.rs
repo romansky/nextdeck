@@ -104,6 +104,24 @@ fn command_context_uses_test_details_modal_when_open() {
 }
 
 #[test]
+fn command_context_uses_custom_run_input_inside_test_details() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+
+    app.show_test_details = true;
+    app.custom_run.next_field();
+    app.custom_run.next_field();
+    app.custom_run.begin_edit_selected();
+
+    assert_eq!(
+        app.command_context(),
+        CommandContext {
+            input: InputMode::CustomRunInput,
+            overlay: Some(OverlayMode::TestDetails),
+        }
+    );
+}
+
+#[test]
 fn command_context_distinguishes_settings_browsing_from_text_input() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
 
@@ -870,7 +888,7 @@ fn custom_run_opens_and_runs_selected_scope_with_options() {
         app.apply_command(AppCommand::OpenCustomRun),
         AppEffect::None
     );
-    assert!(app.custom_run.modal_open);
+    assert!(app.show_test_details);
     app.custom_run.options.no_capture = true;
 
     let effect = app.apply_command(AppCommand::RunCustom);
@@ -882,7 +900,23 @@ fn custom_run_opens_and_runs_selected_scope_with_options() {
         }
         other => panic!("unexpected effect: {other:?}"),
     }
-    assert!(!app.custom_run.modal_open);
+    assert!(!app.show_test_details);
+}
+
+#[test]
+fn custom_run_defaults_selected_ignored_test_to_run_ignored_only() {
+    let mut tests = test_rows(1);
+    tests[0].ignored = true;
+    let mut app = app_with_tree(Tree::from_tests(tests));
+    expand_all(&mut app.tree.root);
+    app.tree.select_next();
+    app.tree.select_next();
+    app.tree.select_next();
+
+    let request = app.custom_run_request().expect("custom run request");
+
+    assert_eq!(request.options.ignored, RunIgnored::Only);
+    assert!(matches!(request.scope, RunScope::Test(_)));
 }
 
 #[test]
@@ -894,7 +928,7 @@ fn custom_run_debugger_requires_single_test_scope() {
     assert_eq!(app.apply_command(AppCommand::RunCustom), AppEffect::None);
 
     assert_eq!(app.status, "Debugger requires a single selected test");
-    assert!(app.custom_run.modal_open);
+    assert!(app.show_test_details);
 }
 
 #[test]
@@ -1123,19 +1157,55 @@ fn output_find_next_and_previous_scroll_to_matching_lines() {
 
     app.apply_command(AppCommand::FindNextOutputMatch);
 
-    assert_eq!(app.main_output.scroll, 1);
+    assert_eq!(app.main_output.scroll, 0);
     assert_eq!(app.main_output.search.current_line, Some(1));
     assert!(!app.main_output.follow);
 
     app.apply_command(AppCommand::FindNextOutputMatch);
 
-    assert_eq!(app.main_output.scroll, 3);
+    assert_eq!(app.main_output.scroll, 2);
     assert_eq!(app.main_output.search.current_line, Some(3));
 
     app.apply_command(AppCommand::FindPreviousOutputMatch);
 
     assert_eq!(app.main_output.scroll, 1);
     assert_eq!(app.main_output.search.current_line, Some(1));
+}
+
+#[test]
+fn output_find_reveals_match_with_scrolloff_context() {
+    let mut app = app_with_finished_output(
+        "line0\nline1\nline2\nline3\nline4\nline5\nline6\nneedle\nline8",
+        "",
+    );
+    app.main_output.search.query = "needle".to_owned();
+    app.main_output.page_size = 6;
+
+    app.apply_command(AppCommand::FindNextOutputMatch);
+
+    assert_eq!(app.main_output.search.current_line, Some(7));
+    assert_eq!(app.main_output.scroll, 3);
+}
+
+#[test]
+fn output_find_next_steps_between_matches_on_same_line() {
+    let mut app = app_with_finished_output("zero\nmatch one match two\nskip", "");
+    app.main_output.search.query = "match".to_owned();
+    app.main_output.page_size = 2;
+
+    app.apply_command(AppCommand::FindNextOutputMatch);
+
+    assert_eq!(app.main_output.scroll, 0);
+    assert_eq!(app.main_output.search.current_line, Some(1));
+    assert_eq!(app.main_output.search.current_range, Some((0, 5)));
+    assert!(app.status.contains("1/2"));
+
+    app.apply_command(AppCommand::FindNextOutputMatch);
+
+    assert_eq!(app.main_output.scroll, 0);
+    assert_eq!(app.main_output.search.current_line, Some(1));
+    assert_eq!(app.main_output.search.current_range, Some((10, 15)));
+    assert!(app.status.contains("2/2"));
 }
 
 #[test]

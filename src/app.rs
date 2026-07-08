@@ -3,14 +3,14 @@ use std::time::{Duration, Instant};
 use crate::{
     command::{AppCommand, CommandContext, CommandFocus, InputMode, OverlayMode},
     config::{self, AppSettings, STORAGE_LOW_SPACE_THRESHOLD_STEP_GB, TREE_WIDTH_STEP_PERCENT},
-    custom_run::CustomRunState,
+    custom_run::{CustomRunScope, CustomRunState},
     disk_usage::{DiskCleanupState, DiskUsageSnapshot, DiskUsageState},
     editor::SourceLocation,
     git_status::GitStatus,
     input_field::InputFieldInput,
     nextest::{
-        DiscoveryEvent, DiscoveryOutput, RunEvent, RunRequest, RunScope, TargetSelector,
-        TestSelector, manual_run_request_command,
+        DiscoveryEvent, DiscoveryOutput, RunEvent, RunIgnored, RunRequest, RunScope,
+        TargetSelector, TestSelector, manual_run_request_command,
     },
     output_pane::{
         OutputPaneState, OutputSearchState, OutputView, SearchDirection, SearchEditorInput,
@@ -286,8 +286,6 @@ impl App {
             Some(OverlayMode::Settings)
         } else if self.disk_cleanup.modal_open {
             Some(OverlayMode::DiskCleanup)
-        } else if self.custom_run.modal_open {
-            Some(OverlayMode::CustomRun)
         } else if self.xtasks.modal_open {
             Some(OverlayMode::Xtasks)
         } else if self.test_events.modal_open {
@@ -308,10 +306,6 @@ impl App {
             Some(OverlayMode::Settings) if self.global_settings.open_with_editing => {
                 InputMode::SettingsOpenWith
             }
-            Some(OverlayMode::CustomRun) if self.custom_run.editing.is_some() => {
-                InputMode::CustomRunInput
-            }
-            Some(OverlayMode::CustomRun) => InputMode::CustomRunModal,
             Some(OverlayMode::Settings) => InputMode::SettingsModal,
             Some(OverlayMode::DiskCleanup) => InputMode::DiskCleanupModal,
             Some(OverlayMode::Xtasks) if self.xtasks.output.search.modal_open => {
@@ -333,6 +327,9 @@ impl App {
             }
             Some(OverlayMode::TestEvents) => InputMode::TestEventsModal(self.test_events.focus),
             Some(OverlayMode::OutputSearch) => InputMode::OutputSearchModal,
+            Some(OverlayMode::TestDetails) if self.custom_run.editing.is_some() => {
+                InputMode::CustomRunInput
+            }
             Some(OverlayMode::TestDetails) => InputMode::TestDetailsModal,
             Some(OverlayMode::Discovery) => InputMode::DiscoveryRunning,
             Some(OverlayMode::DiscoveryError) => InputMode::Normal(CommandFocus::Output),
@@ -782,10 +779,6 @@ impl App {
                 self.open_custom_run();
                 AppEffect::None
             }
-            AppCommand::CloseCustomRun => {
-                self.close_custom_run();
-                AppEffect::None
-            }
             AppCommand::CustomRunNext => {
                 self.custom_run.next_field();
                 AppEffect::None
@@ -1199,12 +1192,14 @@ impl App {
             self.status = "No selection".to_owned();
             return;
         }
+        self.custom_run.cancel_edit();
         self.show_test_details = true;
         self.status = "Details opened".to_owned();
     }
 
     pub fn close_test_details(&mut self) {
         self.show_test_details = false;
+        self.custom_run.close();
         self.status = "Test details closed".to_owned();
     }
 
@@ -1340,8 +1335,20 @@ impl App {
     }
 
     pub fn custom_run_request(&self) -> Result<RunRequest, String> {
-        self.custom_run
-            .build_request(self.selected_scope(), self.failed_scope())
+        let mut request = self
+            .custom_run
+            .build_request(self.selected_scope(), self.failed_scope())?;
+        if matches!(self.custom_run.scope, CustomRunScope::Selected)
+            && matches!(request.scope, RunScope::Test(_))
+            && matches!(request.options.ignored, RunIgnored::Default)
+            && self
+                .tree
+                .selected_node()
+                .is_some_and(|node| matches!(&node.kind, NodeKind::Test(test) if test.ignored))
+        {
+            request.options.ignored = RunIgnored::Only;
+        }
+        Ok(request)
     }
 
     pub fn custom_run_command_preview(&self) -> Result<String, String> {
@@ -1500,12 +1507,8 @@ impl App {
             return;
         }
         self.custom_run.open();
-        self.status = "Custom run opened".to_owned();
-    }
-
-    fn close_custom_run(&mut self) {
-        self.custom_run.close();
-        self.status = "Custom run closed".to_owned();
+        self.show_test_details = true;
+        self.status = "Run options opened".to_owned();
     }
 
     fn run_custom_effect(&mut self) -> AppEffect {
@@ -1520,6 +1523,7 @@ impl App {
         match self.custom_run_request() {
             Ok(request) => {
                 self.custom_run.close();
+                self.show_test_details = false;
                 AppEffect::StartRun(request)
             }
             Err(error) => {
@@ -1864,7 +1868,7 @@ impl App {
                 search.sync_draft_from_applied();
                 search.clear_draft();
                 search.apply_draft();
-                search.current_line = None;
+                search.clear_current_match();
                 false
             }
         };
@@ -1894,23 +1898,24 @@ impl App {
 
     fn apply_output_search(&mut self) {
         let output = self.active_output_pane();
-        let (query_empty, previous_current_line) = {
+        let (query_empty, previous_current_match) = {
             let search = &mut self.output_state_mut(output).search;
-            let previous_current_line = search.current_line;
+            let previous_current_match =
+                search.current_line.map(|line| (line, search.current_range));
             search.apply_draft();
             search.input_active = false;
             search.modal_open = false;
             if search.query.is_empty() {
-                search.current_line = None;
+                search.clear_current_match();
             }
-            (search.query.is_empty(), previous_current_line)
+            (search.query.is_empty(), previous_current_match)
         };
         if query_empty {
             self.reset_output_scroll(output);
             self.disable_output_snap(output);
             self.status = "Output search cleared".to_owned();
         } else {
-            self.select_output_match_after_apply(output, previous_current_line);
+            self.select_output_match_after_apply(output, previous_current_match);
         }
     }
 
@@ -1984,7 +1989,7 @@ impl App {
             let search = &mut self.output_state_mut(output).search;
             search.regex = !search.regex;
             search.sync_draft_from_applied();
-            search.current_line = None;
+            search.clear_current_match();
             search.regex
         };
         self.status = match self.output_state(output).search.error() {
@@ -2005,7 +2010,7 @@ impl App {
             let search = &mut self.output_state_mut(output).search;
             search.case_sensitive = !search.case_sensitive;
             search.sync_draft_from_applied();
-            search.current_line = None;
+            search.clear_current_match();
             search.case_sensitive
         };
         self.status = format!(
@@ -2024,27 +2029,25 @@ impl App {
             self.status = "No output search query".to_owned();
             return;
         }
-        let matches = match self.output_state(output).search.match_lines(&text) {
-            Ok(matches) => matches,
+        let output_match = match self
+            .output_state(output)
+            .search
+            .next_match(&text, direction)
+        {
+            Ok(Some(output_match)) => output_match,
+            Ok(None) => {
+                self.output_state_mut(output).search.clear_current_match();
+                self.status = format!("No output matches for '{query}'");
+                return;
+            }
             Err(error) => {
                 self.status = format!("Invalid output search regex: {error}");
                 return;
             }
         };
-
-        if matches.is_empty() {
-            self.output_state_mut(output).search.current_line = None;
-            self.status = format!("No output matches for '{query}'");
-            return;
-        }
-
-        let output_match = self
-            .output_state(output)
+        self.output_state_mut(output)
             .search
-            .next_match(&text, direction)
-            .expect("matches already validated")
-            .expect("matches already non-empty");
-        self.output_state_mut(output).search.current_line = Some(output_match.line);
+            .set_current_match(output_match);
         self.scroll_to_current_output_match(output);
         self.status = self.output_match_status(output, output_match.index, output_match.total);
     }
@@ -2052,11 +2055,11 @@ impl App {
     fn select_output_match_after_apply(
         &mut self,
         output: OutputPaneId,
-        preferred_source_line: Option<usize>,
+        preferred_match: Option<(usize, Option<(usize, usize)>)>,
     ) {
         let text = self.output_source_text_for(output);
         let query = self.output_state(output).search.query.clone();
-        let matches = match self.output_state(output).search.match_lines(&text) {
+        let matches = match self.output_state(output).search.match_occurrences(&text) {
             Ok(matches) => matches,
             Err(error) => {
                 self.status = format!("Invalid output search regex: {error}");
@@ -2065,26 +2068,34 @@ impl App {
         };
 
         if matches.is_empty() {
-            self.output_state_mut(output).search.current_line = None;
+            self.output_state_mut(output).search.clear_current_match();
             self.status = format!("No output matches for '{query}'");
             return;
         }
 
-        if let Some(source_line) = preferred_source_line
-            && let Some(index) = matches.iter().position(|line| *line == source_line)
+        if let Some((source_line, preferred_range)) = preferred_match
+            && let Some(output_match) = matches.iter().copied().find(|output_match| {
+                output_match.line == source_line
+                    && preferred_range
+                        .is_none_or(|range| range == (output_match.start, output_match.end))
+            })
         {
-            self.output_state_mut(output).search.current_line = Some(source_line);
+            self.output_state_mut(output)
+                .search
+                .set_current_match(output_match);
             self.scroll_to_current_output_match(output);
             self.disable_output_snap(output);
-            self.status = self.output_match_status(output, index, matches.len());
+            self.status = self.output_match_status(output, output_match.index, output_match.total);
             return;
         }
 
-        let source_line = matches[0];
-        self.output_state_mut(output).search.current_line = Some(source_line);
+        let output_match = matches[0];
+        self.output_state_mut(output)
+            .search
+            .set_current_match(output_match);
         self.scroll_to_current_output_match(output);
         self.disable_output_snap(output);
-        self.status = self.output_match_status(output, 0, matches.len());
+        self.status = self.output_match_status(output, output_match.index, output_match.total);
     }
 
     fn scroll_to_current_output_match(&mut self, output: OutputPaneId) {
@@ -2093,7 +2104,14 @@ impl App {
         };
         let view = self.output_view_for(output);
         if let Some(view_line) = view.line_index_for_source_line(source_line) {
-            self.set_output_scroll(output, view_line.min(u16::MAX as usize) as u16);
+            let state = self.output_state(output);
+            let scroll = scroll::ensure_visible(
+                state.scroll as usize,
+                view_line,
+                view.source_lines.len().max(1),
+                state.page_size as usize,
+            );
+            self.set_output_scroll(output, scroll.min(u16::MAX as usize) as u16);
         }
     }
 

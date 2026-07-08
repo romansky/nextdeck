@@ -11,6 +11,7 @@ mod input_field;
 mod nextest;
 mod output;
 mod output_pane;
+mod parameter_list;
 mod queue;
 mod request;
 mod runner;

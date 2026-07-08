@@ -18,6 +18,7 @@ pub struct OutputSearchState {
     pub draft_case_sensitive: bool,
     pub modal_focus: SearchModalFocus,
     pub current_line: Option<usize>,
+    pub current_range: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Debug)]
@@ -117,13 +118,13 @@ impl OutputPaneState {
     pub fn reset_for_source_change(&mut self) {
         self.scroll = 0;
         self.follow = true;
-        self.search.current_line = None;
+        self.search.clear_current_match();
     }
 
     pub fn reset_for_modal(&mut self) {
         self.scroll = 0;
         self.follow = false;
-        self.search.current_line = None;
+        self.search.clear_current_match();
     }
 
     pub fn clamp_following_scroll_to_top(&mut self) {
@@ -393,6 +394,16 @@ impl OutputSearchState {
         self.editor.clear();
     }
 
+    pub fn clear_current_match(&mut self) {
+        self.current_line = None;
+        self.current_range = None;
+    }
+
+    pub fn set_current_match(&mut self, output_match: OutputMatch) {
+        self.current_line = Some(output_match.line);
+        self.current_range = Some((output_match.start, output_match.end));
+    }
+
     pub fn edit_draft(&mut self, input: SearchEditorInput) -> bool {
         let changed = self.editor.input(input);
         self.draft_query = self.editor.text();
@@ -441,17 +452,6 @@ impl OutputSearchState {
         }
     }
 
-    pub fn match_lines(&self, text: &str) -> Result<Vec<usize>, String> {
-        let Some(matcher) = output_matcher(self)? else {
-            return Ok(Vec::new());
-        };
-        Ok(text
-            .lines()
-            .enumerate()
-            .filter_map(|(index, line)| matcher.is_match(line).then_some(index))
-            .collect())
-    }
-
     pub fn match_ranges(&self, line: &str) -> Result<Vec<(usize, usize)>, String> {
         let Some(regex) = output_regex(self)? else {
             return Ok(Vec::new());
@@ -465,13 +465,20 @@ impl OutputSearchState {
     }
 
     pub fn match_summary(&self, text: &str) -> Option<(usize, usize)> {
-        let matches = self.match_lines(text).ok()?;
+        let matches = self.match_occurrences(text).ok()?;
         if matches.is_empty() {
             return Some((0, 0));
         }
         let current = self
             .current_line
-            .and_then(|line| matches.iter().position(|match_line| *match_line == line))
+            .and_then(|line| {
+                matches.iter().position(|output_match| {
+                    output_match.line == line
+                        && self
+                            .current_range
+                            .is_none_or(|range| range == (output_match.start, output_match.end))
+                })
+            })
             .map(|index| index + 1)
             .unwrap_or(0);
         Some((current, matches.len()))
@@ -482,28 +489,84 @@ impl OutputSearchState {
         text: &str,
         direction: SearchDirection,
     ) -> Result<Option<OutputMatch>, String> {
-        let matches = self.match_lines(text)?;
+        let matches = self.match_occurrences(text)?;
         if matches.is_empty() {
             return Ok(None);
         }
 
-        let current = self.current_line;
         let index = match direction {
-            SearchDirection::Next => matches
-                .iter()
-                .position(|line| current.is_none_or(|current| *line > current))
-                .unwrap_or(0),
-            SearchDirection::Previous => matches
-                .iter()
-                .rposition(|line| current.is_none_or(|current| *line < current))
-                .unwrap_or(matches.len() - 1),
+            SearchDirection::Next => {
+                if let Some(current) = self.current_position() {
+                    matches
+                        .iter()
+                        .position(|output_match| output_match.position() > current)
+                        .unwrap_or(0)
+                } else {
+                    matches
+                        .iter()
+                        .position(|output_match| {
+                            self.current_line
+                                .is_none_or(|current| output_match.line > current)
+                        })
+                        .unwrap_or(0)
+                }
+            }
+            SearchDirection::Previous => {
+                if let Some(current) = self.current_position() {
+                    matches
+                        .iter()
+                        .rposition(|output_match| output_match.position() < current)
+                        .unwrap_or(matches.len() - 1)
+                } else {
+                    matches
+                        .iter()
+                        .rposition(|output_match| {
+                            self.current_line
+                                .is_none_or(|current| output_match.line < current)
+                        })
+                        .unwrap_or(matches.len() - 1)
+                }
+            }
         };
 
-        Ok(Some(OutputMatch {
-            line: matches[index],
-            index,
-            total: matches.len(),
-        }))
+        Ok(Some(matches[index]))
+    }
+
+    pub fn match_occurrences(&self, text: &str) -> Result<Vec<OutputMatch>, String> {
+        let Some(regex) = output_regex(self)? else {
+            return Ok(Vec::new());
+        };
+        let positions = text
+            .lines()
+            .enumerate()
+            .flat_map(|(line_index, line)| {
+                regex.find_iter(line).filter_map(move |matched| {
+                    (matched.start() < matched.end()).then_some(OutputMatchPosition {
+                        line: line_index,
+                        start: matched.start(),
+                        end: matched.end(),
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        let total = positions.len();
+        Ok(positions
+            .into_iter()
+            .enumerate()
+            .map(|(index, position)| OutputMatch {
+                line: position.line,
+                start: position.start,
+                end: position.end,
+                index,
+                total,
+            })
+            .collect())
+    }
+
+    fn current_position(&self) -> Option<OutputMatchPosition> {
+        let line = self.current_line?;
+        let (start, end) = self.current_range?;
+        Some(OutputMatchPosition { line, start, end })
     }
 }
 
@@ -566,8 +629,27 @@ fn fit_search_content(content: &str, width: usize) -> String {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OutputMatch {
     pub line: usize,
+    pub start: usize,
+    pub end: usize,
     pub index: usize,
     pub total: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct OutputMatchPosition {
+    line: usize,
+    start: usize,
+    end: usize,
+}
+
+impl OutputMatch {
+    fn position(self) -> OutputMatchPosition {
+        OutputMatchPosition {
+            line: self.line,
+            start: self.start,
+            end: self.end,
+        }
+    }
 }
 
 enum OutputMatcher {

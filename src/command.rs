@@ -32,7 +32,6 @@ pub enum AppCommand {
     RefreshTests,
     RunSelected,
     OpenCustomRun,
-    CloseCustomRun,
     CustomRunNext,
     CustomRunPrevious,
     CustomRunAdjustLeft,
@@ -268,8 +267,8 @@ const COMMANDS: &[CommandInfo] = &[
         kind: CommandKind::OpenCustomRun,
         group: CommandGroup::Runs,
         keys: "R",
-        label: "custom run",
-        ticker: "custom run",
+        label: "run custom",
+        ticker: "run-custom",
     },
     CommandInfo {
         kind: CommandKind::OpenSource,
@@ -468,7 +467,6 @@ impl AppCommand {
             Self::ToggleOutputSnap => Some(CommandKind::ToggleOutputSnap),
             Self::OpenOutputSearchModal
             | Self::CaptureTestSnapshot
-            | Self::CloseCustomRun
             | Self::CustomRunNext
             | Self::CustomRunPrevious
             | Self::CustomRunAdjustLeft
@@ -565,7 +563,6 @@ impl AppCommand {
             Self::CommitOpenWithSetting => Some("settings save"),
             Self::CancelOpenWithSetting => Some("settings cancel"),
             Self::RunCargoClean => Some("cargo clean"),
-            Self::CloseCustomRun => Some("custom close"),
             Self::CustomRunNext | Self::CustomRunPrevious => Some("custom select"),
             Self::CustomRunAdjustLeft | Self::CustomRunAdjustRight => Some("custom adjust"),
             Self::CustomRunActivate => Some("custom edit"),
@@ -647,7 +644,6 @@ pub enum InputMode {
     DiscoveryRunning,
     SettingsOpenWith,
     CustomRunInput,
-    CustomRunModal,
     SettingsModal,
     DiskCleanupModal,
     XtaskInput,
@@ -665,7 +661,6 @@ pub enum OverlayMode {
     Discovery,
     DiscoveryError,
     Settings,
-    CustomRun,
     DiskCleanup,
     Xtasks,
     TestEvents,
@@ -695,7 +690,6 @@ fn command_for_input_mode(code: KeyCode, modifiers: KeyModifiers, input: InputMo
         InputMode::DiscoveryRunning => command_for_discovery_running(code),
         InputMode::SettingsOpenWith => command_for_settings_open_with_input(code, modifiers),
         InputMode::CustomRunInput => command_for_custom_run_input(code, modifiers),
-        InputMode::CustomRunModal => command_for_custom_run_modal(code),
         InputMode::SettingsModal => command_for_settings_modal(code),
         InputMode::DiskCleanupModal => command_for_disk_cleanup_modal(code),
         InputMode::XtaskInput => command_for_xtask_input(code, modifiers),
@@ -764,21 +758,6 @@ fn command_for_custom_run_input(code: KeyCode, modifiers: KeyModifiers) -> AppCo
         _ => input_field_input_for_key(code, modifiers)
             .map(AppCommand::CustomRunEdit)
             .unwrap_or(AppCommand::Noop),
-    }
-}
-
-fn command_for_custom_run_modal(code: KeyCode) -> AppCommand {
-    match code {
-        KeyCode::Esc => AppCommand::CloseCustomRun,
-        KeyCode::Up | KeyCode::BackTab => AppCommand::CustomRunPrevious,
-        KeyCode::Down | KeyCode::Tab => AppCommand::CustomRunNext,
-        KeyCode::Left => AppCommand::CustomRunAdjustLeft,
-        KeyCode::Right => AppCommand::CustomRunAdjustRight,
-        KeyCode::Enter => AppCommand::RunCustom,
-        KeyCode::Char('e') => AppCommand::CustomRunActivate,
-        KeyCode::Char('r') => AppCommand::RunCustom,
-        KeyCode::Char(' ') => AppCommand::CustomRunAdjustRight,
-        _ => AppCommand::Noop,
     }
 }
 
@@ -924,7 +903,15 @@ fn command_for_test_event_output(code: KeyCode, modifiers: KeyModifiers) -> AppC
 fn command_for_test_details_modal(code: KeyCode) -> AppCommand {
     match code {
         KeyCode::Esc => AppCommand::CloseTestDetails,
+        KeyCode::Up | KeyCode::BackTab => AppCommand::CustomRunPrevious,
+        KeyCode::Down | KeyCode::Tab => AppCommand::CustomRunNext,
+        KeyCode::Left => AppCommand::CustomRunAdjustLeft,
+        KeyCode::Right => AppCommand::CustomRunAdjustRight,
+        KeyCode::Enter => AppCommand::RunCustom,
+        KeyCode::Char('e') => AppCommand::CustomRunActivate,
+        KeyCode::Char('r') => AppCommand::RunCustom,
         KeyCode::Char('s') => AppCommand::CaptureTestSnapshot,
+        KeyCode::Char(' ') => AppCommand::CustomRunAdjustRight,
         _ => AppCommand::Noop,
     }
 }

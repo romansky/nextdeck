@@ -306,60 +306,47 @@ fn panel_actions_describe_local_commands() {
 
 #[test]
 fn custom_run_options_render_values_without_accidental_editors() {
-    let app = app_with_tree(Tree::from_tests(Vec::new()));
+    let mut app = app_with_tree(Tree::from_tests(Vec::new()));
     let theme = Theme::dark();
     let lines = custom_run_lines(&app.custom_run, &theme, 100);
     let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
 
-    assert!(text.contains("> scope          selected            # selected, workspace, failed"));
-    assert!(text.contains("  profile        default             # default"));
-    assert!(text.contains("  filterset      none                # none, custom"));
-    assert!(text.contains("  flaky          profile             # profile, pass, fail"));
+    assert!(text.contains("> scope"));
+    assert!(text.contains("selected"));
+    assert!(text.contains("# options: selected, workspace, failed; default: selected"));
+    assert!(text.contains("  profile"));
+    assert!(text.contains("# profiles: default; default: default"));
+    assert!(text.contains("  filterset"));
+    assert!(text.contains("# options: none; [e] custom; default: none"));
+    assert!(text.contains("# options: profile, pass, fail; default: profile"));
+    assert!(text.contains("# options: profile, 0..20; [e] custom; default: profile"));
+    assert!(text.contains("# options: off, on; default: off"));
+    assert!(text.contains("# options: off, rust-lldb --args; [e] custom; default: off"));
+    assert!(text.contains("# options: off, 0..100; [e] custom; default: off"));
+    assert!(text.contains("# options: off, 30s; [e] custom; default: off"));
+    assert!(!text.contains("stress-durationoff"));
     assert!(!text.contains("[_"));
 
-    let hint_columns = lines
+    app.custom_run.filter = CustomRunFilter::Custom("package(demo)".to_owned());
+    let text = custom_run_lines(&app.custom_run, &theme, 100)
         .iter()
-        .filter_map(|line| line_text(line).find('#'))
-        .collect::<Vec<_>>();
-    assert!(hint_columns.iter().all(|column| *column == hint_columns[0]));
+        .map(line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("  filterset"));
+    assert!(text.contains("custom: package(demo)"));
+    assert!(text.contains("# options: none, custom; default: none"));
 
     let narrow = custom_run_lines(&app.custom_run, &theme, 32)
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(narrow.contains("# s..."));
+    assert!(narrow.contains("# options: selected"));
 }
 
 #[test]
-fn selectable_parameter_lines_can_place_hint_below_value() {
-    let theme = Theme::dark();
-    let lines = selectable_parameter_lines(
-        SelectableFieldRow {
-            marker: ">",
-            label: "--profile",
-            label_width: 10,
-            value: "debug",
-            hint: Some("# debug, release"),
-            style: theme.selected(),
-            hint_style: theme.muted(),
-            content_width: 42,
-        },
-        FieldHintPlacement::Below,
-    );
-
-    assert_eq!(
-        line_text(&lines[0]),
-        "> --profile  debug                        "
-    );
-    assert_eq!(
-        line_text(&lines[1]),
-        "             # debug, release             "
-    );
-}
-
-#[test]
-fn xtask_params_use_shared_rows_with_known_options_below() {
+fn xtask_params_use_parameter_component_with_help_details_and_command_preview() {
     let theme = Theme::dark();
     let mut xtasks = XtaskState::default();
     xtasks.set_manifest(crate::xtask::XtaskManifest {
@@ -387,27 +374,51 @@ fn xtask_params_use_shared_rows_with_known_options_below() {
                     required: false,
                     value: crate::xtask::XtaskValueSpec::Bool { default: false },
                 },
+                crate::xtask::XtaskArgSpec {
+                    name: "version".to_owned(),
+                    long: Some("version".to_owned()),
+                    short: None,
+                    help: Some("Release version".to_owned()),
+                    required: false,
+                    value: crate::xtask::XtaskValueSpec::String { default: None },
+                },
             ],
         }],
     });
 
-    let text = xtask_param_lines(&xtasks, &theme, 80, true)
+    let rendered = xtask_param_lines(&xtasks, &theme, 80, true)
         .iter()
         .map(line_text)
-        .collect::<Vec<_>>()
-        .join("\n");
+        .collect::<Vec<_>>();
+    let text = rendered.join("\n");
 
     assert!(text.contains("> --profile     debug"));
-    assert!(text.contains("# debug, release  enum  Build profile"));
+    assert!(text.contains("# Build profile"));
+    assert!(text.contains("# enum: debug, release"));
     assert!(text.contains("  --allow-dirty off"));
-    assert!(text.contains("# off, on  bool  Allow dirty worktree"));
+    assert!(text.contains("# Allow dirty worktree"));
+    assert!(text.contains("# bool: off, on (default: off)"));
+    assert!(text.contains("  --version     [empty]"));
+    assert!(text.contains("# Release version"));
+    assert!(text.contains("# string"));
+
+    let first_param = rendered
+        .iter()
+        .position(|line| line.contains("--profile"))
+        .expect("profile param");
+    let preview = rendered
+        .iter()
+        .position(|line| line.contains("cargo xtask ship"))
+        .expect("command preview");
+    assert!(preview > first_param);
+    assert!(text.contains("Ship package"));
 }
 
 #[test]
-fn custom_run_modal_places_command_below_options() {
+fn test_details_places_run_command_below_options() {
     let app = app_with_tree(Tree::from_tests(Vec::new()));
     let theme = Theme::dark();
-    let lines = custom_run_modal_lines(&app, &theme, 100);
+    let lines = test_details_modal_lines(&app, &theme);
     let rendered = lines.iter().map(line_text).collect::<Vec<_>>();
     let stress_index = rendered
         .iter()
@@ -415,15 +426,10 @@ fn custom_run_modal_places_command_below_options() {
         .expect("stress duration option");
     let command_index = rendered
         .iter()
-        .position(|line| line == "Command")
-        .expect("command heading");
+        .position(|line| line.contains("cargo nextest run"))
+        .expect("command preview");
 
     assert!(command_index > stress_index);
-    assert!(
-        rendered
-            .iter()
-            .any(|line| line.contains("cargo nextest run"))
-    );
     assert!(
         !rendered
             .iter()
@@ -511,7 +517,7 @@ fn help_text_sorts_commands_alpha_numerically_within_groups() {
         &[
             "next or previous failure",
             "open selected test source",
-            "custom run",
+            "run custom",
             "run selected scope",
             "update test list",
         ],
@@ -625,8 +631,8 @@ fn running_duration_field_rolls_up_to_parent_rows() {
 }
 
 #[test]
-fn test_details_modal_includes_live_info_and_manual_command() {
-    let mut test = DiscoveredTest {
+fn test_details_modal_includes_live_info_and_run_command() {
+    let test = DiscoveredTest {
         key: TestKey {
             binary_id: Some("demo::demo".to_owned()),
             event_prefix: Some("demo::demo".to_owned()),
@@ -668,18 +674,12 @@ fn test_details_modal_includes_live_info_and_manual_command() {
     assert!(text.contains("status   passed"));
     assert!(text.contains("duration 0.250s"));
     assert!(text.contains("output   stdout 5 chars"));
-    assert!(
-        text.contains(
-            "cargo    cargo nextest run --run-ignored only -p demo --lib 'tests::case one'"
-        )
-    );
+    assert!(text.contains("Run"));
+    assert!(text.contains("> scope"));
+    assert!(text.contains("selected"));
+    assert!(text.contains("# options: selected, workspace, failed; default: selected"));
+    assert!(text.contains("cargo nextest run --run-ignored only -p demo --lib 'tests::case one'"));
     assert!(!text.contains("[esc] close"));
-
-    test.full_name = "tests::case_two".to_owned();
-    assert_eq!(
-        manual_test_command(&test),
-        "cargo nextest run --run-ignored only -p demo --lib tests::case_two"
-    );
 }
 
 #[test]
@@ -712,7 +712,8 @@ fn test_details_modal_for_parent_includes_scoped_run_command() {
 
     assert!(text.contains("kind     package"));
     assert!(text.contains("package  demo"));
-    assert!(text.contains("cargo    cargo nextest run -p demo"));
+    assert!(text.contains("Run"));
+    assert!(text.contains("cargo nextest run -p demo"));
 }
 
 #[test]
@@ -738,11 +739,17 @@ fn test_details_actions_include_snapshot_for_leaf_tests() {
     expand_all(&mut app.tree.root);
 
     app.tree.select_next();
-    assert_eq!(test_details_actions(&app), "[esc]close");
+    assert_eq!(
+        test_details_actions(&app),
+        "[up/down]option [left/right]change [e]edit [r/enter]run [esc]close"
+    );
 
     app.tree.select_next();
     app.tree.select_next();
-    assert_eq!(test_details_actions(&app), "[s]snapshot [esc]close");
+    assert_eq!(
+        test_details_actions(&app),
+        "[up/down]option [left/right]change [e]edit [r/enter]run [s]snapshot [esc]close"
+    );
 }
 
 fn expand_all(node: &mut TestNode) {
@@ -828,6 +835,25 @@ fn output_lines_marks_current_search_result_differently() {
 
     assert_eq!(lines[0].spans[0].style, theme.search_match());
     assert_eq!(lines[1].spans[0].style, theme.active_search_match());
+}
+
+#[test]
+fn output_lines_marks_only_current_search_range_active() {
+    let mut app = app_with_tree(Tree::from_tests(Vec::new()));
+    let theme = Theme::dark();
+    app.main_output.search.query = "panic".to_owned();
+    app.main_output.search.current_line = Some(0);
+    app.main_output.search.current_range = Some((10, 15));
+
+    let output_view = crate::output_pane::OutputView {
+        text: "panic one panic two".to_owned(),
+        source_lines: vec![0],
+    };
+    let lines = output_lines(&app.main_output.search, &theme, &output_view);
+
+    assert_eq!(line_text(&lines[0]), "panic one panic two");
+    assert_eq!(lines[0].spans[0].style, theme.search_match());
+    assert_eq!(lines[0].spans[2].style, theme.active_search_match());
 }
 
 #[test]

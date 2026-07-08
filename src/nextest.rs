@@ -419,18 +419,6 @@ fn binary_nextest_args(package: &str, name: &str, kind: &str) -> Vec<String> {
     args
 }
 
-pub fn manual_test_command(test: &DiscoveredTest) -> String {
-    let mut request = RunRequest::new(RunScope::Test(TestSelector::from_test(test)));
-    if test.ignored {
-        request.options.ignored = RunIgnored::Only;
-    }
-    manual_run_request_command(&request)
-}
-
-pub fn manual_run_command(scope: &RunScope) -> String {
-    manual_run_request_command(&RunRequest::new(scope.clone()))
-}
-
 pub fn manual_run_request_command(request: &RunRequest) -> String {
     request
         .scope

@@ -2,17 +2,29 @@ use super::*;
 
 #[test]
 fn ensure_visible_scrolls_down_to_selection() {
-    assert_eq!(ensure_visible(0, 9, 20, 5), 5);
+    assert_eq!(ensure_visible(0, 9, 20, 5), 7);
 }
 
 #[test]
 fn ensure_visible_scrolls_up_to_selection() {
-    assert_eq!(ensure_visible(8, 3, 20, 5), 3);
+    assert_eq!(ensure_visible(8, 3, 20, 5), 1);
 }
 
 #[test]
 fn ensure_visible_clamps_to_bottom() {
     assert_eq!(ensure_visible(99, 19, 20, 5), 15);
+}
+
+#[test]
+fn ensure_visible_preserves_context_until_scrolloff_boundary() {
+    assert_eq!(ensure_visible(5, 7, 20, 5), 5);
+    assert_eq!(ensure_visible(5, 8, 20, 5), 6);
+}
+
+#[test]
+fn ensure_visible_uses_zero_scrolloff_for_tiny_viewports() {
+    assert_eq!(ensure_visible(0, 9, 20, 2), 8);
+    assert_eq!(ensure_visible(8, 3, 20, 2), 3);
 }
 
 #[test]

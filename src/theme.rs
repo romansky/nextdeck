@@ -28,6 +28,11 @@ pub struct Theme {
     pub success: Color,
     pub danger: Color,
     pub warning: Color,
+    pub skipped: Color,
+    pub search_match_fg: Color,
+    pub search_match_bg: Color,
+    pub active_search_match_fg: Color,
+    pub active_search_match_bg: Color,
 }
 
 impl Theme {
@@ -48,8 +53,11 @@ impl Theme {
         self.success = Color::Cyan;
         self.danger = Color::Magenta;
         self.warning = Color::Yellow;
+        self.skipped = Color::Magenta;
         self.selected_bg = Color::DarkGray;
         self.focused_border = self.accent;
+        self.search_match_bg = self.warning;
+        self.active_search_match_bg = self.accent;
         self
     }
 
@@ -76,6 +84,11 @@ impl Theme {
             success: Color::Rgb(166, 227, 161),
             danger: Color::Rgb(243, 139, 168),
             warning: Color::Rgb(249, 226, 175),
+            skipped: Color::Rgb(203, 166, 247),
+            search_match_fg: Color::Black,
+            search_match_bg: Color::Rgb(249, 226, 175),
+            active_search_match_fg: Color::Black,
+            active_search_match_bg: Color::Rgb(137, 180, 250),
         }
     }
 
@@ -93,6 +106,11 @@ impl Theme {
             success: Color::Rgb(64, 160, 43),
             danger: Color::Rgb(210, 15, 57),
             warning: Color::Rgb(223, 142, 29),
+            skipped: Color::Rgb(136, 57, 239),
+            search_match_fg: Color::Black,
+            search_match_bg: Color::Rgb(223, 142, 29),
+            active_search_match_fg: Color::White,
+            active_search_match_bg: Color::Rgb(30, 102, 245),
         }
     }
 
@@ -173,15 +191,15 @@ impl Theme {
 
     pub fn search_match(&self) -> Style {
         Style::default()
-            .fg(Color::Black)
-            .bg(self.warning)
+            .fg(self.search_match_fg)
+            .bg(self.search_match_bg)
             .add_modifier(Modifier::BOLD)
     }
 
     pub fn active_search_match(&self) -> Style {
         Style::default()
-            .fg(self.selected_fg)
-            .bg(self.selected_bg)
+            .fg(self.active_search_match_fg)
+            .bg(self.active_search_match_bg)
             .add_modifier(Modifier::BOLD)
     }
 
@@ -219,7 +237,7 @@ impl Theme {
             TestStatus::Passed => self.success,
             TestStatus::Failed => self.danger,
             TestStatus::Ignored => self.warning,
-            TestStatus::Skipped => Color::Magenta,
+            TestStatus::Skipped => self.skipped,
         };
 
         if selected {

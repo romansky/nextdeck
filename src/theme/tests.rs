@@ -18,6 +18,8 @@ fn color_blind_mode_changes_status_colors() {
 
     assert_eq!(theme.success, Color::Cyan);
     assert_eq!(theme.danger, Color::Magenta);
+    assert_eq!(theme.skipped, Color::Magenta);
+    assert_eq!(theme.search_match_bg, Color::Yellow);
 }
 
 #[test]
@@ -42,4 +44,31 @@ fn panel_title_uses_uniform_title_style_for_boolean_symbols() {
     assert_eq!(title.spans.len(), 3);
     assert_eq!(title.spans[1].content.as_ref(), "filters: ✓ ✗");
     assert!(title.spans.iter().all(|span| span.style == title_style));
+}
+
+#[test]
+fn active_search_match_uses_visible_search_highlight() {
+    let theme = Theme::dark();
+
+    assert_eq!(theme.search_match().fg, Some(theme.search_match_fg));
+    assert_eq!(theme.search_match().bg, Some(theme.search_match_bg));
+    assert_eq!(
+        theme.active_search_match().fg,
+        Some(theme.active_search_match_fg)
+    );
+    assert_eq!(
+        theme.active_search_match().bg,
+        Some(theme.active_search_match_bg)
+    );
+    assert_ne!(theme.active_search_match().bg, theme.selected().bg);
+}
+
+#[test]
+fn skipped_status_uses_theme_palette() {
+    let theme = Theme::dark();
+
+    assert_eq!(
+        theme.status(crate::tree::TestStatus::Skipped, false).fg,
+        Some(theme.skipped)
+    );
 }
