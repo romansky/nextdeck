@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::{
     config::TreeDurationMode,
-    output::{TestOutput, append_bounded_text, bounded_text},
+    output::{TestOutput, bounded_text},
     state::StatusCounts,
 };
 
@@ -134,6 +134,7 @@ pub struct TestNode {
     pub kind: NodeKind,
     pub status: TestStatus,
     pub output: TestOutput,
+    pub has_events: bool,
     pub started_at: Option<Instant>,
     pub run_started_at: Option<Instant>,
     pub finished_at: Option<Instant>,
@@ -149,6 +150,7 @@ impl TestNode {
             kind,
             status: TestStatus::Pending,
             output: TestOutput::default(),
+            has_events: false,
             started_at: None,
             run_started_at: None,
             finished_at: None,
@@ -456,8 +458,7 @@ impl Tree {
         &mut self,
         key: &TestKey,
         status: TestStatus,
-        stdout: String,
-        stderr: String,
+        output: String,
         duration: Option<Duration>,
     ) {
         visit_mut(&mut self.root, &mut |node| {
@@ -465,23 +466,17 @@ impl Tree {
                 node.status = status;
                 node.started_at = None;
                 node.finished_at = Some(Instant::now());
-                let stdout = merge_finished_output(&node.output.stdout, &stdout);
-                let stderr = merge_finished_output(&node.output.stderr, &stderr);
-                node.output = TestOutput {
-                    stdout,
-                    stderr,
-                    duration,
-                };
+                node.output.append_text(&output);
+                node.output.duration = duration;
             }
         });
         self.recompute_statuses();
     }
 
-    pub fn append_test_output(&mut self, key: &TestKey, stdout: String, stderr: String) {
+    pub fn append_test_output(&mut self, key: &TestKey, output: String) {
         visit_mut(&mut self.root, &mut |node| {
             if node_matches(node, key) {
-                append_output_text(&mut node.output.stdout, &stdout);
-                append_output_text(&mut node.output.stderr, &stderr);
+                node.output.append_text(&output);
             }
         });
     }
@@ -495,8 +490,9 @@ impl Tree {
             return false;
         };
         self.with_id_mut(&target, |node| {
-            append_output_text(&mut node.output.stdout, line);
+            node.output.append_event(event.level, line);
         });
+        self.recompute_statuses();
         true
     }
 
@@ -517,6 +513,11 @@ impl Tree {
         if self.runner_output.len() > 500 {
             self.runner_output.drain(0..100);
         }
+    }
+
+    pub fn runner_output_tail(&self, max_lines: usize) -> String {
+        let start = self.runner_output.len().saturating_sub(max_lines);
+        self.runner_output[start..].join("\n")
     }
 
     fn clear_runner_output(&mut self) {
@@ -714,7 +715,7 @@ impl Tree {
     }
 
     fn recompute_statuses(&mut self) {
-        recompute_node_status(&mut self.root);
+        recompute_node_state(&mut self.root);
     }
 
     fn clamp_selection(&mut self) {
@@ -775,28 +776,6 @@ fn child_position(parent: &TestNode, label: &str) -> Option<usize> {
         .children
         .iter()
         .position(|child| child.label == label)
-}
-
-fn append_output_text(target: &mut String, text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    if !target.is_empty() && !target.ends_with('\n') {
-        append_bounded_text(target, "\n");
-    }
-    append_bounded_text(target, text);
-}
-
-fn merge_finished_output(existing: &str, finished: &str) -> String {
-    if finished.is_empty() {
-        return existing.to_owned();
-    }
-    if existing.is_empty() {
-        return bounded_text(finished.to_owned());
-    }
-    let mut merged = existing.to_owned();
-    append_output_text(&mut merged, finished);
-    merged
 }
 
 fn event_thread_name(event: &nextdeck_test_events::TestEvent) -> Option<&str> {
@@ -913,14 +892,17 @@ fn visit_mut(node: &mut TestNode, f: &mut impl FnMut(&mut TestNode)) {
     }
 }
 
-fn recompute_node_status(node: &mut TestNode) -> TestStatus {
+fn recompute_node_state(node: &mut TestNode) -> (TestStatus, bool) {
     if matches!(node.kind, NodeKind::Test(_)) {
-        return node.status;
+        node.has_events = node.output.has_events();
+        return (node.status, node.has_events);
     }
 
     let mut aggregate = None;
+    let mut has_events = node.output.has_events();
     for child in &mut node.children {
-        let status = recompute_node_status(child);
+        let (status, child_has_events) = recompute_node_state(child);
+        has_events |= child_has_events;
         aggregate = Some(match aggregate {
             Some(current) => merge_status(current, status),
             None => status,
@@ -928,7 +910,8 @@ fn recompute_node_status(node: &mut TestNode) -> TestStatus {
     }
     let aggregate = aggregate.unwrap_or(TestStatus::Pending);
     node.status = aggregate;
-    aggregate
+    node.has_events = has_events;
+    (aggregate, has_events)
 }
 
 fn merge_status(current: TestStatus, next: TestStatus) -> TestStatus {
@@ -987,8 +970,7 @@ fn descendant_outputs(node: &TestNode) -> String {
 fn has_observable_output(node: &TestNode) -> bool {
     node.status != TestStatus::Pending
         || node.output.duration.is_some()
-        || !node.output.stdout.is_empty()
-        || !node.output.stderr.is_empty()
+        || node.output.has_entries()
 }
 
 fn descendant_test_count(node: &TestNode) -> usize {

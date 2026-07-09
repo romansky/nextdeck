@@ -1,6 +1,7 @@
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,10 @@ pub const DEFAULT_STORAGE_LOW_SPACE_THRESHOLD_GB: u16 = 10;
 pub const MIN_STORAGE_LOW_SPACE_THRESHOLD_GB: u16 = 1;
 pub const MAX_STORAGE_LOW_SPACE_THRESHOLD_GB: u16 = 1024;
 pub const STORAGE_LOW_SPACE_THRESHOLD_STEP_GB: u16 = 1;
+pub const DEFAULT_TEST_OUTPUT_POLL_INTERVAL_MS: u16 = 1000;
+pub const MIN_TEST_OUTPUT_POLL_INTERVAL_MS: u16 = 250;
+pub const MAX_TEST_OUTPUT_POLL_INTERVAL_MS: u16 = 10000;
+pub const TEST_OUTPUT_POLL_INTERVAL_STEP_MS: u16 = 250;
 pub const DEFAULT_OPEN_WITH_LABEL: &str = "env/default";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -92,6 +97,7 @@ pub struct AppSettings {
     pub theme_mode: ThemePreference,
     pub color_blind_mode: bool,
     pub storage_low_space_threshold_gb: u16,
+    pub test_output_poll_interval_ms: u16,
 }
 
 impl Default for AppSettings {
@@ -103,6 +109,7 @@ impl Default for AppSettings {
             theme_mode: ThemePreference::Auto,
             color_blind_mode: false,
             storage_low_space_threshold_gb: DEFAULT_STORAGE_LOW_SPACE_THRESHOLD_GB,
+            test_output_poll_interval_ms: DEFAULT_TEST_OUTPUT_POLL_INTERVAL_MS,
         }
     }
 }
@@ -112,6 +119,8 @@ impl AppSettings {
         self.tree_width_percent = clamp_tree_width(self.tree_width_percent);
         self.storage_low_space_threshold_gb =
             clamp_storage_low_space_threshold(self.storage_low_space_threshold_gb);
+        self.test_output_poll_interval_ms =
+            clamp_test_output_poll_interval(self.test_output_poll_interval_ms);
         self.open_with_command = self.open_with_command.and_then(non_empty_trimmed);
         self
     }
@@ -124,6 +133,10 @@ impl AppSettings {
 
     pub fn storage_low_space_threshold_bytes(&self) -> u64 {
         u64::from(self.storage_low_space_threshold_gb) * 1024 * 1024 * 1024
+    }
+
+    pub fn test_output_poll_interval(&self) -> Duration {
+        Duration::from_millis(u64::from(self.test_output_poll_interval_ms))
     }
 }
 
@@ -168,12 +181,27 @@ pub fn resize_storage_low_space_threshold(threshold_gb: u16, delta: i16) -> u16 
     clamp_storage_low_space_threshold(threshold_gb.saturating_add_signed(delta))
 }
 
+pub fn clamp_test_output_poll_interval(interval_ms: u16) -> u16 {
+    interval_ms.clamp(
+        MIN_TEST_OUTPUT_POLL_INTERVAL_MS,
+        MAX_TEST_OUTPUT_POLL_INTERVAL_MS,
+    )
+}
+
+pub fn resize_test_output_poll_interval(interval_ms: u16, delta: i16) -> u16 {
+    clamp_test_output_poll_interval(interval_ms.saturating_add_signed(delta))
+}
+
 fn config_path() -> Option<PathBuf> {
-    home_dir().map(|home| global_config_path(&home))
+    app_dir().map(|dir| dir.join("config.json"))
 }
 
 pub fn debug_log_path() -> Option<PathBuf> {
-    home_dir().map(|home| global_debug_log_path(&home))
+    app_dir().map(|dir| dir.join("debug.log"))
+}
+
+pub(crate) fn app_dir() -> Option<PathBuf> {
+    home_dir().map(|home| global_config_dir(&home))
 }
 
 fn global_config_dir(home: &Path) -> PathBuf {
@@ -182,10 +210,6 @@ fn global_config_dir(home: &Path) -> PathBuf {
 
 fn global_config_path(home: &Path) -> PathBuf {
     global_config_dir(home).join("config.json")
-}
-
-fn global_debug_log_path(home: &Path) -> PathBuf {
-    global_config_dir(home).join("debug.log")
 }
 
 fn config_read_paths() -> Vec<PathBuf> {

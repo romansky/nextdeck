@@ -1,29 +1,79 @@
 use std::time::Duration;
 
+use nextdeck_test_events::Level;
+
 pub(crate) const OUTPUT_TEXT_LIMIT_BYTES: usize = 512 * 1024;
 const OUTPUT_TRUNCATED_MARKER: &str = "[... output truncated; showing tail ...]\n";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TestOutput {
-    pub stdout: String,
-    pub stderr: String,
+    pub entries: Vec<TestOutputEntry>,
     pub duration: Option<Duration>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TestOutputEntry {
+    Text(String),
+    Event { level: Level, text: String },
+}
+
 impl TestOutput {
+    pub fn append_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(TestOutputEntry::Text(existing)) = self.entries.last_mut() {
+            append_output_text(existing, text);
+        } else {
+            self.entries
+                .push(TestOutputEntry::Text(bounded_text(text.to_owned())));
+        }
+    }
+
+    pub fn append_event(&mut self, level: Level, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.entries.push(TestOutputEntry::Event {
+            level,
+            text: bounded_text(text.to_owned()),
+        });
+    }
+
+    pub fn has_entries(&self) -> bool {
+        !self.entries.is_empty()
+    }
+
+    pub fn has_events(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| matches!(entry, TestOutputEntry::Event { .. }))
+    }
+
+    pub fn summary_label(&self) -> String {
+        let text_len = self
+            .entries
+            .iter()
+            .filter_map(TestOutputEntry::text)
+            .map(|text| text.trim().len())
+            .sum::<usize>();
+        let event_count = self
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry, TestOutputEntry::Event { .. }))
+            .count();
+        match (text_len, event_count) {
+            (0, 0) => "none captured".to_owned(),
+            (_, 0) => format!("text {text_len} chars"),
+            (0, 1) => "1 event".to_owned(),
+            (0, _) => format!("{event_count} events"),
+            (_, 1) => format!("text {text_len} chars, 1 event"),
+            (_, _) => format!("text {text_len} chars, {event_count} events"),
+        }
+    }
+
     pub fn captured_text(&self) -> String {
-        let mut text = String::new();
-        if !self.stdout.is_empty() {
-            text.push_str(&self.stdout);
-            text.push('\n');
-        }
-        if !self.stderr.is_empty() {
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            text.push_str(&self.stderr);
-            text.push('\n');
-        }
+        let text = self.stream_text();
         if text.trim().is_empty() {
             "No output captured".to_owned()
         } else {
@@ -36,25 +86,49 @@ impl TestOutput {
         if let Some(duration) = self.duration {
             text.push_str(&format!("duration: {:.2?}\n\n", duration));
         }
-        if !self.stdout.is_empty() {
-            text.push_str("stdout\n");
-            text.push_str(&self.stdout);
-            text.push('\n');
-        }
-        if !self.stderr.is_empty() {
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            text.push_str("stderr\n");
-            text.push_str(&self.stderr);
-            text.push('\n');
-        }
+        append_output_text(&mut text, &self.stream_text());
         if text.trim().is_empty() {
             "No output captured".to_owned()
         } else {
             text
         }
     }
+
+    fn stream_text(&self) -> String {
+        let mut text = String::new();
+        for entry in &self.entries {
+            append_output_text(&mut text, entry.rendered_text());
+        }
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text
+    }
+}
+
+impl TestOutputEntry {
+    fn text(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Event { .. } => None,
+        }
+    }
+
+    fn rendered_text(&self) -> &str {
+        match self {
+            Self::Text(text) | Self::Event { text, .. } => text,
+        }
+    }
+}
+
+fn append_output_text(target: &mut String, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if !target.is_empty() && !target.ends_with('\n') {
+        append_bounded_text(target, "\n");
+    }
+    append_bounded_text(target, text);
 }
 
 pub(crate) fn append_bounded_text(target: &mut String, text: &str) {

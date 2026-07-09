@@ -9,7 +9,6 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[cfg(feature = "xtask-clap")]
 pub mod xtask;
 
 pub const ENV_VAR: &str = "NEXTDECK_TEST_EVENTS";
@@ -51,6 +50,7 @@ pub struct TestEvent {
 }
 
 impl TestEvent {
+    #[must_use]
     pub fn new(level: Level, message: impl Into<String>) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
@@ -65,11 +65,13 @@ impl TestEvent {
         }
     }
 
+    #[must_use]
     pub fn with_target(mut self, target: impl Into<String>) -> Self {
         self.target = Some(target.into());
         self
     }
 
+    #[must_use]
     pub fn with_source(
         mut self,
         module: impl Into<String>,
@@ -84,16 +86,19 @@ impl TestEvent {
         self
     }
 
+    #[must_use]
     pub fn with_fields(mut self, fields: BTreeMap<String, Value>) -> Self {
         self.fields = fields;
         self
     }
 }
 
+#[must_use]
 pub fn enabled() -> bool {
     event_file_path().is_some()
 }
 
+#[must_use]
 pub fn event_file_path() -> Option<PathBuf> {
     std::env::var_os(ENV_VAR)
         .filter(|value| !value.is_empty())
@@ -130,11 +135,13 @@ pub fn emit_with_fields(
     emit(&event)
 }
 
+#[must_use]
 pub fn now_millis() -> u64 {
-    SystemTime::now()
+    let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis();
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
 #[doc(hidden)]

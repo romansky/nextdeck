@@ -23,7 +23,7 @@ use crate::{
     test_events,
     theme::Theme,
     ui,
-    xtask::{self, XtaskEvent, XtaskRunRequest},
+    xtask::{self, XtaskEvent, XtaskPersistence, XtaskRunRequest},
 };
 
 const UI_TICK_INTERVAL: Duration = Duration::from_millis(250);
@@ -38,6 +38,11 @@ pub async fn run(
     editor: EditorConfig,
     cli_open_with: Option<String>,
 ) -> Result<()> {
+    let xtask_persistence = XtaskPersistence::resolve(client.project_dir()).await;
+    if let Err(error) = xtask_persistence.restore(&mut app.xtasks) {
+        tracing::warn!(%error, "failed to restore xtask preferences");
+        app.status = format!("Failed to restore xtask preferences: {error}");
+    }
     let (queue_tx, queue_rx) = queue::channel();
 
     let git_status = start_git_status(client.project_dir(), queue_tx.clone());
@@ -50,6 +55,7 @@ pub async fn run(
         cli_open_with,
         queue_tx,
         runtime_settings: RuntimeSettings::from_settings(&app.settings),
+        xtask_persistence,
     };
     let mut run_control = None;
     for effect in app.startup_effects() {
@@ -97,17 +103,7 @@ async fn run_loop(
 fn draw_frame(terminal: &mut AppTerminal, app: &mut App, theme: &Theme) -> Result<()> {
     let size = terminal.size()?;
     let area = Rect::new(0, 0, size.width, size.height);
-    let layout = ui::layout(area, app.settings.tree_width_percent);
-    let xtask_params_page_size = ui::xtask_params_page_size(area);
-    let xtask_output_page_size = ui::xtask_output_page_size(area);
-    let test_events_output_page_size = ui::test_events_output_page_size(area);
-    app.prepare_frame(
-        layout.tree.height,
-        layout.output.height,
-        xtask_params_page_size,
-        xtask_output_page_size,
-        test_events_output_page_size,
-    );
+    app.prepare_frame(ui::viewport_metrics(area, app));
     terminal.draw(|frame| ui::draw(frame, app, theme))?;
     Ok(())
 }
@@ -130,6 +126,7 @@ struct RunLoopContext<'a> {
     cli_open_with: Option<String>,
     queue_tx: QueueSender,
     runtime_settings: RuntimeSettings,
+    xtask_persistence: XtaskPersistence,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -185,7 +182,18 @@ fn handle_queue_events(
             break;
         }
     }
-    dirty
+    dirty | flush_xtask_preferences(app, context)
+}
+
+fn flush_xtask_preferences(app: &mut App, context: &mut RunLoopContext<'_>) -> UiDirty {
+    match context.xtask_persistence.flush(&mut app.xtasks) {
+        Ok(_) => UiDirty::NONE,
+        Err(error) => {
+            tracing::warn!(%error, "failed to persist xtask preferences");
+            app.status = format!("Failed to save xtask preferences: {error}");
+            UiDirty::STATUS
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -536,7 +544,7 @@ fn start_test_snapshot(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let root_pid = process_tracker.as_ref().and_then(ProcessTracker::root_pid);
-        let text = diagnostics::capture_running_test_snapshot(root_pid).await;
+        let text = diagnostics::capture_running_test_snapshot(root_pid);
         let _ = tx
             .send(QueueEvent::TestSnapshot(OutputOpenRequest {
                 title: request.title,
@@ -626,6 +634,7 @@ fn start_run(
     let (stop_tx, stop_rx) = mpsc::unbounded_channel();
     let process_tracker = ProcessTracker::default();
     let run_process_tracker = process_tracker.clone();
+    let info_output_poll_interval = app.settings.test_output_poll_interval();
     tokio::spawn(async move {
         let tailer = test_event_run
             .as_ref()
@@ -638,6 +647,7 @@ fn start_run(
                 stop_rx,
                 test_events_dir,
                 run_process_tracker,
+                info_output_poll_interval,
             )
             .await
         {

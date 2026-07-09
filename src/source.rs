@@ -5,19 +5,57 @@ use std::{
 
 use regex::Regex;
 
+pub struct SourceLocator {
+    binary_source: Option<PathBuf>,
+    search_paths: Vec<PathBuf>,
+}
+
+impl SourceLocator {
+    pub fn new(cwd: &Path, kind: &str, name: &str) -> Self {
+        let binary_source = binary_source_path(cwd, kind, name);
+        let search_paths = source_search_paths(cwd, kind);
+        Self {
+            binary_source,
+            search_paths,
+        }
+    }
+
+    pub fn path_for_test(&self, test_name: &str) -> Option<PathBuf> {
+        if let Some(path) = &self.binary_source
+            && find_test_line(path, test_name).is_some()
+        {
+            return Some(path.clone());
+        }
+
+        let matches = self
+            .search_paths
+            .iter()
+            .filter(|path| find_test_line(path, test_name).is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        if matches.len() == 1 {
+            return matches.into_iter().next();
+        }
+
+        self.binary_source.clone()
+    }
+}
+
 pub fn binary_source_path(cwd: &Path, kind: &str, name: &str) -> Option<PathBuf> {
     let manifest = cwd.join("Cargo.toml");
     let source = match kind {
-        "lib" => cargo_table_path(&manifest, "lib").or_else(|| Some(cwd.join("src/lib.rs"))),
+        "lib" => {
+            cargo_table_path(&manifest, "lib").or_else(|| existing_file(cwd.join("src/lib.rs")))
+        }
         "test" => cargo_named_target_path(&manifest, "test", name)
-            .or_else(|| Some(cwd.join("tests").join(format!("{name}.rs")))),
+            .or_else(|| existing_file(cwd.join("tests").join(format!("{name}.rs")))),
         "bin" => cargo_named_target_path(&manifest, "bin", name)
-            .or_else(|| Some(cwd.join("src/bin").join(format!("{name}.rs"))))
-            .or_else(|| Some(cwd.join("src/main.rs"))),
+            .or_else(|| existing_file(cwd.join("src/bin").join(format!("{name}.rs"))))
+            .or_else(|| existing_file(cwd.join("src/main.rs"))),
         "example" => cargo_named_target_path(&manifest, "example", name)
-            .or_else(|| Some(cwd.join("examples").join(format!("{name}.rs")))),
+            .or_else(|| existing_file(cwd.join("examples").join(format!("{name}.rs")))),
         "bench" => cargo_named_target_path(&manifest, "bench", name)
-            .or_else(|| Some(cwd.join("benches").join(format!("{name}.rs")))),
+            .or_else(|| existing_file(cwd.join("benches").join(format!("{name}.rs")))),
         _ => None,
     }?;
     source.exists().then_some(source)
@@ -142,6 +180,41 @@ fn strip_comment(line: &str) -> &str {
 
 fn manifest_parent(manifest: &Path) -> &Path {
     manifest.parent().unwrap_or_else(|| Path::new("."))
+}
+
+fn existing_file(path: PathBuf) -> Option<PathBuf> {
+    path.exists().then_some(path)
+}
+
+fn source_search_paths(cwd: &Path, kind: &str) -> Vec<PathBuf> {
+    let roots = match kind {
+        "lib" | "bin" => vec![cwd.join("src")],
+        "test" => vec![cwd.join("tests")],
+        "example" => vec![cwd.join("examples")],
+        "bench" => vec![cwd.join("benches")],
+        _ => Vec::new(),
+    };
+    roots
+        .into_iter()
+        .flat_map(rust_source_files)
+        .collect::<Vec<_>>()
+}
+
+fn rust_source_files(root: PathBuf) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(rust_source_files(path));
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files
 }
 
 #[cfg(test)]

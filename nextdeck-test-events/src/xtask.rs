@@ -1,11 +1,11 @@
-use std::{
-    ffi::OsString,
-    fmt,
-    io::{self, Write},
-};
+#[cfg(feature = "xtask-clap")]
+use std::ffi::OsString;
+use std::fmt;
+use std::io::{self, Write};
 
+#[cfg(feature = "xtask-clap")]
 use clap::{Arg, ArgAction, Command, CommandFactory};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub const INFO_COMMAND: &str = "nextdeck-info";
 pub const SCHEMA_VERSION: u32 = 1;
@@ -47,36 +47,37 @@ impl From<serde_json::Error> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct XtaskManifest {
     pub schema_version: u32,
+    #[serde(default)]
     pub commands: Vec<XtaskCommand>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct XtaskCommand {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub about: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<XtaskArg>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct XtaskArg {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub long: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub short: Option<char>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub help: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub required: bool,
     pub value: XtaskValue,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum XtaskValue {
     Bool {
@@ -84,20 +85,21 @@ pub enum XtaskValue {
         default: bool,
     },
     Number {
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         default: Option<i64>,
     },
     String {
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         default: Option<String>,
     },
     Enum {
         values: Vec<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         default: Option<String>,
     },
 }
 
+#[cfg(feature = "xtask-clap")]
 pub fn handle_nextdeck_info<T>() -> Result<bool>
 where
     T: CommandFactory,
@@ -105,6 +107,7 @@ where
     handle_nextdeck_info_from::<T, _, _, _>(std::env::args_os(), io::stdout())
 }
 
+#[cfg(feature = "xtask-clap")]
 pub fn handle_nextdeck_info_from<T, I, S, W>(args: I, writer: W) -> Result<bool>
 where
     T: CommandFactory,
@@ -147,23 +150,25 @@ where
     Ok(true)
 }
 
+#[cfg(feature = "xtask-clap")]
 pub fn write_manifest_for<T, W>(writer: W) -> Result<()>
 where
     T: CommandFactory,
     W: Write,
 {
-    write_manifest(command_manifest(T::command()), writer)
+    write_manifest(&command_manifest(T::command()), writer)
 }
 
-pub fn write_manifest<W>(manifest: XtaskManifest, mut writer: W) -> Result<()>
+pub fn write_manifest<W>(manifest: &XtaskManifest, mut writer: W) -> Result<()>
 where
     W: Write,
 {
-    serde_json::to_writer_pretty(&mut writer, &manifest)?;
+    serde_json::to_writer_pretty(&mut writer, manifest)?;
     writeln!(writer)?;
     Ok(())
 }
 
+#[cfg(feature = "xtask-clap")]
 pub fn command_manifest(mut command: Command) -> XtaskManifest {
     command.build();
     XtaskManifest {
@@ -178,6 +183,7 @@ pub fn command_manifest(mut command: Command) -> XtaskManifest {
     }
 }
 
+#[cfg(feature = "xtask-clap")]
 fn command_spec(command: &Command) -> XtaskCommand {
     XtaskCommand {
         name: command.get_name().to_owned(),
@@ -195,6 +201,7 @@ fn command_spec(command: &Command) -> XtaskCommand {
     }
 }
 
+#[cfg(feature = "xtask-clap")]
 fn arg_spec(arg: &Arg) -> Option<XtaskArg> {
     let value = arg_value(arg)?;
     Some(XtaskArg {
@@ -207,6 +214,7 @@ fn arg_spec(arg: &Arg) -> Option<XtaskArg> {
     })
 }
 
+#[cfg(feature = "xtask-clap")]
 fn arg_value(arg: &Arg) -> Option<XtaskValue> {
     match arg.get_action() {
         ArgAction::SetTrue => Some(XtaskValue::Bool { default: false }),
@@ -238,12 +246,11 @@ fn arg_value(arg: &Arg) -> Option<XtaskValue> {
                 default: defaults.first().cloned(),
             })
         }
-        ArgAction::Help | ArgAction::HelpShort | ArgAction::HelpLong | ArgAction::Version => None,
-        ArgAction::Append | ArgAction::Count => None,
         _ => None,
     }
 }
 
+#[cfg(feature = "xtask-clap")]
 fn default_values(arg: &Arg) -> Vec<String> {
     arg.get_default_values()
         .iter()
@@ -251,11 +258,12 @@ fn default_values(arg: &Arg) -> Vec<String> {
         .collect()
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "xtask-clap"))]
 mod tests {
     use clap::{Parser, Subcommand, ValueEnum};
 

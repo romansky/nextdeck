@@ -4,6 +4,8 @@ pub fn marker() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::{thread, time::Duration};
+
     #[test]
     fn pass_prints_stdout_and_stderr() {
         println!("PASS_STDOUT: lib pass stdout");
@@ -15,6 +17,13 @@ mod tests {
         println!("CHILD_STDOUT: command started");
         println!("    indented child output");
         eprintln!("CHILD_STDERR: command warning");
+    }
+
+    #[test]
+    fn pass_prints_slow_output_for_info_poll() {
+        println!("SLOW_PREVIEW: before poll");
+        thread::sleep(Duration::from_millis(2200));
+        println!("SLOW_FINAL: after poll");
     }
 
     #[test]

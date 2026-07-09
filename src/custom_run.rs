@@ -5,6 +5,7 @@ use crate::{
         FailFast, FilterPreset, FlakyResult, RunConfig, RunIgnored, RunOptions, RunRequest,
         RunScope,
     },
+    scroll::ViewportState,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -17,6 +18,7 @@ pub struct CustomRunState {
     pub filter: CustomRunFilter,
     pub options: RunOptions,
     pub run_config: RunConfig,
+    pub viewport: ViewportState,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -72,6 +74,7 @@ impl Default for CustomRunState {
             filter: CustomRunFilter::None,
             options: RunOptions::default(),
             run_config: RunConfig::default(),
+            viewport: ViewportState::default(),
         }
     }
 }
@@ -92,6 +95,7 @@ impl CustomRunState {
     pub fn open(&mut self) {
         self.editing = None;
         self.selected = CustomRunField::Scope;
+        self.viewport.reset();
     }
 
     pub fn close(&mut self) {
@@ -232,6 +236,32 @@ impl CustomRunState {
 
     pub fn previous_field(&mut self) {
         self.selected = self.selected.previous();
+    }
+
+    pub fn selected_field_line_range(&self) -> (usize, usize, usize) {
+        let selected = Self::field_line_index(self.selected);
+        let selected_len = Self::field_line_count(self.selected);
+        let line_count = self.line_count();
+        (selected, selected_len, line_count)
+    }
+
+    pub fn line_count(&self) -> usize {
+        CustomRunField::ALL
+            .into_iter()
+            .map(Self::field_line_count)
+            .sum()
+    }
+
+    fn field_line_index(field: CustomRunField) -> usize {
+        CustomRunField::ALL
+            .into_iter()
+            .take_while(|candidate| *candidate != field)
+            .map(|candidate| 1 + usize::from(candidate.has_details()))
+            .sum()
+    }
+
+    fn field_line_count(field: CustomRunField) -> usize {
+        1 + usize::from(field.has_details())
     }
 
     pub fn adjust_selected(&mut self, delta: i8) {
@@ -526,6 +556,10 @@ impl CustomRunField {
             | Self::FailFast
             | Self::NoCapture => None,
         }
+    }
+
+    const fn has_details(self) -> bool {
+        true
     }
 }
 

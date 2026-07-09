@@ -40,6 +40,7 @@ fn runtime_context<'a>(
         cli_open_with: None,
         queue_tx,
         runtime_settings: RuntimeSettings::from_settings(settings),
+        xtask_persistence: XtaskPersistence::default(),
     }
 }
 

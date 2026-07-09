@@ -52,11 +52,10 @@ async fn fixture_run_attaches_success_output_from_lib_test() {
     let events = run_output_fixture("pass_prints_stdout_and_stderr", Vec::new()).await;
 
     let output = test_output_event(&events, "pass_prints_stdout_and_stderr");
-    assert!(output.stdout.contains("PASS_STDOUT: lib pass stdout"));
-    assert!(output.stdout.contains("PASS_STDERR: lib pass stderr"));
-    assert!(!output.stdout.contains("running 1 test"));
-    assert!(!output.stdout.contains("test result: ok."));
-    assert!(output.stderr.is_empty());
+    assert!(output.text.contains("PASS_STDOUT: lib pass stdout"));
+    assert!(output.text.contains("PASS_STDERR: lib pass stderr"));
+    assert!(!output.text.contains("running 1 test"));
+    assert!(!output.text.contains("test result: ok."));
 }
 
 #[tokio::test]
@@ -66,12 +65,12 @@ async fn fixture_run_attaches_success_output_from_integration_test_binary() {
     let output = test_output_event(&events, "integration_pass_prints_output");
     assert!(
         output
-            .stdout
+            .text
             .contains("INTEGRATION_STDOUT: integration pass stdout")
     );
     assert!(
         output
-            .stdout
+            .text
             .contains("INTEGRATION_STDERR: integration pass stderr")
     );
 }
@@ -81,9 +80,32 @@ async fn fixture_run_preserves_child_like_success_output() {
     let events = run_output_fixture("pass_prints_child_like_output", Vec::new()).await;
 
     let output = test_output_event(&events, "pass_prints_child_like_output");
-    assert!(output.stdout.contains("CHILD_STDOUT: command started"));
-    assert!(output.stdout.contains("    indented child output"));
-    assert!(output.stdout.contains("CHILD_STDERR: command warning"));
+    assert!(output.text.contains("CHILD_STDOUT: command started"));
+    assert!(output.text.contains("    indented child output"));
+    assert!(output.text.contains("CHILD_STDERR: command warning"));
+}
+
+#[tokio::test]
+async fn fixture_run_streams_info_preview_before_final_output() {
+    let events = run_output_fixture("pass_prints_slow_output_for_info_poll", Vec::new()).await;
+    let outputs = test_output_events(&events, "pass_prints_slow_output_for_info_poll");
+
+    assert!(
+        outputs.len() >= 2,
+        "expected preview and final output chunks; outputs: {outputs:#?}"
+    );
+    assert!(outputs[0].text.contains("SLOW_PREVIEW: before poll"));
+    assert!(!outputs[0].text.contains("SLOW_FINAL: after poll"));
+    assert!(
+        outputs
+            .iter()
+            .any(|output| output.text.contains("SLOW_FINAL: after poll"))
+    );
+    let preview_count = outputs
+        .iter()
+        .filter(|output| output.text.contains("SLOW_PREVIEW: before poll"))
+        .count();
+    assert_eq!(preview_count, 1, "outputs: {outputs:#?}");
 }
 
 #[tokio::test]
@@ -111,11 +133,11 @@ async fn fixture_run_captures_failed_output_from_json_event() {
 
     let finished = finished_test_event(&events, "fail_prints_stdout_and_stderr");
     assert_eq!(finished.status, TestStatus::Failed);
-    assert!(finished.stdout.contains("FAIL_STDOUT: lib fail stdout"));
-    assert!(finished.stdout.contains("FAIL_STDERR: lib fail stderr"));
+    assert!(finished.output.contains("FAIL_STDOUT: lib fail stdout"));
+    assert!(finished.output.contains("FAIL_STDERR: lib fail stderr"));
     assert!(
         finished
-            .stdout
+            .output
             .contains("FAIL_PANIC: expected fixture failure")
     );
 }
@@ -129,7 +151,7 @@ async fn fixture_run_can_capture_ignored_test_when_requested() {
     .await;
 
     let output = test_output_event(&events, "ignored_prints_when_explicitly_run");
-    assert!(output.stdout.contains("IGNORED_STDOUT: ignored stdout"));
+    assert!(output.text.contains("IGNORED_STDOUT: ignored stdout"));
 }
 
 #[test]
@@ -184,16 +206,14 @@ fn parses_libtest_json_plus_finished_event() {
         RunEvent::TestFinished {
             key,
             status,
-            stdout,
-            stderr,
+            output,
             duration,
         } => {
             assert_eq!(key.binary_id.as_deref(), Some("demo"));
             assert_eq!(key.event_prefix, None);
             assert_eq!(key.name, "tests::bad");
             assert_eq!(status, TestStatus::Failed);
-            assert_eq!(stdout, "out");
-            assert_eq!(stderr, "err");
+            assert_eq!(output, "out\nerr");
             assert_eq!(duration, Some(Duration::from_millis(250)));
         }
         other => panic!("unexpected event: {other:?}"),
@@ -211,8 +231,7 @@ fn successful_output_collector_attaches_nextest_output_block_to_last_success() {
     collector.observe_event(&RunEvent::TestFinished {
         key: key.clone(),
         status: TestStatus::Passed,
-        stdout: String::new(),
-        stderr: String::new(),
+        output: String::new(),
         duration: Some(Duration::from_millis(5)),
     });
 
@@ -232,12 +251,10 @@ fn successful_output_collector_attaches_nextest_output_block_to_last_success() {
     match collector.finish_event().expect("output event") {
         RunEvent::TestOutput {
             key: output_key,
-            stdout,
-            stderr,
+            text,
         } => {
             assert_eq!(output_key, key);
-            assert_eq!(stdout, "stdout from passing test\nstderr from passing test");
-            assert_eq!(stderr, "");
+            assert_eq!(text, "stdout from passing test\nstderr from passing test");
         }
         other => panic!("unexpected event: {other:?}"),
     }
@@ -254,8 +271,7 @@ fn successful_output_collector_handles_suite_event_before_output_block() {
     collector.observe_event(&RunEvent::TestFinished {
         key: key.clone(),
         status: TestStatus::Passed,
-        stdout: String::new(),
-        stderr: String::new(),
+        output: String::new(),
         duration: Some(Duration::from_secs(28)),
     });
 
@@ -278,15 +294,93 @@ fn successful_output_collector_handles_suite_event_before_output_block() {
     match collector.finish_event().expect("output event") {
         RunEvent::TestOutput {
             key: output_key,
-            stdout,
-            stderr,
+            text,
         } => {
             assert_eq!(output_key, key);
             assert_eq!(
-                stdout,
+                text,
                 "capakit-e2e xtask-action=apple-vm:prepare-e2e status=start command=stage-e2e"
             );
-            assert_eq!(stderr, "");
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn successful_output_collector_uses_block_test_name_when_starts_race() {
+    let output_key = TestKey {
+        binary_id: Some("nextdeck::nextdeck".to_owned()),
+        event_prefix: Some("nextdeck::nextdeck".to_owned()),
+        name: "output::tests::dogfood_output_captures_stdout_stderr_and_events".to_owned(),
+    };
+    let later_key = TestKey {
+        binary_id: Some("nextdeck::nextdeck".to_owned()),
+        event_prefix: Some("nextdeck::nextdeck".to_owned()),
+        name: "app::tests::some_later_test".to_owned(),
+    };
+    let mut collector = SuccessfulOutputCollector::default();
+    collector.observe_event(&RunEvent::TestStarted {
+        key: output_key.clone(),
+    });
+    collector.observe_event(&RunEvent::TestStarted { key: later_key });
+
+    assert!(collector.try_start("  output ───"));
+    collector.push_line(String::new());
+    collector.push_line("    DOGFOOD_OUTPUT stdout before info event".to_owned());
+    collector.push_line(
+        "    test output::tests::dogfood_output_captures_stdout_stderr_and_events ... ok"
+            .to_owned(),
+    );
+
+    match collector.finish_event().expect("output event") {
+        RunEvent::TestOutput { key, text } => {
+            assert_eq!(key, output_key);
+            assert_eq!(text, "DOGFOOD_OUTPUT stdout before info event");
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn successful_output_collector_does_not_reuse_key_after_output_was_emitted() {
+    let first_key = TestKey {
+        binary_id: Some("nextdeck::nextdeck".to_owned()),
+        event_prefix: Some("nextdeck::nextdeck".to_owned()),
+        name: "output::tests::dogfood_output_captures_stdout_stderr_and_events".to_owned(),
+    };
+    let next_key = TestKey {
+        binary_id: Some("nextdeck::nextdeck".to_owned()),
+        event_prefix: Some("nextdeck::nextdeck".to_owned()),
+        name: "nextest::tests::later_success".to_owned(),
+    };
+    let mut collector = SuccessfulOutputCollector::default();
+    collector.observe_event(&RunEvent::TestStarted {
+        key: first_key.clone(),
+    });
+    assert!(collector.try_start("  output ───"));
+    collector.push_line("    first stdout".to_owned());
+    collector.push_line(
+        "    test output::tests::dogfood_output_captures_stdout_stderr_and_events ... ok"
+            .to_owned(),
+    );
+    let _ = collector.finish_event().expect("first output event");
+
+    collector.observe_event(&RunEvent::TestFinished {
+        key: first_key,
+        status: TestStatus::Passed,
+        output: String::new(),
+        duration: Some(Duration::from_millis(5)),
+    });
+    collector.observe_event(&RunEvent::TestStarted {
+        key: next_key.clone(),
+    });
+    assert!(collector.try_start("  output ───"));
+    collector.push_line("    later stdout".to_owned());
+
+    match collector.finish_event().expect("second output event") {
+        RunEvent::TestOutput { key, text } => {
+            assert_eq!(key, next_key);
+            assert_eq!(text, "later stdout");
         }
         other => panic!("unexpected event: {other:?}"),
     }
@@ -298,6 +392,99 @@ fn successful_output_collector_ignores_unassociated_output_blocks() {
 
     assert!(!collector.try_start("  output ───"));
     assert!(collector.finish_event().is_none());
+}
+
+#[test]
+fn info_output_collector_emits_deltas_for_all_running_tests() {
+    let alpha = TestKey {
+        binary_id: Some("sigusr1_probe::sigusr1_probe".to_owned()),
+        event_prefix: Some("sigusr1_probe::sigusr1_probe".to_owned()),
+        name: "tests::alpha_slow_stdout_and_stderr".to_owned(),
+    };
+    let beta = TestKey {
+        binary_id: Some("sigusr1_probe::sigusr1_probe".to_owned()),
+        event_prefix: Some("sigusr1_probe::sigusr1_probe".to_owned()),
+        name: "tests::beta_slow_stdout_only".to_owned(),
+    };
+    let mut collector = InfoOutputCollector::default();
+    let mut snapshots = OutputSnapshotTracker::default();
+    collector.observe_event(&RunEvent::TestStarted { key: alpha.clone() });
+    collector.observe_event(&RunEvent::TestStarted { key: beta.clone() });
+
+    let first = collect_info_events(
+        &mut collector,
+        &mut snapshots,
+        &[
+            "────────────",
+            "info: 2 running, 0 passed, 0 skipped in 0.100s",
+            "",
+            "* 1/2:    sigusr1_probe tests::alpha_slow_stdout_and_stderr",
+            "  status: test running for 0.100s as PID 10",
+            "  output:",
+            "",
+            "    running 1 test",
+            "    alpha stdout start",
+            "    alpha stderr start",
+            "────────",
+            "",
+            "* 2/2:    sigusr1_probe tests::beta_slow_stdout_only",
+            "  status: test running for 0.099s as PID 11",
+            "  output:",
+            "",
+            "    running 1 test",
+            "    beta stdout start",
+            "────────────",
+        ],
+    );
+
+    assert_eq!(
+        test_output_text(&first, "alpha"),
+        "alpha stdout start\nalpha stderr start"
+    );
+    assert_eq!(test_output_text(&first, "beta"), "beta stdout start");
+
+    let second = collect_info_events(
+        &mut collector,
+        &mut snapshots,
+        &[
+            "info: 2 running, 0 passed, 0 skipped in 0.800s",
+            "* 1/2:    sigusr1_probe tests::alpha_slow_stdout_and_stderr",
+            "  status: test running for 0.800s as PID 10",
+            "  output:",
+            "",
+            "    running 1 test",
+            "    alpha stdout start",
+            "    alpha stderr start",
+            "    alpha stdout mid",
+            "────────────",
+        ],
+    );
+
+    assert_eq!(second.len(), 1);
+    assert_eq!(test_output_text(&second, "alpha"), "alpha stdout mid");
+}
+
+#[test]
+fn output_snapshot_tracker_dedupes_final_output_after_preview() {
+    let key = TestKey {
+        binary_id: Some("demo::demo".to_owned()),
+        event_prefix: Some("demo::demo".to_owned()),
+        name: "tests::passes".to_owned(),
+    };
+    let mut snapshots = OutputSnapshotTracker::default();
+
+    let preview = snapshots
+        .preview_event(key.clone(), "stdout before\nstderr before".to_owned())
+        .expect("preview event");
+    assert_eq!(
+        test_output_text(&[preview], "passes"),
+        "stdout before\nstderr before"
+    );
+
+    let mut output = "stdout before\nstderr before\nstdout after".to_owned();
+    snapshots.dedupe_output(&key, &mut output);
+
+    assert_eq!(output, "stdout after");
 }
 
 #[cfg(unix)]
@@ -524,14 +711,14 @@ fn parses_sampled_libtest_json_plus_fixture() {
     }
 }
 
+#[derive(Debug)]
 struct CapturedTestOutput {
-    stdout: String,
-    stderr: String,
+    text: String,
 }
 
 struct FinishedTestOutput {
     status: TestStatus,
-    stdout: String,
+    output: String,
 }
 
 async fn run_output_fixture(filter: &str, passthrough_args: Vec<String>) -> Vec<RunEvent> {
@@ -576,6 +763,7 @@ async fn run_output_fixture_with_events(
             stop_rx,
             test_event_run.as_ref().map(|run| run.dir.clone()),
             ProcessTracker::default(),
+            crate::config::AppSettings::default().test_output_poll_interval(),
         )
         .await
         .expect("run output fixture");
@@ -655,14 +843,46 @@ fn test_output_event(events: &[RunEvent], name: &str) -> CapturedTestOutput {
     events
         .iter()
         .find_map(|event| match event {
-            RunEvent::TestOutput {
-                key,
-                stdout,
-                stderr,
-            } if key.name.contains(name) => Some(CapturedTestOutput {
-                stdout: stdout.clone(),
-                stderr: stderr.clone(),
-            }),
+            RunEvent::TestOutput { key, text } if key.name.contains(name) => {
+                Some(CapturedTestOutput { text: text.clone() })
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing TestOutput event for {name}; events: {events:#?}"))
+}
+
+fn test_output_events(events: &[RunEvent], name: &str) -> Vec<CapturedTestOutput> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            RunEvent::TestOutput { key, text } if key.name.contains(name) => {
+                Some(CapturedTestOutput { text: text.clone() })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn collect_info_events(
+    collector: &mut InfoOutputCollector,
+    snapshots: &mut OutputSnapshotTracker,
+    lines: &[&str],
+) -> Vec<RunEvent> {
+    let mut events = Vec::new();
+    for line in lines {
+        let (consumed, mut line_events) = collector.consume_line(line, snapshots);
+        assert!(consumed, "line was not consumed: {line}");
+        events.append(&mut line_events);
+    }
+    events.extend(collector.finish(snapshots));
+    events
+}
+
+fn test_output_text(events: &[RunEvent], name: &str) -> String {
+    events
+        .iter()
+        .find_map(|event| match event {
+            RunEvent::TestOutput { key, text } if key.name.contains(name) => Some(text.clone()),
             _ => None,
         })
         .unwrap_or_else(|| panic!("missing TestOutput event for {name}; events: {events:#?}"))
@@ -675,12 +895,11 @@ fn finished_test_event(events: &[RunEvent], name: &str) -> FinishedTestOutput {
             RunEvent::TestFinished {
                 key,
                 status,
-                stdout,
-                stderr,
+                output,
                 ..
             } if key.name.contains(name) => Some(FinishedTestOutput {
                 status: *status,
-                stdout: format!("{stdout}{stderr}"),
+                output: output.clone(),
             }),
             _ => None,
         })

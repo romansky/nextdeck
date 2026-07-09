@@ -190,32 +190,6 @@ impl TestEventsState {
         }
         render_events(&run.events)
     }
-
-    pub fn scroll_output_line_up(&mut self) {
-        self.output.scroll_up(1);
-    }
-
-    pub fn scroll_output_line_down(&mut self) {
-        self.output.scroll_down(1);
-    }
-
-    pub fn scroll_output_page_up(&mut self) {
-        self.output.scroll_up(self.output.page_size);
-    }
-
-    pub fn scroll_output_page_down(&mut self) {
-        self.output.scroll_down(self.output.page_size);
-    }
-
-    pub fn scroll_output_top(&mut self) {
-        self.output.scroll_top();
-        self.output.disable_snap();
-    }
-
-    pub fn scroll_output_bottom(&mut self) {
-        let line_count = self.output_text().lines().count().max(1);
-        self.output.snap_to_bottom(line_count);
-    }
 }
 
 impl TestEventTailer {
@@ -295,7 +269,7 @@ fn render_events(events: &[TestEvent]) -> String {
 }
 
 pub fn inline_event_line(event: &TestEvent) -> String {
-    event_summary_with_prefix(event, "event")
+    event_summary_with_prefix(event, "@ event")
 }
 
 fn event_summary(event: &TestEvent) -> String {
@@ -310,10 +284,10 @@ fn event_summary(event: &TestEvent) -> String {
 fn event_summary_with_prefix(event: &TestEvent, prefix: &str) -> String {
     let target = event.target.as_deref().unwrap_or("-");
     if target == "-" {
-        format!("[{prefix} {}] {}", level_label(event.level), event.message)
+        format!("{prefix} {} {}", level_label(event.level), event.message)
     } else {
         format!(
-            "[{prefix} {}] {}: {}",
+            "{prefix} {} {}: {}",
             level_label(event.level),
             target,
             event.message

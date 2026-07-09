@@ -2,7 +2,10 @@ use std::time::{Duration, Instant};
 
 use crate::{
     command::{AppCommand, CommandContext, CommandFocus, InputMode, OverlayMode},
-    config::{self, AppSettings, STORAGE_LOW_SPACE_THRESHOLD_STEP_GB, TREE_WIDTH_STEP_PERCENT},
+    config::{
+        self, AppSettings, STORAGE_LOW_SPACE_THRESHOLD_STEP_GB, TEST_OUTPUT_POLL_INTERVAL_STEP_MS,
+        TREE_WIDTH_STEP_PERCENT,
+    },
     custom_run::{CustomRunScope, CustomRunState},
     dirty::UiDirty,
     disk_usage::{DiskCleanupState, DiskUsageSnapshot, DiskUsageState},
@@ -45,7 +48,7 @@ enum OutputPaneId {
 
 pub struct App {
     pub tree: Tree,
-    pub tree_viewport: scroll::SelectionViewport,
+    pub tree_viewport: scroll::ViewportState,
     pub status: String,
     pub key_echo: Option<KeyEcho>,
     pub ui_ticks: usize,
@@ -54,6 +57,7 @@ pub struct App {
     pub main_output: OutputPaneState,
     pub focus: FocusPane,
     pub show_help: bool,
+    pub help_viewport: scroll::ViewportState,
     pub show_test_details: bool,
     pub discovery: DiscoveryState,
     pub git_status: GitStatus,
@@ -65,6 +69,77 @@ pub struct App {
     pub global_settings: GlobalSettingsState,
     pub run: RunState,
     pub settings: AppSettings,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ViewportId {
+    Tree,
+    MainOutput,
+    XtaskParameters,
+    XtaskOutput,
+    TestEventsOutput,
+    TestDetails,
+    Help,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ViewportMetrics {
+    pub page_size: usize,
+    pub content_len: Option<usize>,
+}
+
+impl ViewportMetrics {
+    pub fn new(page_size: usize) -> Self {
+        Self {
+            page_size: page_size.max(1),
+            content_len: None,
+        }
+    }
+
+    pub fn with_content_len(page_size: usize, content_len: usize) -> Self {
+        Self {
+            page_size: page_size.max(1),
+            content_len: Some(content_len.max(1)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ViewportSpec {
+    pub id: ViewportId,
+    pub metrics: ViewportMetrics,
+}
+
+impl ViewportSpec {
+    pub fn new(id: ViewportId, metrics: ViewportMetrics) -> Self {
+        Self { id, metrics }
+    }
+}
+
+impl ViewportId {
+    fn output_pane(self) -> Option<OutputPaneId> {
+        match self {
+            Self::MainOutput => Some(OutputPaneId::Main),
+            Self::XtaskOutput => Some(OutputPaneId::Xtask),
+            Self::TestEventsOutput => Some(OutputPaneId::TestEvents),
+            Self::Tree | Self::XtaskParameters | Self::TestDetails | Self::Help => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrameViewportMetrics {
+    specs: Vec<ViewportSpec>,
+}
+
+impl FrameViewportMetrics {
+    pub fn new(specs: Vec<ViewportSpec>) -> Self {
+        Self { specs }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = ViewportSpec> + '_ {
+        self.specs.iter().copied()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -88,6 +163,7 @@ pub struct RunState {
     pub run_id: Option<String>,
     pub profile: String,
     pub scope: RunScope,
+    pub command_line: Option<String>,
     pub outcome: RunOutcome,
     pub exit_code: Option<i32>,
     started_at: Option<Instant>,
@@ -124,6 +200,7 @@ impl Default for RunState {
             run_id: None,
             profile: "default".to_owned(),
             scope: RunScope::Workspace,
+            command_line: None,
             outcome: RunOutcome::NotStarted,
             exit_code: None,
             started_at: None,
@@ -166,7 +243,7 @@ impl App {
     pub fn with_settings(tree: Tree, settings: AppSettings) -> Self {
         Self {
             tree,
-            tree_viewport: scroll::SelectionViewport::default(),
+            tree_viewport: scroll::ViewportState::default(),
             status: "Ready".to_owned(),
             key_echo: None,
             ui_ticks: 0,
@@ -175,6 +252,7 @@ impl App {
             main_output: OutputPaneState::default(),
             focus: FocusPane::Tree,
             show_help: false,
+            help_viewport: scroll::ViewportState::default(),
             show_test_details: false,
             discovery: DiscoveryState::default(),
             git_status: GitStatus::unknown(),
@@ -211,56 +289,80 @@ impl App {
         ]
     }
 
-    pub fn prepare_frame(
-        &mut self,
-        tree_height: u16,
-        output_height: u16,
-        xtask_params_height: u16,
-        xtask_output_height: u16,
-        test_events_output_height: u16,
-    ) {
-        self.set_viewport_sizes(
-            tree_height,
-            output_height,
-            xtask_params_height,
-            xtask_output_height,
-            test_events_output_height,
+    pub fn prepare_frame(&mut self, viewports: FrameViewportMetrics) {
+        for viewport in viewports.iter() {
+            self.apply_viewport_metrics(viewport);
+        }
+    }
+
+    fn apply_viewport_metrics(&mut self, viewport: ViewportSpec) {
+        match viewport.id {
+            ViewportId::Tree => {
+                self.tree_viewport.set_page_size(viewport.metrics.page_size);
+                self.ensure_tree_selection_visible();
+            }
+            ViewportId::MainOutput | ViewportId::XtaskOutput | ViewportId::TestEventsOutput => {
+                let output = viewport
+                    .id
+                    .output_pane()
+                    .expect("output viewport id maps to an output pane");
+                self.apply_output_viewport_metrics(output, viewport.metrics);
+            }
+            ViewportId::XtaskParameters => {
+                self.xtasks
+                    .apply_parameters_viewport_metrics(viewport.metrics.page_size);
+            }
+            ViewportId::TestDetails => {
+                self.apply_test_details_viewport_metrics(viewport.metrics);
+            }
+            ViewportId::Help => {
+                if let Some(content_len) = viewport.metrics.content_len {
+                    self.help_viewport
+                        .set_metrics(viewport.metrics.page_size, content_len);
+                } else {
+                    self.help_viewport.set_page_size(viewport.metrics.page_size);
+                }
+            }
+        }
+    }
+
+    fn apply_test_details_viewport_metrics(&mut self, metrics: ViewportMetrics) {
+        let previous_page_size = self.custom_run.viewport.page_size();
+        self.custom_run
+            .viewport
+            .set_page_size(metrics.page_size.max(1));
+        self.custom_run.viewport.set_content_len(
+            metrics
+                .content_len
+                .unwrap_or_else(|| self.test_details_line_count()),
         );
-        let line_count = self.output_text().lines().count().max(1);
-        self.set_output_line_count(line_count);
-        if self.xtasks.detail_open {
-            let line_count = self.xtasks.output_text().lines().count().max(1);
-            self.xtasks.output.set_line_count(line_count);
-        }
-        if self.test_events.modal_open {
-            let line_count = self.test_events.output_text().lines().count().max(1);
-            self.test_events.output.set_line_count(line_count);
+        if self.custom_run.viewport.page_size() != previous_page_size {
+            self.ensure_custom_run_selection_visible();
         }
     }
 
-    pub fn set_viewport_sizes(
-        &mut self,
-        tree_height: u16,
-        output_height: u16,
-        xtask_params_height: u16,
-        xtask_output_height: u16,
-        test_events_output_height: u16,
-    ) {
-        self.tree_viewport
-            .set_page_size(tree_height.saturating_sub(2).max(1) as usize);
-        self.main_output
-            .set_page_size(output_height.saturating_sub(2).max(1));
-        self.xtasks.set_parameters_page_size(xtask_params_height);
-        self.xtasks.output.set_page_size(xtask_output_height);
-        self.test_events
-            .output
-            .set_page_size(test_events_output_height);
-        self.ensure_tree_selection_visible();
-        self.clamp_output_scroll();
+    fn apply_output_viewport_metrics(&mut self, output: OutputPaneId, metrics: ViewportMetrics) {
+        if !self.output_viewport_is_active(output) {
+            self.output_state_mut(output)
+                .apply_viewport_page_size(metrics.page_size);
+            return;
+        }
+        let line_count = metrics
+            .content_len
+            .unwrap_or_else(|| self.output_content_len(output));
+        self.output_state_mut(output)
+            .apply_viewport_metrics(metrics.page_size, line_count);
+        if output == OutputPaneId::Main {
+            self.clamp_output_scroll();
+        }
     }
 
-    pub fn set_output_line_count(&mut self, line_count: usize) {
-        self.main_output.set_line_count(line_count);
+    fn output_viewport_is_active(&self, output: OutputPaneId) -> bool {
+        match output {
+            OutputPaneId::Main => true,
+            OutputPaneId::Xtask => self.xtasks.detail_open,
+            OutputPaneId::TestEvents => self.test_events.modal_open,
+        }
     }
 
     pub fn toggle_focus(&mut self) {
@@ -272,6 +374,9 @@ impl App {
 
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
+        if self.show_help {
+            self.help_viewport.reset();
+        }
     }
 
     pub fn on_resize(&mut self) {
@@ -609,6 +714,23 @@ impl App {
                 );
                 self.save_settings_effect()
             }
+            SettingsField::OutputPoll => {
+                let delta = if direction < 0 {
+                    -(TEST_OUTPUT_POLL_INTERVAL_STEP_MS as i16)
+                } else {
+                    TEST_OUTPUT_POLL_INTERVAL_STEP_MS as i16
+                };
+                self.settings.test_output_poll_interval_ms =
+                    config::resize_test_output_poll_interval(
+                        self.settings.test_output_poll_interval_ms,
+                        delta,
+                    );
+                self.status = format!(
+                    "Output poll interval: {} ms",
+                    self.settings.test_output_poll_interval_ms
+                );
+                self.save_settings_effect()
+            }
             SettingsField::Theme => {
                 self.settings.theme_mode = if direction < 0 {
                     self.settings.theme_mode.previous()
@@ -643,6 +765,7 @@ impl App {
             SettingsField::TreeWidth
             | SettingsField::TreeDuration
             | SettingsField::StorageThreshold
+            | SettingsField::OutputPoll
             | SettingsField::Theme => self.adjust_selected_setting(1),
         }
     }
@@ -702,14 +825,14 @@ impl App {
             AppCommand::MoveUp => {
                 match self.command_focus() {
                     FocusPane::Tree => self.select_previous(),
-                    FocusPane::Output => self.scroll_output_up(1),
+                    FocusPane::Output => self.apply_scroll(scroll::ScrollAction::LineUp),
                 }
                 AppEffect::None
             }
             AppCommand::MoveDown => {
                 match self.command_focus() {
                     FocusPane::Tree => self.select_next(),
-                    FocusPane::Output => self.scroll_output_down(1),
+                    FocusPane::Output => self.apply_scroll(scroll::ScrollAction::LineDown),
                 }
                 AppEffect::None
             }
@@ -740,29 +863,27 @@ impl App {
             AppCommand::MoveHome => {
                 match self.command_focus() {
                     FocusPane::Tree => self.select_first(),
-                    FocusPane::Output => self.scroll_output_up(u16::MAX),
+                    FocusPane::Output => self.apply_scroll(scroll::ScrollAction::Top),
                 }
                 AppEffect::None
             }
             AppCommand::MoveEnd => {
                 match self.command_focus() {
                     FocusPane::Tree => self.select_last(),
-                    FocusPane::Output => self.scroll_output_bottom(),
+                    FocusPane::Output => self.apply_scroll(scroll::ScrollAction::Bottom),
                 }
+                AppEffect::None
+            }
+            AppCommand::Scroll(action) => {
+                self.apply_scroll(action);
                 AppEffect::None
             }
             AppCommand::PageUp => {
-                match self.command_focus() {
-                    FocusPane::Tree => self.select_previous_page(),
-                    FocusPane::Output => self.scroll_output_up(self.main_output.page_size),
-                }
+                self.select_previous_page();
                 AppEffect::None
             }
             AppCommand::PageDown => {
-                match self.command_focus() {
-                    FocusPane::Tree => self.select_next_page(),
-                    FocusPane::Output => self.scroll_output_down(self.main_output.page_size),
-                }
+                self.select_next_page();
                 AppEffect::None
             }
             AppCommand::NarrowTestsPane => {
@@ -795,10 +916,12 @@ impl App {
             }
             AppCommand::CustomRunNext => {
                 self.custom_run.next_field();
+                self.ensure_custom_run_selection_visible();
                 AppEffect::None
             }
             AppCommand::CustomRunPrevious => {
                 self.custom_run.previous_field();
+                self.ensure_custom_run_selection_visible();
                 AppEffect::None
             }
             AppCommand::CustomRunAdjustLeft => {
@@ -904,36 +1027,6 @@ impl App {
                 self.test_events.select_previous_run();
                 AppEffect::None
             }
-            AppCommand::TestEventsOutputLineUp => {
-                self.test_events.focus_events();
-                self.test_events.scroll_output_line_up();
-                AppEffect::None
-            }
-            AppCommand::TestEventsOutputLineDown => {
-                self.test_events.focus_events();
-                self.test_events.scroll_output_line_down();
-                AppEffect::None
-            }
-            AppCommand::TestEventsOutputPageUp => {
-                self.test_events.focus_events();
-                self.test_events.scroll_output_page_up();
-                AppEffect::None
-            }
-            AppCommand::TestEventsOutputPageDown => {
-                self.test_events.focus_events();
-                self.test_events.scroll_output_page_down();
-                AppEffect::None
-            }
-            AppCommand::TestEventsOutputTop => {
-                self.test_events.focus_events();
-                self.test_events.scroll_output_top();
-                AppEffect::None
-            }
-            AppCommand::TestEventsOutputBottom => {
-                self.test_events.focus_events();
-                self.test_events.scroll_output_bottom();
-                AppEffect::None
-            }
             AppCommand::OpenXtasks => {
                 self.xtasks.open();
                 self.status = "Xtasks opened".to_owned();
@@ -1014,36 +1107,6 @@ impl App {
                     }
                     crate::xtask::XtaskDetailFocus::Output => "Xtask output focused".to_owned(),
                 };
-                AppEffect::None
-            }
-            AppCommand::XtaskOutputLineUp => {
-                self.xtasks.focus_output();
-                self.xtasks.scroll_output_line_up();
-                AppEffect::None
-            }
-            AppCommand::XtaskOutputLineDown => {
-                self.xtasks.focus_output();
-                self.xtasks.scroll_output_line_down();
-                AppEffect::None
-            }
-            AppCommand::XtaskOutputPageUp => {
-                self.xtasks.focus_output();
-                self.xtasks.scroll_output_page_up();
-                AppEffect::None
-            }
-            AppCommand::XtaskOutputPageDown => {
-                self.xtasks.focus_output();
-                self.xtasks.scroll_output_page_down();
-                AppEffect::None
-            }
-            AppCommand::XtaskOutputTop => {
-                self.xtasks.focus_output();
-                self.xtasks.scroll_output_top();
-                AppEffect::None
-            }
-            AppCommand::XtaskOutputBottom => {
-                self.xtasks.focus_output();
-                self.xtasks.scroll_output_bottom();
                 AppEffect::None
             }
             AppCommand::XtaskEdit(input) => {
@@ -1208,6 +1271,7 @@ impl App {
         }
         self.custom_run.cancel_edit();
         self.show_test_details = true;
+        self.ensure_custom_run_selection_visible();
         self.status = "Details opened".to_owned();
     }
 
@@ -1291,23 +1355,12 @@ impl App {
         AppEffect::SaveSettings(self.settings.clone())
     }
 
-    pub fn scroll_output_up(&mut self, amount: u16) {
-        self.main_output.scroll_up(amount);
-    }
-
-    pub fn scroll_output_down(&mut self, amount: u16) {
-        self.main_output.scroll_down(amount);
-    }
-
-    pub fn scroll_output_bottom(&mut self) {
-        let line_count = self.output_source_text().lines().count().max(1);
-        self.main_output.snap_to_bottom(line_count);
-    }
-
+    #[cfg(test)]
     pub fn output_text(&self) -> String {
         self.output_view().text
     }
 
+    #[cfg(test)]
     pub fn output_view(&self) -> OutputView {
         self.output_view_for(OutputPaneId::Main)
     }
@@ -1405,21 +1458,15 @@ impl App {
             RunEvent::TestFinished {
                 key,
                 status,
-                stdout,
-                stderr,
+                output,
                 duration,
             } => {
                 self.mark_tests_running();
-                self.tree
-                    .finish_test(&key, status, stdout, stderr, duration);
+                self.tree.finish_test(&key, status, output, duration);
                 None
             }
-            RunEvent::TestOutput {
-                key,
-                stdout,
-                stderr,
-            } => {
-                self.tree.append_test_output(&key, stdout, stderr);
+            RunEvent::TestOutput { key, text } => {
+                self.tree.append_test_output(&key, text);
                 None
             }
             RunEvent::TestEvent { run_id, event } => {
@@ -1526,7 +1573,43 @@ impl App {
         }
         self.custom_run.open();
         self.show_test_details = true;
+        self.ensure_custom_run_selection_visible();
         self.status = "Run options opened".to_owned();
+    }
+
+    fn ensure_custom_run_selection_visible(&mut self) {
+        let Some((start, len, line_count)) = self.test_details_focused_range() else {
+            self.custom_run.viewport.reset();
+            return;
+        };
+        self.custom_run.viewport.set_content_len(line_count);
+        self.custom_run.viewport.ensure_range_visible(start, len);
+    }
+
+    fn test_details_focused_range(&self) -> Option<(usize, usize, usize)> {
+        if !self.show_test_details {
+            return None;
+        }
+        let custom_run_start = self.test_details_custom_run_start_line()?;
+        let (field_start, field_len, custom_run_lines) =
+            self.custom_run.selected_field_line_range();
+        Some((
+            custom_run_start + field_start,
+            field_len,
+            custom_run_start + custom_run_lines + 2,
+        ))
+    }
+
+    fn test_details_line_count(&self) -> usize {
+        let Some(custom_run_start) = self.test_details_custom_run_start_line() else {
+            return 1;
+        };
+        custom_run_start + self.custom_run.line_count() + 2
+    }
+
+    fn test_details_custom_run_start_line(&self) -> Option<usize> {
+        let node = self.tree.selected_node()?;
+        Some(2 + test_details_row_count(node) + 2)
     }
 
     fn run_custom_effect(&mut self) -> AppEffect {
@@ -1608,7 +1691,7 @@ impl App {
     }
 
     fn output_with_run_summary(&self, mut output: String) -> String {
-        let Some(summary) = self.run_output_summary() else {
+        let Some(summary) = self.run_output_summary(&output) else {
             return output;
         };
 
@@ -1625,7 +1708,7 @@ impl App {
         output
     }
 
-    fn run_output_summary(&self) -> Option<String> {
+    fn run_output_summary(&self, current_output: &str) -> Option<String> {
         let counts = self.tree.status_counts_for_scope(&self.run.scope);
         match self.run.outcome {
             RunOutcome::Passed => Some(format!(
@@ -1636,10 +1719,14 @@ impl App {
                 "Run failed: {} passed, {} failed, {} skipped, {} ignored",
                 counts.passed, counts.failed, counts.skipped, counts.ignored
             )),
-            RunOutcome::CommandFailed => Some(match self.run.exit_code {
-                Some(code) => format!("Run command failed: nextest exited with {code}"),
-                None => "Run command failed: nextest did not complete".to_owned(),
-            }),
+            RunOutcome::CommandFailed => Some(command_failure_summary(
+                self.run.exit_code,
+                self.run.command_line.as_deref(),
+                &self
+                    .tree
+                    .runner_output_tail(COMMAND_FAILURE_RUNNER_TAIL_LINES),
+                current_output,
+            )),
             RunOutcome::Stopped => Some(format!(
                 "Run stopped: {} passed, {} failed, {} pending, {} skipped, {} ignored",
                 counts.passed, counts.failed, counts.pending, counts.skipped, counts.ignored
@@ -1686,6 +1773,56 @@ impl App {
         }
     }
 
+    fn active_scroll_target(&self) -> Option<ViewportId> {
+        if self.show_help {
+            return Some(ViewportId::Help);
+        }
+        if self.xtasks.modal_open && self.xtasks.detail_open {
+            return Some(match self.xtasks.detail_focus {
+                crate::xtask::XtaskDetailFocus::Parameters => ViewportId::XtaskParameters,
+                crate::xtask::XtaskDetailFocus::Output => ViewportId::XtaskOutput,
+            });
+        }
+        if self.test_events.modal_open && self.test_events.focus == TestEventsFocus::Events {
+            return Some(ViewportId::TestEventsOutput);
+        }
+        if self.show_test_details {
+            return Some(ViewportId::TestDetails);
+        }
+        if matches!(self.command_focus(), FocusPane::Output) || self.discovery.error.is_some() {
+            return Some(ViewportId::MainOutput);
+        }
+        None
+    }
+
+    fn apply_scroll(&mut self, action: scroll::ScrollAction) {
+        let Some(target) = self.active_scroll_target() else {
+            return;
+        };
+        match target {
+            ViewportId::MainOutput | ViewportId::XtaskOutput | ViewportId::TestEventsOutput => {
+                let output = target
+                    .output_pane()
+                    .expect("output viewport id maps to an output pane");
+                let line_count = self.output_content_len(output);
+                self.output_state_mut(output)
+                    .apply_scroll(action, line_count);
+            }
+            ViewportId::Help => self.help_viewport.apply_scroll(action),
+            ViewportId::TestDetails => {
+                self.custom_run
+                    .viewport
+                    .set_content_len(self.test_details_line_count());
+                self.custom_run.viewport.apply_scroll(action);
+            }
+            ViewportId::XtaskParameters => {
+                self.xtasks.sync_parameters_viewport_content();
+                self.xtasks.parameters_viewport.apply_scroll(action);
+            }
+            ViewportId::Tree => {}
+        }
+    }
+
     fn active_output_search_mut(&mut self) -> &mut OutputSearchState {
         let output = self.active_output_pane();
         &mut self.output_state_mut(output).search
@@ -1694,6 +1831,16 @@ impl App {
     fn output_view_for(&self, output: OutputPaneId) -> OutputView {
         let text = self.output_source_text_for(output);
         self.output_state(output).output_view(&text)
+    }
+
+    fn output_content_len(&self, output: OutputPaneId) -> usize {
+        self.output_view_for(output).line_count()
+    }
+
+    fn sync_output_content_len(&mut self, output: OutputPaneId) -> usize {
+        let line_count = self.output_content_len(output);
+        self.output_state_mut(output).apply_content_len(line_count);
+        line_count
     }
 
     fn output_source_text_for(&self, output: OutputPaneId) -> String {
@@ -1706,7 +1853,7 @@ impl App {
 
     fn toggle_output_snap(&mut self) {
         let output = self.active_output_pane();
-        let line_count = self.output_source_text_for(output).lines().count().max(1);
+        let line_count = self.sync_output_content_len(output);
         let enabled = self.output_state_mut(output).toggle_snap(line_count);
         self.status = format!("Output snap: {}", if enabled { "on" } else { "off" });
     }
@@ -1774,8 +1921,9 @@ impl App {
 
     fn ensure_tree_selection_visible(&mut self) {
         let rows_len = self.tree.visible_rows().len();
+        self.tree_viewport.set_content_len(rows_len);
         self.tree_viewport
-            .ensure_visible(self.tree.selected_index(), rows_len);
+            .ensure_visible(self.tree.selected_index());
     }
 
     fn clamp_output_scroll(&mut self) {
@@ -1795,6 +1943,7 @@ impl App {
             .clone()
             .unwrap_or_else(|| "default".to_owned());
         self.run.scope = request.scope.clone();
+        self.run.command_line = Some(manual_run_request_command(request));
         self.run.outcome = RunOutcome::Running;
         self.run.exit_code = None;
         self.run.started_at = Some(Instant::now());
@@ -1914,6 +2063,7 @@ impl App {
 
     fn clear_output_search(&mut self) {
         let output = self.active_output_pane();
+        let preserved_source_line = self.output_top_source_line(output);
         let cleared_draft = {
             let search = &mut self.output_state_mut(output).search;
             if search.input_active || search.modal_open {
@@ -1931,7 +2081,7 @@ impl App {
             self.status = "Output search draft cleared".to_owned();
             return;
         }
-        self.reset_output_scroll(output);
+        self.restore_output_scroll_to_source_line(output, preserved_source_line);
         self.disable_output_snap(output);
         self.status = "Output search cleared".to_owned();
     }
@@ -1953,6 +2103,7 @@ impl App {
 
     fn apply_output_search(&mut self) {
         let output = self.active_output_pane();
+        let preserved_source_line = self.output_top_source_line(output);
         let (query_empty, previous_current_match) = {
             let search = &mut self.output_state_mut(output).search;
             let previous_current_match =
@@ -1966,7 +2117,7 @@ impl App {
             (search.query.is_empty(), previous_current_match)
         };
         if query_empty {
-            self.reset_output_scroll(output);
+            self.restore_output_scroll_to_source_line(output, preserved_source_line);
             self.disable_output_snap(output);
             self.status = "Output search cleared".to_owned();
         } else {
@@ -2161,20 +2312,40 @@ impl App {
         if let Some(view_line) = view.line_index_for_source_line(source_line) {
             let state = self.output_state(output);
             let scroll = scroll::ensure_visible(
-                state.scroll as usize,
+                state.scroll() as usize,
                 view_line,
                 view.source_lines.len().max(1),
-                state.page_size as usize,
+                state.page_size() as usize,
             );
             self.set_output_scroll(output, scroll.min(u16::MAX as usize) as u16);
         }
     }
 
-    fn reset_output_scroll(&mut self, output: OutputPaneId) {
-        self.set_output_scroll(output, 0);
+    fn output_top_source_line(&self, output: OutputPaneId) -> Option<usize> {
+        let view = self.output_view_for(output);
+        let top = self.output_state(output).scroll() as usize;
+        view.source_lines.get(top).copied()
+    }
+
+    fn restore_output_scroll_to_source_line(
+        &mut self,
+        output: OutputPaneId,
+        source_line: Option<usize>,
+    ) {
+        let Some(source_line) = source_line else {
+            self.sync_output_content_len(output);
+            return;
+        };
+        let view = self.output_view_for(output);
+        if let Some(view_line) = view.line_index_for_source_line(source_line) {
+            self.set_output_scroll(output, view_line.min(u16::MAX as usize) as u16);
+        } else {
+            self.sync_output_content_len(output);
+        }
     }
 
     fn set_output_scroll(&mut self, output: OutputPaneId, scroll: u16) {
+        self.sync_output_content_len(output);
         self.output_state_mut(output).set_scroll(scroll);
     }
 
@@ -2193,6 +2364,18 @@ fn first_descendant_test(node: &TestNode) -> Option<&DiscoveredTest> {
         return Some(test);
     }
     node.children.iter().find_map(first_descendant_test)
+}
+
+fn test_details_row_count(node: &TestNode) -> usize {
+    let base_rows = 4;
+    base_rows
+        + match &node.kind {
+            NodeKind::Workspace => 0,
+            NodeKind::Package { .. } => 1,
+            NodeKind::Binary { .. } => 4,
+            NodeKind::Module { .. } => 2,
+            NodeKind::Test(_) => 8,
+        }
 }
 
 fn source_location_for_test(test: &DiscoveredTest, include_line: bool) -> Option<SourceLocation> {
@@ -2219,6 +2402,55 @@ fn run_outcome(exit_code: Option<i32>, counts: StatusCounts) -> RunOutcome {
     }
 }
 
+const COMMAND_FAILURE_RUNNER_TAIL_LINES: usize = 20;
+
+fn command_failure_summary(
+    exit_code: Option<i32>,
+    command_line: Option<&str>,
+    runner_output: &str,
+    current_output: &str,
+) -> String {
+    let mut summary = match exit_code {
+        Some(code) => format!("Run command failed: nextest exited with {code}"),
+        None => "Run command failed: nextest did not complete".to_owned(),
+    };
+    if let Some(hint) = nextest_exit_hint(exit_code) {
+        summary.push('\n');
+        summary.push_str(hint);
+    }
+    if let Some(command_line) = command_line.filter(|command_line| !command_line.trim().is_empty())
+    {
+        append_summary_section(&mut summary, "Command", command_line);
+    }
+
+    let runner_output = runner_output.trim();
+    if !runner_output.is_empty() && !current_output.contains(runner_output) {
+        append_summary_section(&mut summary, "Runner output", runner_output);
+    }
+    summary
+}
+
+fn append_summary_section(summary: &mut String, title: &str, body: &str) {
+    summary.push_str("\n\n");
+    summary.push_str(title);
+    summary.push_str(":\n");
+    summary.push_str(body.trim_end());
+}
+
+fn nextest_exit_hint(exit_code: Option<i32>) -> Option<&'static str> {
+    match exit_code {
+        Some(4) => Some("Hint: exit code 4 usually means nextest found no tests to run."),
+        _ => None,
+    }
+}
+
+fn nextest_exit_label(exit_code: Option<i32>) -> Option<&'static str> {
+    match exit_code {
+        Some(4) => Some("no tests to run"),
+        _ => None,
+    }
+}
+
 fn run_summary_status(outcome: RunOutcome, counts: StatusCounts, exit_code: Option<i32>) -> String {
     match outcome {
         RunOutcome::Passed => format!(
@@ -2230,7 +2462,10 @@ fn run_summary_status(outcome: RunOutcome, counts: StatusCounts, exit_code: Opti
             counts.passed, counts.failed, counts.skipped, counts.ignored
         ),
         RunOutcome::CommandFailed => match exit_code {
-            Some(code) => format!("Command failed: nextest exited with {code}"),
+            Some(code) => match nextest_exit_label(exit_code) {
+                Some(label) => format!("Command failed: nextest exited with {code} ({label})"),
+                None => format!("Command failed: nextest exited with {code}"),
+            },
             None => "Command failed: nextest did not complete".to_owned(),
         },
         RunOutcome::Stopped => format!(

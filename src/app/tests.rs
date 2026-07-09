@@ -14,6 +14,71 @@ fn app_with_tree(tree: Tree) -> App {
     App::with_settings(tree, AppSettings::default())
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TestViewportSizes {
+    tree_page_size: usize,
+    main_output_page_size: usize,
+    xtask_parameters_page_size: usize,
+    xtask_output_page_size: usize,
+    test_events_output_page_size: usize,
+    test_details_page_size: usize,
+    help_page_size: usize,
+    help_content_len: usize,
+}
+
+impl Default for TestViewportSizes {
+    fn default() -> Self {
+        Self {
+            tree_page_size: 1,
+            main_output_page_size: 1,
+            xtask_parameters_page_size: 1,
+            xtask_output_page_size: 1,
+            test_events_output_page_size: 1,
+            test_details_page_size: 1,
+            help_page_size: 1,
+            help_content_len: 1,
+        }
+    }
+}
+
+fn test_viewport_metrics(sizes: TestViewportSizes) -> FrameViewportMetrics {
+    FrameViewportMetrics::new(vec![
+        ViewportSpec::new(ViewportId::Tree, ViewportMetrics::new(sizes.tree_page_size)),
+        ViewportSpec::new(
+            ViewportId::MainOutput,
+            ViewportMetrics::new(sizes.main_output_page_size),
+        ),
+        ViewportSpec::new(
+            ViewportId::XtaskParameters,
+            ViewportMetrics::new(sizes.xtask_parameters_page_size),
+        ),
+        ViewportSpec::new(
+            ViewportId::XtaskOutput,
+            ViewportMetrics::new(sizes.xtask_output_page_size),
+        ),
+        ViewportSpec::new(
+            ViewportId::TestEventsOutput,
+            ViewportMetrics::new(sizes.test_events_output_page_size),
+        ),
+        ViewportSpec::new(
+            ViewportId::TestDetails,
+            ViewportMetrics::new(sizes.test_details_page_size),
+        ),
+        ViewportSpec::new(
+            ViewportId::Help,
+            ViewportMetrics::with_content_len(sizes.help_page_size, sizes.help_content_len),
+        ),
+    ])
+}
+
+fn prepare_test_viewports(app: &mut App, tree_page_size: usize, main_output_page_size: usize) {
+    app.prepare_frame(test_viewport_metrics(TestViewportSizes {
+        tree_page_size,
+        main_output_page_size,
+        ..Default::default()
+    }));
+}
+
 fn sample_xtask_manifest() -> XtaskManifest {
     XtaskManifest {
         schema_version: SCHEMA_VERSION,
@@ -161,6 +226,34 @@ fn command_context_routes_top_help_overlay_to_help_input() {
 }
 
 #[test]
+fn help_page_commands_scroll_and_reset_help_viewport() {
+    let mut app = app_with_tree(Tree::from_tests(Vec::new()));
+    app.prepare_frame(test_viewport_metrics(TestViewportSizes {
+        help_page_size: 4,
+        help_content_len: 14,
+        ..Default::default()
+    }));
+
+    app.apply_command(AppCommand::ToggleHelp);
+    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::PageDown));
+
+    assert_eq!(app.help_viewport.scroll(), 4);
+
+    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::PageDown));
+
+    assert_eq!(app.help_viewport.scroll(), 8);
+
+    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::PageUp));
+
+    assert_eq!(app.help_viewport.scroll(), 4);
+
+    app.apply_command(AppCommand::CloseHelp);
+    app.apply_command(AppCommand::ToggleHelp);
+
+    assert_eq!(app.help_viewport.scroll(), 0);
+}
+
+#[test]
 fn command_context_uses_xtask_modal_and_input_modes() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
 
@@ -219,7 +312,7 @@ fn xtask_command_frame_tracks_detail_focus() {
         }
     );
 
-    app.xtasks.output.set_page_size(2);
+    app.xtasks.output.apply_viewport_page_size(2);
     let request_id = app.xtasks.begin_run("cargo xtask ship".to_owned());
     app.apply_xtask_event(crate::xtask::XtaskEvent::RunOutput {
         request_id,
@@ -228,13 +321,40 @@ fn xtask_command_frame_tracks_detail_focus() {
             text: "one\ntwo\nthree\n".to_owned(),
         },
     });
-    let followed_scroll = app.xtasks.output.scroll;
+    let followed_scroll = app.xtasks.output.scroll();
 
-    app.apply_command(AppCommand::XtaskOutputLineUp);
+    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::LineUp));
 
     assert_eq!(app.xtasks.detail_focus, XtaskDetailFocus::Output);
-    assert_eq!(app.xtasks.output.scroll, followed_scroll.saturating_sub(1));
-    assert!(!app.xtasks.output.follow);
+    assert_eq!(
+        app.xtasks.output.scroll(),
+        followed_scroll.saturating_sub(1)
+    );
+    assert!(!app.xtasks.output.follow());
+}
+
+#[test]
+fn generic_scroll_reaches_xtask_parameter_footer_lines() {
+    let mut app = app_with_tree(Tree::from_tests(Vec::new()));
+    app.xtasks.open();
+    app.xtasks.set_manifest(XtaskManifest {
+        schema_version: SCHEMA_VERSION,
+        commands: vec![XtaskCommandSpec {
+            name: "ship".to_owned(),
+            about: Some("Ship package".to_owned()),
+            args: Vec::new(),
+        }],
+    });
+    assert!(app.xtasks.open_detail());
+    app.xtasks.apply_parameters_viewport_metrics(2);
+
+    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::PageDown));
+
+    assert_eq!(app.xtasks.parameters_viewport.scroll(), 2);
+
+    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::PageUp));
+
+    assert_eq!(app.xtasks.parameters_viewport.scroll(), 0);
 }
 
 #[test]
@@ -243,11 +363,11 @@ fn xtask_command_frame_uses_dedicated_output_search_modes() {
     app.xtasks.set_manifest(sample_xtask_manifest());
     app.apply_command(AppCommand::OpenXtasks);
     app.apply_command(AppCommand::OpenSelectedXtask);
-    app.xtasks.output.follow = true;
+    app.xtasks.output.set_follow(true);
 
     app.apply_command(AppCommand::StartOutputSearch);
     assert_eq!(app.xtasks.detail_focus, XtaskDetailFocus::Output);
-    assert!(!app.xtasks.output.follow);
+    assert!(!app.xtasks.output.follow());
     assert!(app.xtasks.output.search.input_active);
     assert!(!app.main_output.search.input_active);
     assert_eq!(
@@ -333,7 +453,43 @@ fn test_event_run_events_are_inlined_into_matching_test_output() {
     app.tree.select_next();
 
     let output = app.tree.selected_output();
-    assert!(output.contains("[event info] artifact-cache: cache hit"));
+    assert!(output.contains("@ event info artifact-cache: cache hit"));
+}
+
+#[test]
+fn live_output_chunks_interleave_with_inline_events() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    let key = test_key(0);
+    app.apply_run_event(RunEvent::TestStarted { key: key.clone() });
+    app.apply_run_event(RunEvent::TestOutput {
+        key: key.clone(),
+        text: "DOGFOOD_OUTPUT stdout before event".to_owned(),
+    });
+    let mut event =
+        TestEvent::new(Level::Info, "between output chunks").with_target("dogfood-output");
+    event.thread = Some("tests::case_00".to_owned());
+    app.apply_run_event(RunEvent::TestEvent {
+        run_id: "run-1".to_owned(),
+        event,
+    });
+    app.apply_run_event(RunEvent::TestOutput {
+        key,
+        text: "DOGFOOD_OUTPUT stdout after event\nDOGFOOD_OUTPUT stderr after event".to_owned(),
+    });
+
+    let output = app.tree.selected_output();
+    let mut cursor = 0;
+    for needle in [
+        "DOGFOOD_OUTPUT stdout before event",
+        "@ event info dogfood-output: between output chunks",
+        "DOGFOOD_OUTPUT stdout after event",
+        "DOGFOOD_OUTPUT stderr after event",
+    ] {
+        let offset = output[cursor..]
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing {needle:?} after byte {cursor} in:\n{output}"));
+        cursor += offset + needle.len();
+    }
 }
 
 #[test]
@@ -409,7 +565,7 @@ fn xtask_modal_builds_run_effect_with_named_args() {
 
 #[test]
 fn xtask_open_output_uses_xtask_output_without_replacing_main_output() {
-    let mut app = app_with_finished_output("main output\n", "");
+    let mut app = app_with_finished_output("main output\n");
     app.xtasks.set_manifest(sample_xtask_manifest());
     app.apply_command(AppCommand::OpenXtasks);
     app.apply_command(AppCommand::OpenSelectedXtask);
@@ -438,7 +594,7 @@ fn xtask_open_output_uses_xtask_output_without_replacing_main_output() {
 
 #[test]
 fn xtask_output_search_filter_isolated_from_main_output_search() {
-    let mut app = app_with_finished_output("main alpha\nmain beta\n", "");
+    let mut app = app_with_finished_output("main alpha\nmain beta\n");
     app.xtasks.set_manifest(sample_xtask_manifest());
     app.apply_command(AppCommand::OpenXtasks);
     app.apply_command(AppCommand::OpenSelectedXtask);
@@ -497,7 +653,7 @@ fn xtask_detail_close_returns_to_command_picker() {
 fn tree_scroll_follows_selection_past_viewport() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(30)));
     expand_all(&mut app.tree.root);
-    app.set_viewport_sizes(7, 7, 1, 1, 1);
+    prepare_test_viewports(&mut app, 5, 5);
 
     for _ in 0..20 {
         app.select_next();
@@ -511,11 +667,11 @@ fn tree_scroll_follows_selection_past_viewport() {
 fn tree_scroll_reclamps_when_viewport_height_changes() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(30)));
     expand_all(&mut app.tree.root);
-    app.set_viewport_sizes(16, 7, 1, 1, 1);
+    prepare_test_viewports(&mut app, 14, 5);
     app.select_last();
     assert_selection_visible(&app);
 
-    app.set_viewport_sizes(5, 7, 1, 1, 1);
+    prepare_test_viewports(&mut app, 3, 5);
     assert_selection_visible(&app);
 }
 
@@ -535,6 +691,57 @@ fn activate_selected_opens_details_for_test_rows() {
     app.apply_command(AppCommand::CloseTestDetails);
 
     assert!(!app.show_test_details);
+}
+
+#[test]
+fn test_details_scroll_follows_selected_run_option_with_detail_lines() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    expand_all(&mut app.tree.root);
+    app.tree.select_next();
+    app.tree.select_next();
+    app.tree.select_next();
+    app.prepare_frame(test_viewport_metrics(TestViewportSizes {
+        test_details_page_size: 6,
+        ..Default::default()
+    }));
+
+    app.apply_command(AppCommand::OpenCustomRun);
+
+    for _ in 0..crate::custom_run::CustomRunField::ALL.len() {
+        let (start, len, _) = app
+            .test_details_focused_range()
+            .expect("focused run option");
+        let scroll = app.custom_run.viewport.scroll();
+        assert!(start >= scroll);
+        assert!(start + len <= scroll + app.custom_run.viewport.page_size());
+
+        app.apply_command(AppCommand::CustomRunNext);
+    }
+}
+
+#[test]
+fn test_details_page_scroll_is_not_reset_without_resize() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    expand_all(&mut app.tree.root);
+    app.tree.select_next();
+    app.tree.select_next();
+    app.tree.select_next();
+    app.prepare_frame(test_viewport_metrics(TestViewportSizes {
+        test_details_page_size: 6,
+        ..Default::default()
+    }));
+    app.apply_command(AppCommand::OpenCustomRun);
+
+    let before = app.custom_run.viewport.scroll();
+    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::PageDown));
+    let after_page_down = app.custom_run.viewport.scroll();
+    app.prepare_frame(test_viewport_metrics(TestViewportSizes {
+        test_details_page_size: 6,
+        ..Default::default()
+    }));
+
+    assert!(after_page_down > before);
+    assert_eq!(app.custom_run.viewport.scroll(), after_page_down);
 }
 
 #[test]
@@ -677,6 +884,12 @@ fn settings_modal_updates_theme_and_accessibility_settings() {
     let effect = app.apply_command(AppCommand::SettingsAdjustRight);
     assert_eq!(app.settings.storage_low_space_threshold_gb, 11);
     assert_eq!(app.status, "Low disk threshold: 11 GiB");
+    assert_eq!(effect, AppEffect::SaveSettings(app.settings.clone()));
+
+    app.global_settings.selected = SettingsField::OutputPoll;
+    let effect = app.apply_command(AppCommand::SettingsAdjustRight);
+    assert_eq!(app.settings.test_output_poll_interval_ms, 1250);
+    assert_eq!(app.status, "Output poll interval: 1250 ms");
     assert_eq!(effect, AppEffect::SaveSettings(app.settings.clone()));
 
     app.global_settings.selected = SettingsField::TreeDuration;
@@ -848,6 +1061,31 @@ fn command_failure_before_test_start_records_build_time_only() {
 }
 
 #[test]
+fn command_failure_summary_includes_command_hint_and_runner_output() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    assert!(app.begin_run(&RunRequest::default()).is_some());
+
+    app.apply_run_event(RunEvent::RunnerOutput(
+        "error: no tests to run; pass --no-tests=pass to accept this".to_owned(),
+    ));
+    app.apply_run_event(RunEvent::RunnerFinished { exit_code: Some(4) });
+
+    assert_eq!(
+        app.status,
+        "Command failed: nextest exited with 4 (no tests to run)"
+    );
+    let output = app.output_text();
+    assert!(output.contains("Run command failed: nextest exited with 4"));
+    assert!(output.contains("Hint: exit code 4 usually means nextest found no tests to run."));
+    assert!(output.contains("Command:\ncargo nextest run"));
+    assert!(
+        output.contains(
+            "Runner output:\nerror: no tests to run; pass --no-tests=pass to accept this"
+        )
+    );
+}
+
+#[test]
 fn failing_test_run_reports_failed_result() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
     assert!(app.begin_run(&RunRequest::default()).is_some());
@@ -857,8 +1095,7 @@ fn failing_test_run_reports_failed_result() {
     app.apply_run_event(RunEvent::TestFinished {
         key,
         status: TestStatus::Failed,
-        stdout: String::new(),
-        stderr: "boom".to_owned(),
+        output: "boom".to_owned(),
         duration: Some(Duration::from_millis(7)),
     });
     app.apply_run_event(RunEvent::RunnerFinished {
@@ -883,8 +1120,7 @@ fn scoped_run_summary_counts_only_the_scope() {
     app.apply_run_event(RunEvent::TestFinished {
         key,
         status: TestStatus::Passed,
-        stdout: String::new(),
-        stderr: String::new(),
+        output: String::new(),
         duration: Some(Duration::from_millis(3)),
     });
     app.apply_run_event(RunEvent::RunnerFinished { exit_code: Some(0) });
@@ -980,23 +1216,21 @@ fn new_run_resets_previous_run_metadata_and_result() {
     app.apply_run_event(RunEvent::TestFinished {
         key: test_key(0),
         status: TestStatus::Passed,
-        stdout: "stale stdout".to_owned(),
-        stderr: String::new(),
+        output: "stale stdout".to_owned(),
         duration: Some(Duration::from_millis(9)),
     });
     app.apply_run_event(RunEvent::TestFinished {
         key: test_key(1),
         status: TestStatus::Failed,
-        stdout: String::new(),
-        stderr: "stale stderr".to_owned(),
+        output: "stale stderr".to_owned(),
         duration: Some(Duration::from_millis(11)),
     });
     app.apply_run_event(RunEvent::RunnerFinished {
         exit_code: Some(101),
     });
     assert_eq!(app.run.outcome, RunOutcome::Failed);
-    app.main_output.scroll = 10;
-    app.main_output.follow = false;
+    app.main_output.set_scroll(10);
+    app.main_output.set_follow(false);
     app.main_output.search.current_line = Some(3);
 
     assert!(app.begin_run(&RunRequest::new(run_scope_test(0))).is_some());
@@ -1010,8 +1244,8 @@ fn new_run_resets_previous_run_metadata_and_result() {
     assert!(app.build_duration().is_some());
     assert_eq!(app.test_duration(), None);
     assert_eq!(app.run_progress(), (0, 1));
-    assert_eq!(app.main_output.scroll, 0);
-    assert!(app.main_output.follow);
+    assert_eq!(app.main_output.scroll(), 0);
+    assert!(app.main_output.follow());
     assert_eq!(app.main_output.search.current_line, None);
     assert!(!app.tree.selected_output().contains("stale stdout"));
     assert!(!app.tree.selected_output().contains("stale stderr"));
@@ -1025,21 +1259,21 @@ fn filter_toggle_during_run_preserves_visible_selection_and_output_state() {
     app.apply_run_event(RunEvent::TestFinished {
         key: test_key(0),
         status: TestStatus::Passed,
-        stdout: String::new(),
-        stderr: String::new(),
+        output: String::new(),
         duration: Some(Duration::from_millis(5)),
     });
     app.apply_run_event(RunEvent::TestStarted { key: test_key(1) });
     select_visible_path(&mut app, "demo::tests::case_01");
-    app.main_output.scroll = 7;
-    app.main_output.follow = false;
+    app.main_output.apply_content_len(20);
+    app.main_output.set_scroll(7);
+    app.main_output.set_follow(false);
     app.main_output.search.current_line = Some(2);
 
     app.apply_command(AppCommand::ToggleShowSuccess);
 
     assert_eq!(app.tree.selected_path(), "demo::tests::case_01");
-    assert_eq!(app.main_output.scroll, 7);
-    assert!(!app.main_output.follow);
+    assert_eq!(app.main_output.scroll(), 7);
+    assert!(!app.main_output.follow());
     assert_eq!(app.main_output.search.current_line, Some(2));
     assert!(app.running);
     assert_eq!(app.run.outcome, RunOutcome::Running);
@@ -1053,19 +1287,18 @@ fn filter_toggle_resets_output_when_selected_source_is_hidden() {
         &test_key(0),
         TestStatus::Passed,
         "old output".to_owned(),
-        String::new(),
         Some(Duration::from_millis(5)),
     );
     select_visible_path(&mut app, "demo::tests::case_00");
-    app.main_output.scroll = 7;
-    app.main_output.follow = false;
+    app.main_output.set_scroll(7);
+    app.main_output.set_follow(false);
     app.main_output.search.current_line = Some(2);
 
     app.apply_command(AppCommand::ToggleShowSuccess);
 
     assert_ne!(app.tree.selected_path(), "demo::tests::case_00");
-    assert_eq!(app.main_output.scroll, 0);
-    assert!(app.main_output.follow);
+    assert_eq!(app.main_output.scroll(), 0);
+    assert!(app.main_output.follow());
     assert_eq!(app.main_output.search.current_line, None);
 }
 
@@ -1077,30 +1310,29 @@ fn output_snap_toggle_jumps_to_bottom_and_can_disable_following() {
         &test_key(0),
         TestStatus::Failed,
         "one\ntwo\nthree\nfour\nfive".to_owned(),
-        String::new(),
         Some(Duration::from_millis(5)),
     );
     select_visible_path(&mut app, "demo::tests::case_00");
     app.focus = FocusPane::Output;
-    app.main_output.set_page_size(2);
-    app.set_output_line_count(app.output_source_text().lines().count().max(1));
-    let bottom_scroll = app.main_output.scroll;
+    app.main_output.apply_viewport_page_size(2);
+    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::Bottom));
+    let bottom_scroll = app.main_output.scroll();
 
-    app.apply_command(AppCommand::PageUp);
+    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::PageUp));
 
-    assert!(!app.main_output.follow);
-    assert!(app.main_output.scroll < bottom_scroll);
+    assert!(!app.main_output.follow());
+    assert!(app.main_output.scroll() < bottom_scroll);
 
     app.apply_command(AppCommand::ToggleOutputSnap);
 
-    assert!(app.main_output.follow);
-    assert_eq!(app.main_output.scroll, bottom_scroll);
+    assert!(app.main_output.follow());
+    assert_eq!(app.main_output.scroll(), bottom_scroll);
     assert_eq!(app.status, "Output snap: on");
 
     app.apply_command(AppCommand::ToggleOutputSnap);
 
-    assert!(!app.main_output.follow);
-    assert_eq!(app.main_output.scroll, bottom_scroll);
+    assert!(!app.main_output.follow());
+    assert_eq!(app.main_output.scroll(), bottom_scroll);
     assert_eq!(app.status, "Output snap: off");
 }
 
@@ -1110,7 +1342,7 @@ fn output_snap_toggle_routes_to_xtask_output_when_detail_is_open() {
     app.xtasks.set_manifest(sample_xtask_manifest());
     app.apply_command(AppCommand::OpenXtasks);
     app.apply_command(AppCommand::OpenSelectedXtask);
-    app.xtasks.output.set_page_size(2);
+    app.xtasks.output.apply_viewport_page_size(2);
     let request_id = app.xtasks.begin_run("cargo xtask check".to_owned());
     app.apply_xtask_event(crate::xtask::XtaskEvent::RunOutput {
         request_id,
@@ -1119,15 +1351,22 @@ fn output_snap_toggle_routes_to_xtask_output_when_detail_is_open() {
             text: "one\ntwo\nthree\nfour\nfive\n".to_owned(),
         },
     });
-    let bottom_scroll = app.xtasks.output.scroll;
-    app.xtasks.output.scroll_up(1);
-    app.main_output.follow = true;
+    let bottom_scroll = app.xtasks.output.scroll();
+    let line_count = app
+        .xtasks
+        .output
+        .output_view(&app.xtasks.output_text())
+        .line_count();
+    app.xtasks
+        .output
+        .apply_scroll(scroll::ScrollAction::LineUp, line_count);
+    app.main_output.set_follow(true);
 
     app.apply_command(AppCommand::ToggleOutputSnap);
 
-    assert!(app.xtasks.output.follow);
-    assert_eq!(app.xtasks.output.scroll, bottom_scroll);
-    assert!(app.main_output.follow);
+    assert!(app.xtasks.output.follow());
+    assert_eq!(app.xtasks.output.scroll(), bottom_scroll);
+    assert!(app.main_output.follow());
     assert_eq!(app.status, "Output snap: on");
 }
 
@@ -1147,7 +1386,7 @@ fn left_and_right_do_not_mutate_tree_when_output_is_focused() {
 
 #[test]
 fn output_search_filter_keeps_matching_lines() {
-    let mut app = app_with_finished_output("alpha\npanic here\nomega", "");
+    let mut app = app_with_finished_output("alpha\npanic here\nomega");
     app.main_output.search.query = "panic".to_owned();
     app.main_output.search.filter = true;
 
@@ -1156,22 +1395,22 @@ fn output_search_filter_keeps_matching_lines() {
 
 #[test]
 fn output_search_literal_is_case_insensitive_by_default() {
-    let mut app = app_with_finished_output("PANIC\nok", "");
+    let mut app = app_with_finished_output("PANIC\nok");
     app.main_output.search.query = "panic".to_owned();
     app.main_output.search.filter = true;
-    app.main_output.follow = true;
+    app.main_output.set_follow(true);
 
     assert_eq!(app.output_text(), "PANIC");
 
     app.apply_command(AppCommand::ToggleOutputCaseSensitive);
 
     assert_eq!(app.output_text(), "No output lines match 'panic'");
-    assert!(!app.main_output.follow);
+    assert!(!app.main_output.follow());
 }
 
 #[test]
 fn output_search_regex_filters_and_reports_invalid_regex() {
-    let mut app = app_with_finished_output("case_01\ncase_aa\ncase_22", "");
+    let mut app = app_with_finished_output("case_01\ncase_aa\ncase_22");
     app.main_output.search.query = r"case_\d+".to_owned();
     app.main_output.search.filter = true;
     app.main_output.search.regex = true;
@@ -1188,59 +1427,57 @@ fn output_search_regex_filters_and_reports_invalid_regex() {
 
 #[test]
 fn output_find_next_and_previous_scroll_to_matching_lines() {
-    let mut app = app_with_finished_output("zero\nmatch one\nskip\nmatch two", "");
+    let mut app = app_with_finished_output("zero\nmatch one\nskip\nmatch two");
     app.main_output.search.query = "match".to_owned();
-    app.main_output.page_size = 2;
-    app.main_output.follow = true;
+    app.main_output.apply_viewport_page_size(2);
+    app.main_output.set_follow(true);
 
     app.apply_command(AppCommand::FindNextOutputMatch);
 
-    assert_eq!(app.main_output.scroll, 0);
+    assert_eq!(app.main_output.scroll(), 0);
     assert_eq!(app.main_output.search.current_line, Some(1));
-    assert!(!app.main_output.follow);
+    assert!(!app.main_output.follow());
 
     app.apply_command(AppCommand::FindNextOutputMatch);
 
-    assert_eq!(app.main_output.scroll, 2);
+    assert_eq!(app.main_output.scroll(), 2);
     assert_eq!(app.main_output.search.current_line, Some(3));
 
     app.apply_command(AppCommand::FindPreviousOutputMatch);
 
-    assert_eq!(app.main_output.scroll, 1);
+    assert_eq!(app.main_output.scroll(), 1);
     assert_eq!(app.main_output.search.current_line, Some(1));
 }
 
 #[test]
 fn output_find_reveals_match_with_scrolloff_context() {
-    let mut app = app_with_finished_output(
-        "line0\nline1\nline2\nline3\nline4\nline5\nline6\nneedle\nline8",
-        "",
-    );
+    let mut app =
+        app_with_finished_output("line0\nline1\nline2\nline3\nline4\nline5\nline6\nneedle\nline8");
     app.main_output.search.query = "needle".to_owned();
-    app.main_output.page_size = 6;
+    app.main_output.apply_viewport_page_size(6);
 
     app.apply_command(AppCommand::FindNextOutputMatch);
 
     assert_eq!(app.main_output.search.current_line, Some(7));
-    assert_eq!(app.main_output.scroll, 3);
+    assert_eq!(app.main_output.scroll(), 3);
 }
 
 #[test]
 fn output_find_next_steps_between_matches_on_same_line() {
-    let mut app = app_with_finished_output("zero\nmatch one match two\nskip", "");
+    let mut app = app_with_finished_output("zero\nmatch one match two\nskip");
     app.main_output.search.query = "match".to_owned();
-    app.main_output.page_size = 2;
+    app.main_output.apply_viewport_page_size(2);
 
     app.apply_command(AppCommand::FindNextOutputMatch);
 
-    assert_eq!(app.main_output.scroll, 0);
+    assert_eq!(app.main_output.scroll(), 0);
     assert_eq!(app.main_output.search.current_line, Some(1));
     assert_eq!(app.main_output.search.current_range, Some((0, 5)));
     assert!(app.status.contains("1/2"));
 
     app.apply_command(AppCommand::FindNextOutputMatch);
 
-    assert_eq!(app.main_output.scroll, 0);
+    assert_eq!(app.main_output.scroll(), 0);
     assert_eq!(app.main_output.search.current_line, Some(1));
     assert_eq!(app.main_output.search.current_range, Some((10, 15)));
     assert!(app.status.contains("2/2"));
@@ -1248,44 +1485,44 @@ fn output_find_next_steps_between_matches_on_same_line() {
 
 #[test]
 fn output_match_navigation_without_query_disables_snap() {
-    let mut app = app_with_finished_output("zero\npanic\nok", "");
-    app.main_output.follow = true;
+    let mut app = app_with_finished_output("zero\npanic\nok");
+    app.main_output.set_follow(true);
 
     app.apply_command(AppCommand::FindNextOutputMatch);
 
-    assert!(!app.main_output.follow);
+    assert!(!app.main_output.follow());
     assert_eq!(app.status, "No output search query");
 }
 
 #[test]
 fn output_filter_preserves_current_source_match_and_restores_global_scroll() {
-    let mut app = app_with_finished_output("zero\nmatch one\nskip\nmatch two", "");
+    let mut app = app_with_finished_output("zero\nmatch one\nskip\nmatch two");
     app.main_output.search.query = "match".to_owned();
     app.main_output.search.current_line = Some(3);
-    app.main_output.scroll = 3;
-    app.main_output.follow = true;
+    app.main_output.set_scroll(3);
+    app.main_output.set_follow(true);
 
     app.apply_command(AppCommand::ToggleOutputFilter);
 
     assert!(app.main_output.search.filter);
     assert_eq!(app.main_output.search.current_line, Some(3));
     assert_eq!(app.output_text(), "match one\nmatch two");
-    assert_eq!(app.main_output.scroll, 1);
-    assert!(!app.main_output.follow);
+    assert_eq!(app.main_output.scroll(), 1);
+    assert!(!app.main_output.follow());
 
-    app.main_output.follow = true;
+    app.main_output.set_follow(true);
     app.apply_command(AppCommand::ToggleOutputFilter);
 
     assert!(!app.main_output.search.filter);
     assert_eq!(app.main_output.search.current_line, Some(3));
     assert_eq!(app.output_text(), "zero\nmatch one\nskip\nmatch two\n");
-    assert_eq!(app.main_output.scroll, 3);
-    assert!(!app.main_output.follow);
+    assert_eq!(app.main_output.scroll(), 3);
+    assert!(!app.main_output.follow());
 }
 
 #[test]
 fn output_search_apply_filter_preserves_existing_match() {
-    let mut app = app_with_finished_output("zero\nmatch one\nskip\nmatch two", "");
+    let mut app = app_with_finished_output("zero\nmatch one\nskip\nmatch two");
     app.main_output.search.query = "match".to_owned();
     app.main_output.search.current_line = Some(3);
 
@@ -1297,20 +1534,20 @@ fn output_search_apply_filter_preserves_existing_match() {
 
     assert!(app.main_output.search.filter);
     assert_eq!(app.main_output.search.current_line, Some(3));
-    assert_eq!(app.main_output.scroll, 1);
+    assert_eq!(app.main_output.scroll(), 1);
     assert_eq!(app.status, "Output match 2/2 for 'match'");
 }
 
 #[test]
 fn output_search_input_opens_modal_then_apply_finds_match() {
-    let mut app = app_with_finished_output("zero\npanic\nok", "");
-    app.main_output.page_size = 2;
-    app.main_output.follow = true;
+    let mut app = app_with_finished_output("zero\npanic\nok");
+    app.main_output.apply_viewport_page_size(2);
+    app.main_output.set_follow(true);
 
     app.apply_command(AppCommand::StartOutputSearch);
-    assert!(!app.main_output.follow);
+    assert!(!app.main_output.follow());
 
-    app.main_output.follow = true;
+    app.main_output.set_follow(true);
     search_type(&mut app, "px");
     app.apply_command(AppCommand::OutputSearchEdit(SearchEditorInput::new(
         SearchEditorKey::Backspace,
@@ -1323,22 +1560,22 @@ fn output_search_input_opens_modal_then_apply_finds_match() {
 
     app.apply_command(AppCommand::OpenOutputSearchModal);
     assert!(app.main_output.search.modal_open);
-    assert!(!app.main_output.follow);
+    assert!(!app.main_output.follow());
 
-    app.main_output.follow = true;
+    app.main_output.set_follow(true);
     app.main_output.search.modal_focus = SearchModalFocus::Apply;
     app.apply_command(AppCommand::SearchModalActivate);
 
     assert!(!app.main_output.search.input_active);
     assert!(!app.main_output.search.modal_open);
     assert_eq!(app.main_output.search.query, "panic");
-    assert_eq!(app.main_output.scroll, 0);
-    assert!(!app.main_output.follow);
+    assert_eq!(app.main_output.scroll(), 0);
+    assert!(!app.main_output.follow());
 }
 
 #[test]
 fn output_search_reopen_places_cursor_at_end_of_existing_query() {
-    let mut app = app_with_finished_output("zero\nstdo\nok", "");
+    let mut app = app_with_finished_output("zero\nstdo\nok");
 
     app.apply_command(AppCommand::StartOutputSearch);
     search_type(&mut app, "stde");
@@ -1362,7 +1599,7 @@ fn output_search_reopen_places_cursor_at_end_of_existing_query() {
 
 #[test]
 fn output_search_draft_does_not_filter_until_applied() {
-    let mut app = app_with_finished_output("alpha\npanic\nomega", "");
+    let mut app = app_with_finished_output("alpha\npanic\nomega");
     app.main_output.search.filter = true;
 
     app.apply_command(AppCommand::StartOutputSearch);
@@ -1380,7 +1617,7 @@ fn output_search_draft_does_not_filter_until_applied() {
 
 #[test]
 fn output_search_modal_controls_apply_draft_filters() {
-    let mut app = app_with_finished_output("case_01\ncase_aa\ncase_22", "");
+    let mut app = app_with_finished_output("case_01\ncase_aa\ncase_22");
 
     app.apply_command(AppCommand::StartOutputSearch);
     search_type(&mut app, r"case_\d+");
@@ -1398,7 +1635,7 @@ fn output_search_modal_controls_apply_draft_filters() {
 
 #[test]
 fn output_search_clear_keeps_input_active_and_resets_match() {
-    let mut app = app_with_finished_output("zero\npanic\nok", "");
+    let mut app = app_with_finished_output("zero\npanic\nok");
 
     app.apply_command(AppCommand::StartOutputSearch);
     search_type(&mut app, "pa");
@@ -1416,9 +1653,49 @@ fn output_search_clear_keeps_input_active_and_resets_match() {
 }
 
 #[test]
+fn output_search_clear_preserves_visible_source_line() {
+    let mut app = app_with_finished_output("zero\nmatch one\nskip\nmatch two\nlater");
+    app.main_output.search.query = "match".to_owned();
+    app.main_output.search.filter = true;
+    app.main_output.apply_viewport_metrics(1, 2);
+    app.main_output.set_scroll(1);
+
+    app.apply_command(AppCommand::ClearOutputSearch);
+
+    assert_eq!(app.main_output.search.query, "");
+    assert_eq!(
+        app.output_text(),
+        "zero\nmatch one\nskip\nmatch two\nlater\n"
+    );
+    assert_eq!(app.main_output.scroll(), 3);
+    assert_eq!(app.status, "Output search cleared");
+}
+
+#[test]
+fn output_search_apply_empty_query_preserves_visible_source_line() {
+    let mut app = app_with_finished_output("zero\nmatch one\nskip\nmatch two\nlater");
+    app.main_output.search.query = "match".to_owned();
+    app.main_output.search.filter = true;
+    app.main_output.apply_viewport_metrics(1, 2);
+    app.main_output.set_scroll(1);
+
+    app.apply_command(AppCommand::StartOutputSearch);
+    app.apply_command(AppCommand::ClearOutputSearch);
+    app.apply_command(AppCommand::ApplyOutputSearch);
+
+    assert_eq!(app.main_output.search.query, "");
+    assert_eq!(
+        app.output_text(),
+        "zero\nmatch one\nskip\nmatch two\nlater\n"
+    );
+    assert_eq!(app.main_output.scroll(), 3);
+    assert_eq!(app.status, "Output search cleared");
+}
+
+#[test]
 fn discovery_error_uses_output_scroll_and_search() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(3)));
-    app.set_viewport_sizes(5, 5, 1, 1, 1);
+    prepare_test_viewports(&mut app, 3, 3);
 
     app.apply_discovery_event(
         app.discovery.request_id,
@@ -1433,8 +1710,8 @@ fn discovery_error_uses_output_scroll_and_search() {
         app.command_context().overlay,
         Some(OverlayMode::DiscoveryError)
     );
-    app.apply_command(AppCommand::MoveDown);
-    assert_eq!(app.main_output.scroll, 1);
+    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::LineDown));
+    assert_eq!(app.main_output.scroll(), 1);
 
     app.apply_command(AppCommand::StartOutputSearch);
     search_type(&mut app, "needle");
@@ -1507,7 +1784,7 @@ fn stale_disk_usage_result_is_ignored() {
 
 #[test]
 fn output_search_editor_can_insert_at_cursor_and_apply() {
-    let mut app = app_with_finished_output("zero\npanic\nok", "");
+    let mut app = app_with_finished_output("zero\npanic\nok");
 
     app.apply_command(AppCommand::StartOutputSearch);
     search_type(&mut app, "pnic");
@@ -1588,16 +1865,11 @@ fn run_scope_test(index: usize) -> RunScope {
     })
 }
 
-fn app_with_finished_output(stdout: &str, stderr: &str) -> App {
+fn app_with_finished_output(output: &str) -> App {
     let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
     expand_all(&mut app.tree.root);
-    app.tree.finish_test(
-        &test_key(0),
-        TestStatus::Passed,
-        stdout.to_owned(),
-        stderr.to_owned(),
-        None,
-    );
+    app.tree
+        .finish_test(&test_key(0), TestStatus::Passed, output.to_owned(), None);
     app.tree.select_next();
     app.tree.select_next();
     app.tree.select_next();

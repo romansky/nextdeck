@@ -1,7 +1,19 @@
 use super::*;
+use super::{
+    primitives::{AutoColumn, AutoColumnLayout},
+    view_helpers::{
+        SELECTABLE_FIELD_PREFIX_WIDTH, fit_line_prefix, pane_focused, parameter_list_styles,
+        storage_status,
+    },
+};
+use crate::custom_run::CustomRunFilter;
 use crate::disk_usage::{DiskUsageEntry, DiskUsageSnapshot};
+use crate::parameter_list::ParameterList;
 use crate::tree::{DiscoveredTest, TestKey, TestNode, TestStatus, Tree};
-use std::path::PathBuf;
+use crate::xtask::XtaskState;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use std::{path::PathBuf, time::Duration};
 
 fn app_with_tree(tree: Tree) -> App {
     App::with_settings(tree, crate::config::AppSettings::default())
@@ -10,7 +22,7 @@ fn app_with_tree(tree: Tree) -> App {
 #[test]
 fn output_status_shows_all_when_text_fits() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.main_output.page_size = 5;
+    app.main_output.apply_viewport_page_size(5);
     let text = "one\ntwo";
 
     assert_eq!(
@@ -22,24 +34,25 @@ fn output_status_shows_all_when_text_fits() {
 #[test]
 fn output_status_shows_clamped_line_ranges() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.main_output.page_size = 3;
+    app.main_output.apply_viewport_page_size(3);
     let text = "1\n2\n3\n4\n5\n6";
+    app.main_output.apply_content_len(text.lines().count());
 
-    app.main_output.scroll = 0;
+    app.main_output.set_scroll(0);
     assert_eq!(
         app.main_output.status("Output", text),
         "Output [PageUp/PageDown]<#1-3/6> [s]nap:✓"
     );
 
-    app.main_output.scroll = 2;
-    app.main_output.follow = false;
+    app.main_output.set_scroll(2);
+    app.main_output.set_follow(false);
     assert_eq!(
         app.main_output.status("Output", text),
         "Output [PageUp/PageDown]<#3-5/6> [s]nap:✗"
     );
 
-    app.main_output.scroll = 3;
-    app.main_output.follow = true;
+    app.main_output.set_scroll(3);
+    app.main_output.set_follow(true);
     assert_eq!(
         app.main_output.status("Output", text),
         "Output [PageUp/PageDown]<#4-6/6> [s]nap:✓"
@@ -60,26 +73,24 @@ fn fit_line_prefix_preserves_xtask_text_prefix() {
 #[test]
 fn xtask_list_uses_auto_command_column_width() {
     let theme = Theme::dark();
-    let xtasks = XtaskState {
-        manifest: Some(crate::xtask::XtaskManifest {
-            schema_version: crate::xtask::SCHEMA_VERSION,
-            commands: vec![
-                xtask_command(
-                    "tui-check",
-                    "Run local TUI checks expected before publishing",
-                ),
-                xtask_command(
-                    "tui-homebrew-formula",
-                    "Generate a Homebrew formula from TUI release artifact checksums",
-                ),
-            ],
-        }),
-        loading: false,
-        selected_command: 1,
-        ..Default::default()
-    };
+    let mut xtasks = XtaskState::default();
+    xtasks.manifest = Some(crate::xtask::XtaskManifest {
+        schema_version: crate::xtask::SCHEMA_VERSION,
+        commands: vec![
+            xtask_command(
+                "tui-check",
+                "Run local TUI checks expected before publishing",
+            ),
+            xtask_command(
+                "tui-homebrew-formula",
+                "Generate a Homebrew formula from TUI release artifact checksums",
+            ),
+        ],
+    });
+    xtasks.loading = false;
+    xtasks.selected_command = 1;
 
-    let lines = xtask_list_lines(&xtasks, &theme, 96);
+    let lines = XtasksModal::command_lines(&xtasks, &theme, 96);
     let selected = line_text(&lines[1]);
 
     assert!(selected.starts_with("> tui-homebrew-formula Generate a Homebrew formula"));
@@ -89,19 +100,17 @@ fn xtask_list_uses_auto_command_column_width() {
 #[test]
 fn xtask_list_caps_long_command_column_width() {
     let theme = Theme::dark();
-    let xtasks = XtaskState {
-        manifest: Some(crate::xtask::XtaskManifest {
-            schema_version: crate::xtask::SCHEMA_VERSION,
-            commands: vec![xtask_command(
-                "this-command-name-is-too-long-for-the-picker",
-                "Visible description still gets space",
-            )],
-        }),
-        loading: false,
-        ..Default::default()
-    };
+    let mut xtasks = XtaskState::default();
+    xtasks.manifest = Some(crate::xtask::XtaskManifest {
+        schema_version: crate::xtask::SCHEMA_VERSION,
+        commands: vec![xtask_command(
+            "this-command-name-is-too-long-for-the-picker",
+            "Visible description still gets space",
+        )],
+    });
+    xtasks.loading = false;
 
-    let lines = xtask_list_lines(&xtasks, &theme, 50);
+    let lines = XtasksModal::command_lines(&xtasks, &theme, 50);
     let text = line_text(&lines[0]);
 
     assert!(text.starts_with("> this-command-name-is-too-lo... "));
@@ -160,9 +169,9 @@ fn auto_column_layout_caps_fixed_columns_before_flex_column() {
 
 #[test]
 fn filter_hint_includes_toggle_key() {
-    assert_eq!(filter_hint("pass", "p", true), "[p]ass:✓");
-    assert_eq!(filter_hint("fail", "f", false), "[f]ail:✗");
-    assert_eq!(filter_hint("ignore", "i", false), "[i]gnore:✗");
+    assert_eq!(TestsPanel::filter_hint("pass", "p", true), "[p]ass:✓");
+    assert_eq!(TestsPanel::filter_hint("fail", "f", false), "[f]ail:✗");
+    assert_eq!(TestsPanel::filter_hint("ignore", "i", false), "[i]gnore:✗");
 }
 
 #[test]
@@ -171,7 +180,7 @@ fn tests_status_includes_filter_hints() {
     app.tree.view_filter.show_ignored = false;
 
     assert_eq!(
-        tests_status(&app),
+        TestsPanel::status(&app),
         "Tests <filters: [p]ass:✓ [f]ail:✓ [i]gnore:✗ [s]kip:✓>"
     );
 }
@@ -180,7 +189,7 @@ fn tests_status_includes_filter_hints() {
 fn info_status_includes_disk_state() {
     let app = app_with_tree(Tree::from_tests(Vec::new()));
 
-    assert_eq!(info_status(&app), "Info");
+    assert_eq!(InfoPanel::status(&app), "Info");
 }
 
 #[test]
@@ -197,22 +206,26 @@ fn info_columns_keep_run_and_storage_details_separate() {
     });
     app.settings.storage_low_space_threshold_gb = 1;
 
-    let run_text = run_details(&app, &Theme::dark(), 80)
+    let run_text = InfoPanel::run_lines(&app, &Theme::dark(), 80)
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
         .join("\n");
-    let storage_text = storage_details(&app, &Theme::dark(), 80)
+    let storage_text = InfoPanel::storage_lines(&app, &Theme::dark(), 80)
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert_eq!(footer_run_status(&app), app.run_status_label());
+    assert_eq!(StatusBar::run_status(&app), app.run_status_label());
+    assert!(run_text.contains("Latest Nextest Run"));
     assert!(run_text.contains("run id"));
+    assert!(run_text.contains("duration"));
+    assert!(run_text.contains("wall:- aggregate:- build:- tests:-"));
     assert!(run_text.contains("latest event"));
     assert!(run_text.contains(app.run_status_label()));
     assert!(!run_text.contains("not running"));
+    assert!(!run_text.contains("build\n"));
     assert!(!run_text.contains("target"));
     assert!(storage_text.contains("Storage"));
     assert!(storage_text.contains("low"));
@@ -249,7 +262,7 @@ fn disk_cleanup_modal_shows_detailed_target_row_without_summary_duplicate() {
         updated_at: std::time::UNIX_EPOCH,
     });
 
-    let text = disk_cleanup_lines(&app, &Theme::dark())
+    let text = DiskCleanupModal::lines(&app, &Theme::dark())
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
@@ -264,7 +277,7 @@ fn disk_cleanup_modal_shows_running_indicator() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
     app.begin_cargo_clean().expect("clean starts");
 
-    let text = disk_cleanup_lines(&app, &Theme::dark())
+    let text = DiskCleanupModal::lines(&app, &Theme::dark())
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
@@ -277,17 +290,24 @@ fn disk_cleanup_modal_shows_running_indicator() {
 fn settings_modal_includes_storage_and_duration_settings() {
     let app = app_with_tree(Tree::from_tests(Vec::new()));
 
-    assert_eq!(settings_value(&app, SettingsField::TreeDuration), "wall");
     assert_eq!(
-        settings_value(&app, SettingsField::StorageThreshold),
+        SettingsModal::value(&app, crate::settings::SettingsField::TreeDuration),
+        "wall"
+    );
+    assert_eq!(
+        SettingsModal::value(&app, crate::settings::SettingsField::StorageThreshold),
         "10 GiB"
     );
+    assert_eq!(
+        SettingsModal::value(&app, crate::settings::SettingsField::OutputPoll),
+        "1000 ms"
+    );
 
-    let rows = settings_rows(&app);
+    let rows = SettingsModal::rows(&app);
     let text = ParameterList::new(
         &rows,
         SELECTABLE_FIELD_PREFIX_WIDTH,
-        SETTINGS_FIELD_LABEL_WIDTH,
+        SettingsModal::FIELD_LABEL_WIDTH,
         100,
         parameter_list_styles(&Theme::dark()),
     )
@@ -301,6 +321,7 @@ fn settings_modal_includes_storage_and_duration_settings() {
     assert!(text.contains("# number: 25..70% (default: 45%)"));
     assert!(text.contains("# enum: wall, aggregate (default: wall)"));
     assert!(text.contains("# number: 1..1024 GiB (default: 10 GiB)"));
+    assert!(text.contains("# number: 250..10000 ms (default: 1000 ms)"));
     assert!(text.contains("# enum: auto, dark, light (default: auto)"));
     assert!(text.contains("# bool: off, on (default: off)"));
 }
@@ -314,7 +335,7 @@ fn footer_includes_run_and_storage_status_before_key() {
         updated_at: std::time::UNIX_EPOCH,
     });
 
-    let text = status_spans(&app, &Theme::dark())
+    let text = StatusBar::spans(&app, &Theme::dark())
         .iter()
         .map(|span| span.content.as_ref())
         .collect::<String>();
@@ -325,11 +346,11 @@ fn footer_includes_run_and_storage_status_before_key() {
 #[test]
 fn panel_actions_describe_local_commands() {
     assert_eq!(
-        tests_actions(),
+        TestsPanel::actions(),
         "[enter]details [r]un [R]run-custom [o]pen-editor [u]update"
     );
     assert_eq!(
-        disk_cleanup_actions(),
+        DiskCleanupModal::actions(),
         "[c]cargo-clean [r]refresh [esc]close"
     );
     assert_eq!(
@@ -337,7 +358,7 @@ fn panel_actions_describe_local_commands() {
         "[/]search<[            ]> [o]pen-editor"
     );
     assert_eq!(
-        discovery_error_actions("[/]search<[            ]> [o]pen-editor"),
+        DiscoveryModal::error_actions("[/]search<[            ]> [o]pen-editor"),
         "[u]retry [/]search<[            ]> [o]pen-editor [q]quit"
     );
 }
@@ -346,7 +367,7 @@ fn panel_actions_describe_local_commands() {
 fn custom_run_options_render_values_without_accidental_editors() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
     let theme = Theme::dark();
-    let lines = custom_run_lines(&app.custom_run, &theme, 100);
+    let lines = TestDetailsModal::custom_run_lines(&app.custom_run, &theme, 100);
     let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
 
     assert!(text.contains("> scope"));
@@ -366,7 +387,7 @@ fn custom_run_options_render_values_without_accidental_editors() {
     assert!(!text.contains("[_"));
 
     app.custom_run.filter = CustomRunFilter::Custom("package(demo)".to_owned());
-    let text = custom_run_lines(&app.custom_run, &theme, 100)
+    let text = TestDetailsModal::custom_run_lines(&app.custom_run, &theme, 100)
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
@@ -375,7 +396,7 @@ fn custom_run_options_render_values_without_accidental_editors() {
     assert!(text.contains("custom: package(demo)"));
     assert!(text.contains("# enum: none, custom (default: none)"));
 
-    let narrow = custom_run_lines(&app.custom_run, &theme, 32)
+    let narrow = TestDetailsModal::custom_run_lines(&app.custom_run, &theme, 32)
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
@@ -424,7 +445,7 @@ fn xtask_params_use_parameter_component_with_help_details_and_command_preview() 
         }],
     });
 
-    let rendered = xtask_param_lines(&xtasks, &theme, 80, true)
+    let rendered = XtasksModal::parameter_lines(&xtasks, &theme, 80, true)
         .iter()
         .map(line_text)
         .collect::<Vec<_>>();
@@ -456,7 +477,7 @@ fn xtask_params_use_parameter_component_with_help_details_and_command_preview() 
 fn test_details_places_run_command_below_options() {
     let app = app_with_tree(Tree::from_tests(Vec::new()));
     let theme = Theme::dark();
-    let lines = test_details_modal_lines(&app, &theme);
+    let lines = TestDetailsModal::lines(&app, &theme);
     let rendered = lines.iter().map(line_text).collect::<Vec<_>>();
     let stress_index = rendered
         .iter()
@@ -503,7 +524,7 @@ fn pane_focus_is_suppressed_while_modal_is_visible() {
 #[test]
 fn help_text_uses_contextual_sections() {
     let theme = Theme::dark();
-    let text = help_text(&theme, FocusPane::Tree);
+    let text = HelpModal::text(&theme, FocusPane::Tree);
     let lines = text.iter().map(line_text).collect::<Vec<_>>();
 
     assert_eq!(
@@ -521,9 +542,23 @@ fn help_text_uses_contextual_sections() {
 }
 
 #[test]
+fn help_content_len_matches_rendered_help_text() {
+    let theme = Theme::dark();
+
+    assert_eq!(
+        HelpModal::content_len(FocusPane::Tree),
+        HelpModal::text(&theme, FocusPane::Tree).len()
+    );
+    assert_eq!(
+        HelpModal::content_len(FocusPane::Output),
+        HelpModal::text(&theme, FocusPane::Output).len()
+    );
+}
+
+#[test]
 fn help_text_sorts_commands_alpha_numerically_within_groups() {
     let theme = Theme::dark();
-    let text = help_text(&theme, FocusPane::Tree);
+    let text = HelpModal::text(&theme, FocusPane::Tree);
 
     assert_help_order(
         &text,
@@ -577,8 +612,8 @@ fn help_text_sorts_commands_alpha_numerically_within_groups() {
 #[test]
 fn help_text_dims_inactive_pane_commands() {
     let theme = Theme::dark();
-    let tests_help = help_text(&theme, FocusPane::Tree);
-    let output_help = help_text(&theme, FocusPane::Output);
+    let tests_help = HelpModal::text(&theme, FocusPane::Tree);
+    let output_help = HelpModal::text(&theme, FocusPane::Output);
 
     assert_eq!(
         help_line_with_label(&tests_help, "search output").spans[1].style,
@@ -620,9 +655,60 @@ fn tree_leading_fields_have_no_status_gap() {
     }]);
 
     assert_eq!(
-        tree_leading_fields(0, &tree.root, config::TreeDurationMode::Wall),
+        TestsPanel::leading_fields(0, &tree.root, config::TreeDurationMode::Wall),
         "v [        ] "
     );
+}
+
+#[test]
+fn tree_labels_show_bubbling_event_marker_on_the_right() {
+    let mut tree = Tree::from_tests(vec![DiscoveredTest {
+        key: TestKey {
+            binary_id: Some("demo::demo".to_owned()),
+            event_prefix: Some("demo::demo".to_owned()),
+            name: "tests::case".to_owned(),
+        },
+        package: "demo".to_owned(),
+        binary: "demo".to_owned(),
+        binary_kind: "lib".to_owned(),
+        cwd: PathBuf::from("."),
+        source_path: None,
+        module: Some("tests".to_owned()),
+        name: "case".to_owned(),
+        full_name: "tests::case".to_owned(),
+        status: TestStatus::Pending,
+        ignored: false,
+        ignore_reason: None,
+    }]);
+    let mut event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Info, "hit");
+    event.thread = Some("tests::case".to_owned());
+
+    assert!(tree.append_test_event(&event, "@ event info cache: hit"));
+
+    let package = &tree.root.children[0];
+    let module = &package.children[0];
+    let test = &module.children[0];
+
+    assert_eq!(
+        TestsPanel::leading_fields(0, &tree.root, config::TreeDurationMode::Wall),
+        "v [        ] "
+    );
+    assert_eq!(
+        TestsPanel::leading_fields(1, package, config::TreeDurationMode::Wall),
+        "  > [        ] "
+    );
+    assert_eq!(
+        TestsPanel::leading_fields(2, module, config::TreeDurationMode::Wall),
+        "    > [        ] "
+    );
+    assert_eq!(
+        TestsPanel::leading_fields(3, test, config::TreeDurationMode::Wall),
+        "        [        ] "
+    );
+    assert_eq!(TestsPanel::label(&tree.root, "⠋"), ". •");
+    assert_eq!(TestsPanel::label(package, "⠋"), "demo •");
+    assert_eq!(TestsPanel::label(module, "⠋"), "tests •");
+    assert_eq!(TestsPanel::label(test, "⠋"), "case •");
 }
 
 #[test]
@@ -655,15 +741,15 @@ fn running_duration_field_rolls_up_to_parent_rows() {
     let module = &package.children[0];
     let test = &module.children[0];
     assert_ne!(
-        tree_leading_fields(1, package, config::TreeDurationMode::Wall),
+        TestsPanel::leading_fields(1, package, config::TreeDurationMode::Wall),
         "  > [        ] "
     );
     assert_ne!(
-        tree_leading_fields(2, module, config::TreeDurationMode::Wall),
+        TestsPanel::leading_fields(2, module, config::TreeDurationMode::Wall),
         "    > [        ] "
     );
     assert_ne!(
-        tree_leading_fields(3, test, config::TreeDurationMode::Wall),
+        TestsPanel::leading_fields(3, test, config::TreeDurationMode::Wall),
         "        [        ] "
     );
 }
@@ -695,14 +781,13 @@ fn test_details_modal_includes_live_info_and_run_command() {
         &key,
         TestStatus::Passed,
         "hello".to_owned(),
-        String::new(),
         Some(Duration::from_millis(250)),
     );
     app.tree.select_next();
     app.tree.select_next();
     app.tree.select_next();
 
-    let text = test_details_modal_lines(&app, &Theme::dark())
+    let text = TestDetailsModal::lines(&app, &Theme::dark())
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
@@ -711,7 +796,7 @@ fn test_details_modal_includes_live_info_and_run_command() {
     assert!(text.contains("tests::case one"));
     assert!(text.contains("status   passed"));
     assert!(text.contains("duration 0.250s"));
-    assert!(text.contains("output   stdout 5 chars"));
+    assert!(text.contains("output   text 5 chars"));
     assert!(text.contains("Run"));
     assert!(text.contains("> scope"));
     assert!(text.contains("selected"));
@@ -742,7 +827,7 @@ fn test_details_modal_for_parent_includes_scoped_run_command() {
     }]));
     app.tree.select_next();
 
-    let text = test_details_modal_lines(&app, &Theme::dark())
+    let text = TestDetailsModal::lines(&app, &Theme::dark())
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
@@ -778,15 +863,15 @@ fn test_details_actions_include_snapshot_for_leaf_tests() {
 
     app.tree.select_next();
     assert_eq!(
-        test_details_actions(&app),
-        "[up/down]option [left/right]change [e]edit [r/enter]run [esc]close"
+        TestDetailsModal::actions(&app),
+        "[up/down]option [pgUp/pgDn]scroll [left/right]change [e]edit [r]run [esc]close"
     );
 
     app.tree.select_next();
     app.tree.select_next();
     assert_eq!(
-        test_details_actions(&app),
-        "[up/down]option [left/right]change [e]edit [r/enter]run [s]snapshot [esc]close"
+        TestDetailsModal::actions(&app),
+        "[up/down]option [pgUp/pgDn]scroll [left/right]change [e]edit [r]run [s]snapshot [esc]close"
     );
 }
 
@@ -828,10 +913,10 @@ fn running_row_label_shows_spinner_after_name() {
     let module = &package.children[0];
     let test = &module.children[0];
 
-    assert_eq!(node_label(&tree.root, "⠋"), ". ⠋");
-    assert_eq!(node_label(package, "⠋"), "demo ⠋");
-    assert_eq!(node_label(module, "⠋"), "tests ⠋");
-    assert_eq!(node_label(test, "⠋"), "case ⠋");
+    assert_eq!(TestsPanel::label(&tree.root, "⠋"), ". ⠋");
+    assert_eq!(TestsPanel::label(package, "⠋"), "demo ⠋");
+    assert_eq!(TestsPanel::label(module, "⠋"), "tests ⠋");
+    assert_eq!(TestsPanel::label(test, "⠋"), "case ⠋");
 }
 
 #[test]
@@ -884,7 +969,7 @@ fn output_lines_color_run_result_summaries() {
     let app = app_with_tree(Tree::from_tests(Vec::new()));
     let theme = Theme::dark();
     let output_view = crate::output_pane::OutputView {
-        text: "Run passed: 1 passed\nRun failed: 1 failed\nRun command failed: nextest exited with 101\n[event info] fixture: cached\n[event warn] fixture: slow\n[event error] fixture: failed".to_owned(),
+        text: "Run passed: 1 passed\nRun failed: 1 failed\nRun command failed: nextest exited with 101\n@ event info fixture: cached\n@ event warn fixture: slow\n@ event error fixture: failed".to_owned(),
         source_lines: vec![0, 1, 2, 3, 4, 5],
     };
 
@@ -934,7 +1019,7 @@ fn output_actions_show_submit_and_advanced_hints_while_searching() {
 
     assert_eq!(
         app.main_output.search_actions("panic line"),
-        "[/]search<[panic_      ] 0/0 [enter]submit [C+enter]advanced [n/N]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
+        "[/]search<[panic_      ] 0/0 [enter]submit [shift+enter]advanced [n/N]ext [f]ilter:✗ [r]egex:✗ [c]ase-sensitive:✗>"
     );
 }
 

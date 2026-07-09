@@ -220,6 +220,71 @@ fn manifest_refresh_drops_values_that_no_longer_match_spec() {
 }
 
 #[test]
+fn restored_preferences_apply_without_becoming_dirty() {
+    let mut state = XtaskState::default();
+    state.restore_preferences(XtaskPreferences {
+        values: [(
+            "release".to_owned(),
+            [(
+                "profile".to_owned(),
+                XtaskArgValue::Enum("release".to_owned()),
+            )]
+            .into(),
+        )]
+        .into(),
+    });
+
+    state.set_manifest(sample_manifest());
+
+    assert_eq!(
+        state.run_request().expect("run request").args,
+        vec!["--profile", "release"]
+    );
+    assert_eq!(state.pending_preferences(), None);
+}
+
+#[test]
+fn restored_stale_preferences_are_pruned_and_marked_for_persistence() {
+    let mut state = XtaskState::default();
+    state.restore_preferences(XtaskPreferences {
+        values: [(
+            "release".to_owned(),
+            [(
+                "profile".to_owned(),
+                XtaskArgValue::Enum("removed".to_owned()),
+            )]
+            .into(),
+        )]
+        .into(),
+    });
+
+    state.set_manifest(sample_manifest());
+
+    assert!(state.run_request().expect("run request").args.is_empty());
+    let (revision, preferences) = state.pending_preferences().expect("pending cleanup");
+    assert_eq!(revision, 1);
+    assert!(preferences.is_empty());
+}
+
+#[test]
+fn returning_to_manifest_default_removes_persisted_override() {
+    let mut state = XtaskState::default();
+    state.set_manifest(sample_manifest());
+
+    assert!(state.adjust_selected_arg(1));
+    let (first_revision, preferences) = state.pending_preferences().expect("bool override");
+    assert_eq!(
+        preferences.value("release", "allow-dirty"),
+        Some(&XtaskArgValue::Bool(true))
+    );
+    state.mark_preferences_persisted(first_revision);
+
+    assert!(state.adjust_selected_arg(-1));
+    let (_, preferences) = state.pending_preferences().expect("default cleanup");
+    assert!(preferences.is_empty());
+}
+
+#[test]
 fn parameter_viewport_follows_selected_arg_lines() {
     let mut state = XtaskState::default();
     state.set_manifest(XtaskManifest {
@@ -240,17 +305,34 @@ fn parameter_viewport_follows_selected_arg_lines() {
         }],
     });
     state.open_detail();
-    state.set_parameters_page_size(5);
+    state.apply_parameters_viewport_metrics(5);
 
     for _ in 0..8 {
         state.select_next_arg();
     }
 
-    let (selected_line, _) = state.selected_parameter_line().expect("selected line");
+    let (selected_line, selected_len, _) = state.selected_parameter_range().expect("selected line");
     let scroll = state.parameters_viewport.scroll();
     assert!(scroll > 0);
     assert!(selected_line >= scroll);
-    assert!(selected_line < scroll + state.parameters_viewport.page_size());
+    assert!(selected_line + selected_len <= scroll + state.parameters_viewport.page_size());
+}
+
+#[test]
+fn parameter_page_size_refresh_preserves_manual_scroll() {
+    let mut state = XtaskState::default();
+    state.set_manifest(sample_manifest());
+    state.open_detail();
+    state.apply_parameters_viewport_metrics(5);
+    state
+        .parameters_viewport
+        .apply_scroll(crate::scroll::ScrollAction::PageDown);
+    let manual_scroll = state.parameters_viewport.scroll();
+
+    state.apply_parameters_viewport_metrics(5);
+
+    assert!(manual_scroll > 0);
+    assert_eq!(state.parameters_viewport.scroll(), manual_scroll);
 }
 
 #[test]
@@ -352,7 +434,7 @@ fn run_finished_without_live_chunks_falls_back_to_single_stream() {
 #[test]
 fn run_output_uses_output_pane_follow_and_page_size() {
     let mut state = XtaskState::default();
-    state.output.set_page_size(2);
+    state.output.apply_viewport_page_size(2);
     let request_id = state.begin_run("cargo xtask release".to_owned());
 
     state.apply_event(XtaskEvent::RunOutput {
@@ -363,15 +445,18 @@ fn run_output_uses_output_pane_follow_and_page_size() {
         },
     });
 
-    assert!(state.output.follow);
-    assert!(state.output.scroll > 0);
-    let followed_scroll = state.output.scroll;
+    assert!(state.output.follow());
+    assert!(state.output.scroll() > 0);
+    let followed_scroll = state.output.scroll();
 
-    state.scroll_output_page_up();
+    let line_count = state.output.output_view(&state.output_text()).line_count();
+    state
+        .output
+        .apply_scroll(crate::scroll::ScrollAction::PageUp, line_count);
 
-    assert!(!state.output.follow);
-    assert_eq!(state.output.scroll, followed_scroll.saturating_sub(2));
-    let manual_scroll = state.output.scroll;
+    assert!(!state.output.follow());
+    assert_eq!(state.output.scroll(), followed_scroll.saturating_sub(2));
+    let manual_scroll = state.output.scroll();
 
     state.apply_event(XtaskEvent::RunOutput {
         request_id,
@@ -381,11 +466,14 @@ fn run_output_uses_output_pane_follow_and_page_size() {
         },
     });
 
-    assert_eq!(state.output.scroll, manual_scroll);
+    assert_eq!(state.output.scroll(), manual_scroll);
 
-    state.scroll_output_page_down();
+    let line_count = state.output.output_view(&state.output_text()).line_count();
+    state
+        .output
+        .apply_scroll(crate::scroll::ScrollAction::PageDown, line_count);
 
-    assert_eq!(state.output.scroll, manual_scroll.saturating_add(2));
+    assert_eq!(state.output.scroll(), manual_scroll.saturating_add(2));
 }
 
 #[test]

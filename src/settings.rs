@@ -1,8 +1,10 @@
 use crate::{
     config::{
         AppSettings, DEFAULT_OPEN_WITH_LABEL, DEFAULT_STORAGE_LOW_SPACE_THRESHOLD_GB,
-        DEFAULT_TREE_WIDTH_PERCENT, MAX_STORAGE_LOW_SPACE_THRESHOLD_GB, MAX_TREE_WIDTH_PERCENT,
-        MIN_STORAGE_LOW_SPACE_THRESHOLD_GB, MIN_TREE_WIDTH_PERCENT, ThemePreference,
+        DEFAULT_TEST_OUTPUT_POLL_INTERVAL_MS, DEFAULT_TREE_WIDTH_PERCENT,
+        MAX_STORAGE_LOW_SPACE_THRESHOLD_GB, MAX_TEST_OUTPUT_POLL_INTERVAL_MS,
+        MAX_TREE_WIDTH_PERCENT, MIN_STORAGE_LOW_SPACE_THRESHOLD_GB,
+        MIN_TEST_OUTPUT_POLL_INTERVAL_MS, MIN_TREE_WIDTH_PERCENT, ThemePreference,
         TreeDurationMode,
     },
     field_schema::ParameterDetails,
@@ -33,16 +35,18 @@ pub enum SettingsField {
     TreeWidth,
     TreeDuration,
     StorageThreshold,
+    OutputPoll,
     Theme,
     ColorBlindMode,
 }
 
 impl SettingsField {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::OpenWith,
         Self::TreeWidth,
         Self::TreeDuration,
         Self::StorageThreshold,
+        Self::OutputPoll,
         Self::Theme,
         Self::ColorBlindMode,
     ];
@@ -53,6 +57,7 @@ impl SettingsField {
             Self::TreeWidth => "tests width",
             Self::TreeDuration => "tests time",
             Self::StorageThreshold => "low disk",
+            Self::OutputPoll => "output poll",
             Self::Theme => "theme",
             Self::ColorBlindMode => "color-blind",
         }
@@ -82,6 +87,11 @@ impl SettingsField {
                     "{MIN_STORAGE_LOW_SPACE_THRESHOLD_GB}..{MAX_STORAGE_LOW_SPACE_THRESHOLD_GB} GiB"
                 )])
                 .with_default(format!("{DEFAULT_STORAGE_LOW_SPACE_THRESHOLD_GB} GiB")),
+            Self::OutputPoll => ParameterDetails::number()
+                .with_choices([format!(
+                    "{MIN_TEST_OUTPUT_POLL_INTERVAL_MS}..{MAX_TEST_OUTPUT_POLL_INTERVAL_MS} ms"
+                )])
+                .with_default(format!("{DEFAULT_TEST_OUTPUT_POLL_INTERVAL_MS} ms")),
             Self::Theme => {
                 ParameterDetails::enum_values(ThemePreference::ALL.map(ThemePreference::label))
                     .with_default(ThemePreference::Auto.label())
@@ -95,7 +105,8 @@ impl SettingsField {
             Self::OpenWith => Self::TreeWidth,
             Self::TreeWidth => Self::TreeDuration,
             Self::TreeDuration => Self::StorageThreshold,
-            Self::StorageThreshold => Self::Theme,
+            Self::StorageThreshold => Self::OutputPoll,
+            Self::OutputPoll => Self::Theme,
             Self::Theme => Self::ColorBlindMode,
             Self::ColorBlindMode => Self::OpenWith,
         }
@@ -107,7 +118,8 @@ impl SettingsField {
             Self::TreeWidth => Self::OpenWith,
             Self::TreeDuration => Self::TreeWidth,
             Self::StorageThreshold => Self::TreeDuration,
-            Self::Theme => Self::StorageThreshold,
+            Self::OutputPoll => Self::StorageThreshold,
+            Self::Theme => Self::OutputPoll,
             Self::ColorBlindMode => Self::Theme,
         }
     }
@@ -179,6 +191,10 @@ mod tests {
         assert_eq!(
             SettingsField::StorageThreshold.details().render(),
             "# number: 1..1024 GiB (default: 10 GiB)"
+        );
+        assert_eq!(
+            SettingsField::OutputPoll.details().render(),
+            "# number: 250..10000 ms (default: 1000 ms)"
         );
         assert_eq!(
             SettingsField::Theme.details().render(),

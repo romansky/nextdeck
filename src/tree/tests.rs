@@ -301,7 +301,6 @@ fn module_output_shows_descendant_tests_not_runner_output() {
         },
         TestStatus::Passed,
         "hello from works".to_owned(),
-        String::new(),
         Some(std::time::Duration::from_millis(12)),
     );
     tree.finish_test(
@@ -312,7 +311,6 @@ fn module_output_shows_descendant_tests_not_runner_output() {
         },
         TestStatus::Passed,
         "hello from also_works".to_owned(),
-        String::new(),
         Some(std::time::Duration::from_millis(20)),
     );
     tree.append_runner_output("unrelated runner line".to_owned());
@@ -345,7 +343,6 @@ fn focused_test_output_shows_captured_stream_without_metadata_headers() {
         },
         TestStatus::Passed,
         "hello from stdout".to_owned(),
-        String::new(),
         Some(std::time::Duration::from_millis(12)),
     );
 
@@ -376,10 +373,9 @@ fn late_success_output_is_attached_to_finished_test() {
         &key,
         TestStatus::Passed,
         String::new(),
-        String::new(),
         Some(std::time::Duration::from_millis(12)),
     );
-    tree.append_test_output(&key, "late stdout".to_owned(), String::new());
+    tree.append_test_output(&key, "late stdout".to_owned());
     expand_all(&mut tree);
     select_label(&mut tree, "works");
 
@@ -400,11 +396,10 @@ fn early_success_output_survives_empty_finished_event() {
         name: "tests::works".to_owned(),
     };
 
-    tree.append_test_output(&key, "early stdout".to_owned(), String::new());
+    tree.append_test_output(&key, "early stdout".to_owned());
     tree.finish_test(
         &key,
         TestStatus::Passed,
-        String::new(),
         String::new(),
         Some(std::time::Duration::from_millis(12)),
     );
@@ -430,20 +425,74 @@ fn inline_event_survives_finished_event_with_stdout() {
     let mut event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Info, "hit");
     event.thread = Some("tests::works".to_owned());
 
-    assert!(tree.append_test_event(&event, "[event info] cache: hit"));
+    assert!(tree.append_test_event(&event, "@ event info cache: hit"));
     tree.finish_test(
         &key,
         TestStatus::Failed,
         "final stdout".to_owned(),
-        String::new(),
         Some(std::time::Duration::from_millis(12)),
     );
     expand_all(&mut tree);
     select_label(&mut tree, "works");
 
     let output = tree.selected_output();
-    assert!(output.contains("[event info] cache: hit"));
+    assert!(output.contains("@ event info cache: hit"));
     assert!(output.contains("final stdout"));
+    assert!(
+        output
+            .find("@ event info cache: hit")
+            .is_some_and(|event_index| output
+                .find("final stdout")
+                .is_some_and(|stdout_index| event_index < stdout_index))
+    );
+}
+
+#[test]
+fn appended_event_bubbles_to_target_ancestors() {
+    let mut tree = Tree::from_tests(vec![
+        discovered_test("demo::demo", "demo", "alpha", "one"),
+        discovered_test("demo::demo", "demo", "beta", "two"),
+    ]);
+    let mut event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Warn, "slow");
+    event.thread = Some("alpha::one".to_owned());
+
+    assert!(!tree.root.has_events);
+    assert!(tree.append_test_event(&event, "@ event warn alpha: slow"));
+
+    let package = &tree.root.children[0];
+    let alpha = &package.children[0];
+    let alpha_test = &alpha.children[0];
+    let beta = &package.children[1];
+    let beta_test = &beta.children[0];
+
+    assert!(tree.root.has_events);
+    assert!(package.has_events);
+    assert!(alpha.has_events);
+    assert!(alpha_test.has_events);
+    assert!(!beta.has_events);
+    assert!(!beta_test.has_events);
+}
+
+#[test]
+fn prepare_for_run_clears_event_bubbles() {
+    let mut tree = Tree::from_tests(vec![discovered_test(
+        "demo::demo",
+        "demo",
+        "tests",
+        "works",
+    )]);
+    let mut event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Info, "hit");
+    event.thread = Some("tests::works".to_owned());
+
+    assert!(tree.append_test_event(&event, "@ event info cache: hit"));
+    assert!(tree.root.has_events);
+
+    tree.prepare_for_run(&crate::nextest::RunScope::Workspace);
+
+    assert!(!tree.root.has_events);
+    assert!(!tree.root.children[0].has_events);
+    assert!(!tree.root.children[0].children[0].has_events);
+    assert!(!tree.root.children[0].children[0].children[0].has_events);
 }
 
 #[test]
@@ -463,9 +512,8 @@ fn appended_test_output_is_bounded() {
     tree.append_test_output(
         &key,
         "x".repeat(crate::output::OUTPUT_TEXT_LIMIT_BYTES + 1024),
-        String::new(),
     );
-    tree.append_test_output(&key, "tail".to_owned(), String::new());
+    tree.append_test_output(&key, "tail".to_owned());
     expand_all(&mut tree);
     select_label(&mut tree, "works");
 
@@ -687,7 +735,6 @@ fn prepare_for_run_clears_previous_results_and_outputs() {
         },
         TestStatus::Passed,
         "old selected stdout".to_owned(),
-        String::new(),
         Some(std::time::Duration::from_millis(12)),
     );
     tree.finish_test(
@@ -697,7 +744,6 @@ fn prepare_for_run_clears_previous_results_and_outputs() {
             name: "tests::outside_scope".to_owned(),
         },
         TestStatus::Failed,
-        String::new(),
         "old outside stderr".to_owned(),
         Some(std::time::Duration::from_millis(20)),
     );

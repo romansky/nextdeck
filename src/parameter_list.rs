@@ -4,6 +4,7 @@ use ratatui::{
 };
 
 use crate::field_schema::ParameterDetails;
+use crate::text_fit::fit_line_prefix;
 
 const EMPTY_VALUE_PLACEHOLDER: &str = "[empty]";
 const LABEL_VALUE_GAP: usize = 1;
@@ -126,18 +127,6 @@ impl ParameterList<'_> {
 fn non_empty(text: &str) -> Option<&str> {
     let text = text.trim();
     (!text.is_empty()).then_some(text)
-}
-
-fn fit_line_prefix(content: &str, width: usize) -> String {
-    let char_count = content.chars().count();
-    if char_count <= width {
-        return format!("{content:<width$}");
-    }
-    if width <= 3 {
-        return content.chars().take(width).collect();
-    }
-    let prefix = content.chars().take(width - 3).collect::<String>();
-    format!("{prefix}...")
 }
 
 #[cfg(test)]

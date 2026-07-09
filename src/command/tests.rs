@@ -248,6 +248,14 @@ fn test_details_modal_maps_snapshot_key() {
         AppCommand::CustomRunNext
     );
     assert_eq!(
+        command_for_test_details_modal(KeyCode::PageDown),
+        AppCommand::Scroll(ScrollAction::PageDown)
+    );
+    assert_eq!(
+        command_for_test_details_modal(KeyCode::PageUp),
+        AppCommand::Scroll(ScrollAction::PageUp)
+    );
+    assert_eq!(
         command_for_test_details_modal(KeyCode::Left),
         AppCommand::CustomRunAdjustLeft
     );
@@ -257,7 +265,7 @@ fn test_details_modal_maps_snapshot_key() {
     );
     assert_eq!(
         command_for_test_details_modal(KeyCode::Enter),
-        AppCommand::RunCustom
+        AppCommand::Noop
     );
     assert_eq!(
         command_for_test_details_modal(KeyCode::Esc),
@@ -463,6 +471,16 @@ fn test_details_modal_uses_custom_run_commands() {
             ))),
             context
         ),
+        AppCommand::Noop
+    );
+    assert_eq!(
+        command_for_input(
+            &InputEvent::Terminal(Event::Key(KeyEvent::new(
+                KeyCode::Char('r'),
+                KeyModifiers::NONE
+            ))),
+            context
+        ),
         AppCommand::RunCustom
     );
     assert_eq!(
@@ -559,6 +577,15 @@ fn xtask_command_modal_uses_parameter_and_output_commands() {
         AppCommand::XtaskNextArg
     );
 
+    let page_down = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::PageDown,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&page_down, context),
+        AppCommand::Scroll(ScrollAction::PageDown)
+    );
+
     let adjust = InputEvent::Terminal(Event::Key(KeyEvent::new(
         KeyCode::Right,
         KeyModifiers::NONE,
@@ -589,7 +616,7 @@ fn xtask_command_modal_uses_parameter_and_output_commands() {
         InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
     assert_eq!(
         command_for_input(&line_down, output_context),
-        AppCommand::XtaskOutputLineDown
+        AppCommand::Scroll(ScrollAction::LineDown)
     );
 
     let snap = InputEvent::Terminal(Event::Key(KeyEvent::new(
@@ -661,7 +688,7 @@ fn xtask_command_modal_uses_parameter_and_output_commands() {
     )));
     assert_eq!(
         command_for_input(&page, output_context),
-        AppCommand::XtaskOutputPageDown
+        AppCommand::Scroll(ScrollAction::PageDown)
     );
 
     let close = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
@@ -716,6 +743,12 @@ fn test_details_modal_routes_run_options_and_close_keys() {
 
     let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
         KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(command_for_input(&event, context), AppCommand::Noop);
+
+    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('r'),
         KeyModifiers::NONE,
     )));
     assert_eq!(command_for_input(&event, context), AppCommand::RunCustom);
@@ -883,20 +916,29 @@ fn output_search_input_accepts_text_and_controls() {
 
     let advanced = InputEvent::Terminal(Event::Key(KeyEvent::new(
         KeyCode::Enter,
-        KeyModifiers::CONTROL,
+        KeyModifiers::SHIFT,
     )));
     assert_eq!(
         command_for_input(&advanced, context),
         AppCommand::OpenOutputSearchModal
     );
 
-    let mac_advanced = InputEvent::Terminal(Event::Key(KeyEvent::new(
+    let control_enter = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(
+        command_for_input(&control_enter, context),
+        AppCommand::ApplyOutputSearch
+    );
+
+    let super_enter = InputEvent::Terminal(Event::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::SUPER,
     )));
     assert_eq!(
-        command_for_input(&mac_advanced, context),
-        AppCommand::OpenOutputSearchModal
+        command_for_input(&super_enter, context),
+        AppCommand::ApplyOutputSearch
     );
 }
 
@@ -927,13 +969,49 @@ fn output_search_modal_accepts_navigation_and_apply_keys() {
         command_for_input(&apply, context),
         AppCommand::ApplyOutputSearch
     );
+
+    let control_newline = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('\n'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(
+        command_for_input(&control_newline, context),
+        AppCommand::ApplyOutputSearch
+    );
+
+    let control_j = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('j'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(
+        command_for_input(&control_j, context),
+        AppCommand::ApplyOutputSearch
+    );
 }
 
 #[test]
-fn help_context_only_closes_on_close_keys() {
+fn help_context_closes_and_pages_help() {
     let context = help_context();
     let event = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
     assert_eq!(command_for_input(&event, context), AppCommand::Noop);
+
+    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::PageUp,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&event, context),
+        AppCommand::Scroll(ScrollAction::PageUp)
+    );
+
+    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::PageDown,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&event, context),
+        AppCommand::Scroll(ScrollAction::PageDown)
+    );
 
     let event = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
     assert_eq!(command_for_input(&event, context), AppCommand::CloseHelp);

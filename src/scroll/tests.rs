@@ -34,12 +34,24 @@ fn scrolling_clamps_to_content() {
 }
 
 #[test]
-fn selection_viewport_keeps_selected_item_visible() {
-    let mut viewport = SelectionViewport::default();
-    viewport.set_page_size(5);
+fn viewport_keeps_selected_item_visible() {
+    let mut viewport = ViewportState::default();
+    viewport.set_metrics(5, 20);
 
-    viewport.ensure_visible(9, 20);
+    viewport.ensure_visible(9);
 
     assert_eq!(viewport.scroll(), 7);
     assert_eq!(viewport.page_size(), 5);
+    assert_eq!(viewport.content_len(), 20);
+}
+
+#[test]
+fn ensure_range_visible_keeps_multiline_item_in_view() {
+    assert_eq!(ensure_range_visible(0, 7, 3, 20, 5), 5);
+    assert_eq!(ensure_range_visible(5, 3, 3, 20, 5), 3);
+}
+
+#[test]
+fn ensure_range_visible_anchors_oversized_item_to_start() {
+    assert_eq!(ensure_range_visible(0, 7, 8, 20, 5), 7);
 }

@@ -1,8 +1,9 @@
 use std::{
+    collections::BTreeSet,
     env,
     ffi::OsString,
     fs::{self, File},
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -10,6 +11,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use flate2::{Compression, write::GzEncoder};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tar::Builder as TarBuilder;
 
@@ -105,6 +107,14 @@ enum XtaskCommand {
         )]
         execute: bool,
     },
+    #[command(about = "Run a tests-tree path and print NextDeck-style output as JSONL")]
+    ReproNextdeckRun {
+        #[arg(
+            long,
+            help = "Tests tree path, for example workspace or nextdeck::output::tests::case"
+        )]
+        path: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -147,6 +157,7 @@ fn main() -> Result<()> {
             allow_dirty,
             execute,
         } => lib_push(&workspace, allow_dirty, execute),
+        XtaskCommand::ReproNextdeckRun { path } => repro_nextdeck_run(&workspace, &path),
     }
 }
 
@@ -267,6 +278,78 @@ fn lib_push(workspace: &Path, allow_dirty: bool, execute: bool) -> Result<()> {
         args.push("--dry-run".to_owned());
     }
     run(workspace, "cargo", args)
+}
+
+fn repro_nextdeck_run(workspace: &Path, tree_path: &str) -> Result<()> {
+    let tree_path = tree_path.trim();
+    if tree_path.is_empty() {
+        bail!("--path must not be empty");
+    }
+    let capture_dir = workspace
+        .join("target")
+        .join("nextdeck-repro")
+        .join(std::process::id().to_string());
+    let events_dir = capture_dir.join("events");
+    fs::create_dir_all(&events_dir)
+        .with_context(|| format!("creating {}", events_dir.display()))?;
+
+    let mut args = vec![
+        "nextest".to_owned(),
+        "run".to_owned(),
+        "--message-format".to_owned(),
+        "libtest-json-plus".to_owned(),
+        "--message-format-version".to_owned(),
+        "0.1".to_owned(),
+        "--show-progress".to_owned(),
+        "none".to_owned(),
+        "--status-level".to_owned(),
+        "none".to_owned(),
+        "--final-status-level".to_owned(),
+        "none".to_owned(),
+        "--success-output".to_owned(),
+        "immediate".to_owned(),
+        "--no-input-handler".to_owned(),
+    ];
+    args.extend(nextest_args_for_tree_path(workspace, tree_path)?);
+
+    let command_line = format!("cargo {}", args.join(" "));
+    let mut command = Command::new("cargo");
+    command
+        .args(&args)
+        .current_dir(workspace)
+        .env("NEXTEST_EXPERIMENTAL_LIBTEST_JSON", "1")
+        .env(nextdeck_test_events::ENV_VAR, &events_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    print_jsonl(json!({
+        "kind": "run",
+        "event": "started",
+        "cwd": workspace.display().to_string(),
+        "tree_path": tree_path,
+        "command": command_line,
+        "events_dir": events_dir.display().to_string(),
+    }))?;
+
+    let output = command
+        .output()
+        .with_context(|| format!("running {command_line}"))?;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        print_jsonl(json!({ "kind": "stream", "stream": "stdout", "text": line }))?;
+    }
+    for line in String::from_utf8_lossy(&output.stderr).lines() {
+        print_jsonl(json!({ "kind": "stream", "stream": "stderr", "text": line }))?;
+    }
+    print_event_logs_as_jsonl(&events_dir)?;
+    print_jsonl(json!({
+        "kind": "run",
+        "event": "finished",
+        "status": output.status.to_string(),
+        "success": output.status.success(),
+        "code": output.status.code(),
+    }))?;
+
+    Ok(())
 }
 
 fn smoke_test_local_lib(workspace: &Path, local_crate: &Path) -> Result<()> {
@@ -783,6 +866,92 @@ fn find_on_path(binary: &str) -> Option<PathBuf> {
 
 fn exe_name(binary: &str) -> String {
     format!("{binary}{}", env::consts::EXE_SUFFIX)
+}
+
+fn nextest_args_for_tree_path(workspace: &Path, tree_path: &str) -> Result<Vec<String>> {
+    if tree_path == "workspace" {
+        return Ok(Vec::new());
+    }
+    let packages = workspace_package_names(workspace)?;
+    let mut parts = tree_path.split("::");
+    let Some(first) = parts.next() else {
+        return Ok(Vec::new());
+    };
+    let rest = parts.collect::<Vec<_>>();
+    if packages.contains(first) {
+        let mut args = vec!["-p".to_owned(), first.to_owned()];
+        if !rest.is_empty() {
+            args.push(rest.join("::"));
+        }
+        Ok(args)
+    } else {
+        Ok(vec![tree_path.to_owned()])
+    }
+}
+
+fn workspace_package_names(workspace: &Path) -> Result<BTreeSet<String>> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(workspace)
+        .output()
+        .context("running cargo metadata")?;
+    if !output.status.success() {
+        bail!("cargo metadata exited with {}", output.status);
+    }
+    let value =
+        serde_json::from_slice::<Value>(&output.stdout).context("parsing cargo metadata")?;
+    let packages = value
+        .get("packages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|package| package.get("name").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect();
+    Ok(packages)
+}
+
+fn print_event_logs_as_jsonl(events_dir: &Path) -> Result<()> {
+    if !events_dir.exists() {
+        return Ok(());
+    }
+    let mut files = fs::read_dir(events_dir)
+        .with_context(|| format!("reading {}", events_dir.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("reading {}", events_dir.display()))?;
+    files.sort();
+    files.retain(|path| path.is_file());
+    for path in files {
+        let text =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        for (index, line) in text.lines().enumerate() {
+            let parsed = serde_json::from_str::<Value>(line);
+            print_jsonl(match parsed {
+                Ok(event) => json!({
+                    "kind": "event",
+                    "file": path.display().to_string(),
+                    "line": index + 1,
+                    "event": event,
+                }),
+                Err(error) => json!({
+                    "kind": "event",
+                    "file": path.display().to_string(),
+                    "line": index + 1,
+                    "text": line,
+                    "parse_error": error.to_string(),
+                }),
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn print_jsonl(record: Value) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    serde_json::to_writer(&mut stdout, &record).context("writing JSONL record")?;
+    writeln!(stdout).context("writing JSONL newline")
 }
 
 fn command_stdout<I, S>(program: &Path, args: I) -> Result<String>

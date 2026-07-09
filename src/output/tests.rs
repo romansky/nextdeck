@@ -2,26 +2,107 @@ use super::*;
 
 #[test]
 fn captured_text_shows_stdout_without_metadata_headers() {
-    let output = TestOutput {
-        stdout: "hello\nworld".to_owned(),
-        stderr: String::new(),
+    let mut output = TestOutput {
         duration: Some(Duration::from_millis(183_940)),
+        ..Default::default()
     };
+    output.append_text("hello\nworld");
 
     assert_eq!(output.captured_text(), "hello\nworld\n");
 }
 
 #[test]
-fn display_text_keeps_detailed_metadata_headers() {
-    let output = TestOutput {
-        stdout: "hello".to_owned(),
-        stderr: String::new(),
+fn display_text_keeps_duration_metadata_without_stream_headers() {
+    let mut output = TestOutput {
         duration: Some(Duration::from_millis(7)),
+        ..Default::default()
     };
+    output.append_text("hello");
 
     let text = output.display_text();
     assert!(text.contains("duration:"));
-    assert!(text.contains("stdout\nhello"));
+    assert!(text.contains("hello"));
+    assert!(!text.contains("stdout"));
+    assert!(!text.contains("stderr"));
+}
+
+#[test]
+fn stream_interleaves_text_and_events_in_append_order() {
+    let mut output = TestOutput::default();
+
+    output.append_text("before");
+    output.append_event(nextdeck_test_events::Level::Info, "@ event info cache hit");
+    output.append_text("after");
+
+    assert_eq!(
+        output.captured_text(),
+        "before\n@ event info cache hit\nafter\n"
+    );
+    assert_eq!(output.summary_label(), "text 11 chars, 1 event");
+}
+
+#[test]
+fn adjacent_text_chunks_render_as_one_plain_stream() {
+    let mut output = TestOutput::default();
+
+    output.append_text("stdout line");
+    output.append_text("stderr line");
+
+    assert_eq!(output.captured_text(), "stdout line\nstderr line\n");
+    assert_eq!(output.summary_label(), "text 23 chars");
+}
+
+#[test]
+fn dogfood_output_captures_stdout_stderr_and_events() {
+    // Nextest reports passing-test stdout/stderr as a captured block, so this
+    // dogfood signal proves events are attached to test output, not that nextest
+    // can provide line-level stdout/event ordering.
+    println!("DOGFOOD_OUTPUT stdout before info event");
+    nextdeck_test_events::event!(
+        level: nextdeck_test_events::Level::Info,
+        target: "dogfood-output",
+        "stdout reached info event";
+        "stream" => "stdout",
+        "step" => 1,
+    );
+    println!("DOGFOOD_OUTPUT stdout after info event");
+    eprintln!("DOGFOOD_OUTPUT stderr before warn event");
+    nextdeck_test_events::event!(
+        level: nextdeck_test_events::Level::Warn,
+        target: "dogfood-output",
+        "stderr reached warn event";
+        "stream" => "stderr",
+        "step" => 2,
+    );
+    println!("DOGFOOD_OUTPUT stdout after warn event");
+
+    let mut output = TestOutput::default();
+    output.append_text(concat!(
+        "DOGFOOD_OUTPUT stdout before info event\n",
+        "DOGFOOD_OUTPUT stdout after info event\n",
+        "DOGFOOD_OUTPUT stderr before warn event\n",
+        "DOGFOOD_OUTPUT stdout after warn event",
+    ));
+    output.append_event(
+        nextdeck_test_events::Level::Info,
+        "@ event info dogfood-output: stdout reached info event",
+    );
+    output.append_event(
+        nextdeck_test_events::Level::Warn,
+        "@ event warn dogfood-output: stderr reached warn event",
+    );
+
+    let captured = output.captured_text();
+    for needle in [
+        "DOGFOOD_OUTPUT stdout before info event",
+        "DOGFOOD_OUTPUT stdout after info event",
+        "DOGFOOD_OUTPUT stderr before warn event",
+        "DOGFOOD_OUTPUT stdout after warn event",
+        "@ event info dogfood-output: stdout reached info event",
+        "@ event warn dogfood-output: stderr reached warn event",
+    ] {
+        assert!(captured.contains(needle));
+    }
 }
 
 #[test]

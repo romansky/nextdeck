@@ -40,6 +40,11 @@ fn list_xtasks_json_discovers_nextdeck_xtask_endpoint() {
             .iter()
             .any(|command| command["name"] == "lib-publish-local")
     );
+    assert!(
+        commands
+            .iter()
+            .any(|command| command["name"] == "repro-nextdeck-run")
+    );
     for removed in ["check", "package", "install-path", "install-package"] {
         assert!(
             !commands.iter().any(|command| command["name"] == removed),
@@ -56,4 +61,15 @@ fn list_xtasks_json_discovers_nextdeck_xtask_endpoint() {
             .iter()
             .any(|arg| { arg["long"] == "skip-sign" && arg["value"]["type"] == "bool" })
     );
+    let repro = commands
+        .iter()
+        .find(|command| command["name"] == "repro-nextdeck-run")
+        .expect("repro-nextdeck-run command");
+    let repro_args = repro["args"].as_array().expect("repro args");
+    assert!(repro_args.iter().any(|arg| {
+        arg["long"] == "path" && arg["required"] == true && arg["value"]["type"] == "string"
+    }));
+    assert!(!repro_args.iter().any(|arg| arg["long"] == "output-dir"));
+    assert!(!repro_args.iter().any(|arg| arg["long"] == "filter"));
+    assert!(!repro_args.iter().any(|arg| arg["long"] == "print"));
 }

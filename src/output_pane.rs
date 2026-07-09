@@ -21,23 +21,10 @@ pub struct OutputSearchState {
     pub current_range: Option<(usize, usize)>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct OutputPaneState {
-    pub scroll: u16,
-    pub follow: bool,
-    pub page_size: u16,
+    viewport: scroll::FollowViewportState,
     pub search: OutputSearchState,
-}
-
-impl Default for OutputPaneState {
-    fn default() -> Self {
-        Self {
-            scroll: 0,
-            follow: true,
-            page_size: 1,
-            search: OutputSearchState::default(),
-        }
-    }
 }
 
 impl OutputPaneState {
@@ -48,12 +35,12 @@ impl OutputPaneState {
     pub fn status(&self, label: &str, text: &str) -> String {
         let total = output_line_count(text);
         let top = self.render_scroll(text) as usize;
-        let visible = self.page_size.max(1) as usize;
+        let visible = self.page_size() as usize;
         let bottom = top.saturating_add(visible).min(total);
         format!(
             "{label} [PageUp/PageDown]<#{}-{bottom}/{total}> [s]nap:{}",
             top + 1,
-            bool_symbol(self.follow)
+            bool_symbol(self.follow())
         )
     }
 
@@ -62,90 +49,77 @@ impl OutputPaneState {
     }
 
     pub fn render_scroll(&self, text: &str) -> u16 {
-        output_render_scroll_for_count(output_line_count(text), self.page_size, self.scroll)
+        self.viewport.render_scroll_for(output_line_count(text))
     }
 
-    pub fn set_page_size(&mut self, page_size: u16) {
-        self.page_size = page_size.max(1);
+    pub fn scroll(&self) -> u16 {
+        self.viewport.render_scroll()
     }
 
-    pub fn set_line_count(&mut self, line_count: usize) {
-        let max_scroll = self.max_scroll(line_count);
-        if self.follow {
-            self.scroll = max_scroll;
-        } else {
-            self.scroll = self.scroll.min(max_scroll);
-        }
+    pub fn page_size(&self) -> u16 {
+        self.viewport.page_size().min(u16::MAX as usize) as u16
     }
 
-    pub fn scroll_up(&mut self, amount: u16) {
-        self.scroll = scroll::up(self.scroll as usize, amount as usize) as u16;
-        self.disable_snap();
+    pub fn follow(&self) -> bool {
+        self.viewport.follow()
     }
 
-    pub fn scroll_down(&mut self, amount: u16) {
-        self.scroll = scroll::down(
-            self.scroll as usize,
-            amount as usize,
-            usize::from(u16::MAX) + 1,
-            1,
-        ) as u16;
-        self.disable_snap();
+    pub fn viewport(&self) -> &scroll::ViewportState {
+        self.viewport.viewport()
+    }
+
+    pub fn apply_viewport_page_size(&mut self, page_size: usize) {
+        self.viewport.set_page_size(page_size);
+    }
+
+    pub fn apply_content_len(&mut self, line_count: usize) {
+        self.viewport.set_content_len(line_count);
+    }
+
+    pub fn apply_viewport_metrics(&mut self, page_size: usize, line_count: usize) {
+        self.viewport.set_page_size(page_size);
+        self.viewport.set_content_len(line_count);
+    }
+
+    pub fn apply_scroll(&mut self, action: scroll::ScrollAction, line_count: usize) {
+        self.viewport.set_content_len(line_count);
+        self.viewport.apply_scroll(action);
     }
 
     pub fn disable_snap(&mut self) {
-        self.follow = false;
+        self.viewport.disable_follow();
     }
 
-    pub fn snap_to_bottom(&mut self, line_count: usize) {
-        self.follow = true;
-        self.scroll = self.max_scroll(line_count);
+    #[cfg(test)]
+    pub fn set_follow(&mut self, follow: bool) {
+        self.viewport.set_follow(follow);
     }
 
     pub fn toggle_snap(&mut self, line_count: usize) -> bool {
-        if self.follow {
-            self.follow = false;
-        } else {
-            self.snap_to_bottom(line_count);
-        }
-        self.follow
+        self.viewport.toggle_follow(line_count)
     }
 
     pub fn scroll_top(&mut self) {
-        self.scroll = 0;
+        self.viewport.scroll_top();
     }
 
     pub fn set_scroll(&mut self, scroll: u16) {
-        self.scroll = scroll;
+        self.viewport.set_scroll(scroll as usize);
     }
 
     pub fn reset_for_source_change(&mut self) {
-        self.scroll = 0;
-        self.follow = true;
+        self.viewport.reset_for_source_change();
         self.search.clear_current_match();
     }
 
     pub fn reset_for_modal(&mut self) {
-        self.scroll = 0;
-        self.follow = false;
+        self.viewport.reset_for_modal();
         self.search.clear_current_match();
     }
 
     pub fn clamp_following_scroll_to_top(&mut self) {
-        if self.follow {
-            self.scroll = 0;
-        }
+        self.viewport.clamp_following_scroll_to_top();
     }
-
-    fn max_scroll(&self, line_count: usize) -> u16 {
-        scroll::max_scroll(line_count, self.page_size as usize).min(u16::MAX as usize) as u16
-    }
-}
-
-pub fn output_render_scroll_for_count(total: usize, page_size: u16, scroll: u16) -> u16 {
-    let visible = page_size.max(1) as usize;
-    let max_scroll = total.saturating_sub(visible).min(u16::MAX as usize) as u16;
-    scroll.min(max_scroll)
 }
 
 pub fn output_line_count(text: &str) -> usize {
@@ -159,6 +133,10 @@ pub struct OutputView {
 }
 
 impl OutputView {
+    pub fn line_count(&self) -> usize {
+        output_line_count(&self.text)
+    }
+
     pub fn line_index_for_source_line(&self, source_line: usize) -> Option<usize> {
         self.source_lines
             .iter()
@@ -225,7 +203,7 @@ impl SearchBoxView {
             .unwrap_or_else(|| " 0/0".to_owned());
         let invalid = if self.invalid { " !regex" } else { "" };
         let input_actions = if self.input_active {
-            " [enter]submit [C+enter]advanced"
+            " [enter]submit [shift+enter]advanced"
         } else {
             ""
         };

@@ -15,7 +15,7 @@ use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::{Child, Command},
-    sync::mpsc,
+    sync::{mpsc, oneshot},
     time,
 };
 
@@ -468,14 +468,12 @@ pub enum RunEvent {
     TestFinished {
         key: TestKey,
         status: TestStatus,
-        stdout: String,
-        stderr: String,
+        output: String,
         duration: Option<Duration>,
     },
     TestOutput {
         key: TestKey,
-        stdout: String,
-        stderr: String,
+        text: String,
     },
     TestEvent {
         run_id: String,
@@ -559,6 +557,7 @@ impl NextestClient {
         mut stop_rx: mpsc::UnboundedReceiver<()>,
         test_events_dir: Option<PathBuf>,
         process_tracker: ProcessTracker,
+        info_output_poll_interval: Duration,
     ) -> Result<()> {
         let arg_sets = request.scope.nextest_arg_sets();
         let total_runs = arg_sets.len();
@@ -578,10 +577,13 @@ impl NextestClient {
                 .run_once(
                     scope_args,
                     &request.options,
-                    &tx,
-                    &mut stop_rx,
-                    test_events_dir.as_deref(),
-                    &process_tracker,
+                    RunOnceContext {
+                        tx: &tx,
+                        stop_rx: &mut stop_rx,
+                        test_events_dir: test_events_dir.as_deref(),
+                        process_tracker: &process_tracker,
+                        info_output_poll_interval,
+                    },
                 )
                 .await?
             {
@@ -605,12 +607,9 @@ impl NextestClient {
         &self,
         scope_args: Vec<String>,
         options: &RunOptions,
-        tx: &mpsc::Sender<RunEvent>,
-        stop_rx: &mut mpsc::UnboundedReceiver<()>,
-        test_events_dir: Option<&Path>,
-        process_tracker: &ProcessTracker,
+        context: RunOnceContext<'_>,
     ) -> Result<RunProcessOutcome> {
-        let mut command = self.run_command(scope_args, options, test_events_dir);
+        let mut command = self.run_command(scope_args, options, context.test_events_dir);
         configure_run_command(&mut command);
         let mut child = command
             .kill_on_drop(true)
@@ -619,24 +618,50 @@ impl NextestClient {
             .stderr(Stdio::piped())
             .spawn()
             .context("spawning cargo nextest run")?;
-        process_tracker.set(child.id());
+        context.process_tracker.set(child.id());
 
         let stdout = child.stdout.take().context("nextest stdout unavailable")?;
         let stderr = child.stderr.take().context("nextest stderr unavailable")?;
 
+        let output_snapshots = Arc::new(Mutex::new(OutputSnapshotTracker::default()));
         let success_output = Arc::new(Mutex::new(SuccessfulOutputCollector::default()));
-        let stdout_tx = tx.clone();
+        let info_output = Arc::new(Mutex::new(InfoOutputCollector::default()));
+        let (info_poll_start_tx, info_poll_start_rx) = oneshot::channel();
+        let info_poll = start_info_output_poll(
+            child.id(),
+            options,
+            info_poll_start_rx,
+            context.info_output_poll_interval,
+        );
+        let stdout_tx = context.tx.clone();
+        let stdout_snapshots = Arc::clone(&output_snapshots);
         let stdout_success_output = Arc::clone(&success_output);
+        let stdout_info_output = Arc::clone(&info_output);
         let stdout_task = tokio::spawn(async move {
+            let mut info_poll_start_tx = Some(info_poll_start_tx);
             let mut lines = BufReader::new(stdout).lines();
             while let Some(line) = lines.next_line().await? {
-                if consume_success_output_line(&line, &stdout_success_output, &stdout_tx).await {
+                if consume_success_output_line(
+                    &line,
+                    &stdout_success_output,
+                    &stdout_snapshots,
+                    &stdout_tx,
+                )
+                .await
+                {
                     continue;
                 }
 
                 match parse_run_line(&line) {
-                    Some(event) => {
+                    Some(mut event) => {
+                        dedupe_final_output_event(&mut event, &stdout_snapshots);
                         observe_success_output_event(&event, &stdout_success_output);
+                        observe_info_output_event(&event, &stdout_info_output);
+                        if starts_test_execution(&event)
+                            && let Some(start_tx) = info_poll_start_tx.take()
+                        {
+                            let _ = start_tx.send(());
+                        }
                         let _ = stdout_tx.send(event).await;
                     }
                     None if let Some(event) = parse_runner_line(&line) => {
@@ -648,26 +673,47 @@ impl NextestClient {
                     None => {}
                 }
             }
-            flush_success_output(&stdout_success_output, &stdout_tx).await;
+            flush_success_output(&stdout_success_output, &stdout_snapshots, &stdout_tx).await;
             anyhow::Ok(())
         });
 
-        let stderr_tx = tx.clone();
+        let stderr_tx = context.tx.clone();
+        let stderr_snapshots = Arc::clone(&output_snapshots);
         let stderr_success_output = Arc::clone(&success_output);
+        let stderr_info_output = Arc::clone(&info_output);
         let stderr_task = tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Some(line) = lines.next_line().await? {
-                if consume_success_output_line(&line, &stderr_success_output, &stderr_tx).await {
+                if consume_info_output_line(
+                    &line,
+                    &stderr_info_output,
+                    &stderr_snapshots,
+                    &stderr_tx,
+                )
+                .await
+                {
+                    continue;
+                }
+
+                if consume_success_output_line(
+                    &line,
+                    &stderr_success_output,
+                    &stderr_snapshots,
+                    &stderr_tx,
+                )
+                .await
+                {
                     continue;
                 }
 
                 if let Some(event) = parse_runner_line(&line) {
                     let _ = stderr_tx.send(event).await;
-                } else if !line.trim().is_empty() {
+                } else if !line.trim().is_empty() && !is_nextest_hbar(&line) {
                     let _ = stderr_tx.send(RunEvent::RunnerOutput(line)).await;
                 }
             }
-            flush_success_output(&stderr_success_output, &stderr_tx).await;
+            flush_info_output(&stderr_info_output, &stderr_snapshots, &stderr_tx).await;
+            flush_success_output(&stderr_success_output, &stderr_snapshots, &stderr_tx).await;
             anyhow::Ok(())
         });
 
@@ -675,16 +721,16 @@ impl NextestClient {
             status = child.wait() => {
                 (status.context("waiting for nextest")?, false)
             }
-            stop = stop_rx.recv() => {
+            stop = context.stop_rx.recv() => {
                 if stop.is_some() {
-                    let _ = tx.send(RunEvent::RunnerOutput("Run stopped by user".to_owned())).await;
+                    let _ = context.tx.send(RunEvent::RunnerOutput("Run stopped by user".to_owned())).await;
                     if let Err(error) = terminate_child_process_tree(&mut child) {
-                        let _ = tx.send(RunEvent::RunnerOutput(format!(
+                        let _ = context.tx.send(RunEvent::RunnerOutput(format!(
                             "Failed to stop nextest: {error}"
                         ))).await;
                     }
                     (
-                        wait_for_stopped_child(&mut child, tx)
+                        wait_for_stopped_child(&mut child, context.tx)
                             .await?,
                         true,
                     )
@@ -699,7 +745,8 @@ impl NextestClient {
                 }
             }
         };
-        process_tracker.clear();
+        info_poll.abort();
+        context.process_tracker.clear();
         stdout_task.await.context("joining stdout task")??;
         stderr_task.await.context("joining stderr task")??;
         if stopped {
@@ -728,7 +775,7 @@ impl NextestClient {
         options: &RunOptions,
         test_events_dir: Option<&Path>,
     ) -> Command {
-        let mut command = Command::new("cargo");
+        let mut command = Command::new("cargo-nextest");
         if let Some(path) = &self.current_dir {
             command.current_dir(path);
         }
@@ -782,7 +829,67 @@ enum RunProcessOutcome {
     Stopped,
 }
 
+struct RunOnceContext<'a> {
+    tx: &'a mpsc::Sender<RunEvent>,
+    stop_rx: &'a mut mpsc::UnboundedReceiver<()>,
+    test_events_dir: Option<&'a Path>,
+    process_tracker: &'a ProcessTracker,
+    info_output_poll_interval: Duration,
+}
+
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(2);
+const INFO_OUTPUT_INITIAL_DELAY: Duration = Duration::from_millis(750);
+
+fn start_info_output_poll(
+    pid: Option<u32>,
+    options: &RunOptions,
+    start_rx: oneshot::Receiver<()>,
+    interval: Duration,
+) -> tokio::task::JoinHandle<()> {
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, options, start_rx, interval);
+        return tokio::spawn(async {});
+    }
+
+    #[cfg(unix)]
+    {
+        if options.no_capture || options.debugger.is_some() {
+            return tokio::spawn(async {});
+        }
+
+        tokio::spawn(async move {
+            let Some(pid) = pid else {
+                return;
+            };
+            if start_rx.await.is_err() {
+                return;
+            }
+            time::sleep(INFO_OUTPUT_INITIAL_DELAY).await;
+            loop {
+                if signal_info_output(pid).is_err() {
+                    return;
+                }
+                time::sleep(interval).await;
+            }
+        })
+    }
+}
+
+#[cfg(unix)]
+fn signal_info_output(pid: u32) -> io::Result<()> {
+    let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGUSR1) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn signal_info_output(_pid: u32) -> io::Result<()> {
+    Ok(())
+}
 
 #[cfg(unix)]
 fn configure_run_command(command: &mut Command) {
@@ -1042,8 +1149,8 @@ fn summary_to_tests(summary: TestListSummary) -> Vec<DiscoveredTest> {
     let mut tests = Vec::with_capacity(summary.test_count);
     for (binary_id, suite) in summary.rust_suites {
         let cwd = suite.cwd.as_std_path().to_path_buf();
-        let source_path =
-            source::binary_source_path(&cwd, suite.binary.kind.as_str(), &suite.binary.binary_name);
+        let source_locator =
+            source::SourceLocator::new(&cwd, suite.binary.kind.as_str(), &suite.binary.binary_name);
         for (case_name, case) in suite.test_cases {
             let full_name = case_name.as_str().to_owned();
             let (module, name) = case_name.module_path_and_name();
@@ -1068,7 +1175,7 @@ fn summary_to_tests(summary: TestListSummary) -> Vec<DiscoveredTest> {
                 binary: suite.binary.binary_name.clone(),
                 binary_kind: suite.binary.kind.as_str().to_owned(),
                 cwd: cwd.clone(),
-                source_path: source_path.clone(),
+                source_path: source_locator.path_for_test(&full_name),
                 module: module.map(ToOwned::to_owned),
                 name: name.to_owned(),
                 full_name,
@@ -1101,8 +1208,9 @@ fn parse_runner_line(line: &str) -> Option<RunEvent> {
     })
 }
 
-fn parse_test_record(value: Value, record: LibtestRecord) -> Option<RunEvent> {
-    let raw_name = record.name?;
+fn parse_test_record(value: Value, mut record: LibtestRecord) -> Option<RunEvent> {
+    let raw_name = record.name.take()?;
+    let event = record.event.take()?;
     let event_prefix = event_prefix(&raw_name);
     let name = normalize_event_test_name(&raw_name);
     let key = TestKey {
@@ -1111,34 +1219,30 @@ fn parse_test_record(value: Value, record: LibtestRecord) -> Option<RunEvent> {
         name,
     };
 
-    match record.event.as_deref()? {
+    match event.as_str() {
         "started" => Some(RunEvent::TestStarted { key }),
         "ok" => Some(RunEvent::TestFinished {
             key,
             status: TestStatus::Passed,
-            stdout: record.stdout.unwrap_or_default(),
-            stderr: record.stderr.unwrap_or_default(),
+            output: record.output(),
             duration: seconds_to_duration(record.exec_time),
         }),
         "failed" => Some(RunEvent::TestFinished {
             key,
             status: TestStatus::Failed,
-            stdout: record.stdout.unwrap_or_default(),
-            stderr: record.stderr.unwrap_or_default(),
+            output: record.output(),
             duration: seconds_to_duration(record.exec_time),
         }),
         "ignored" => Some(RunEvent::TestFinished {
             key,
             status: TestStatus::Ignored,
-            stdout: record.stdout.unwrap_or_default(),
-            stderr: record.stderr.unwrap_or_default(),
+            output: record.output(),
             duration: seconds_to_duration(record.exec_time),
         }),
         "skipped" => Some(RunEvent::TestFinished {
             key,
             status: TestStatus::Skipped,
-            stdout: record.stdout.unwrap_or_default(),
-            stderr: record.stderr.unwrap_or_default(),
+            output: record.output(),
             duration: seconds_to_duration(record.exec_time),
         }),
         _ => None,
@@ -1165,6 +1269,8 @@ fn parse_suite_record(record: LibtestRecord) -> Option<RunEvent> {
 struct SuccessfulOutputCollector {
     last_started: Option<TestKey>,
     last_success: Option<TestKey>,
+    output_candidates: OutputCandidates,
+    emitted_outputs: Vec<TestKey>,
     collecting_for: Option<TestKey>,
     lines: Vec<String>,
 }
@@ -1173,19 +1279,33 @@ impl SuccessfulOutputCollector {
     fn observe_event(&mut self, event: &RunEvent) {
         match event {
             RunEvent::TestStarted { key } => {
+                self.output_candidates.remember(key);
                 self.last_started = Some(key.clone());
             }
             RunEvent::TestFinished {
                 key,
                 status: TestStatus::Passed,
-                stdout,
-                stderr,
+                output,
                 ..
-            } if stdout.is_empty() && stderr.is_empty() => {
-                self.last_success = Some(key.clone());
+            } if output.is_empty() => {
+                if self.has_emitted_output(key) {
+                    self.output_candidates.forget(key);
+                } else {
+                    self.output_candidates.remember(key);
+                    self.last_success = Some(key.clone());
+                }
+            }
+            RunEvent::TestFinished { key, .. } => {
+                self.output_candidates.forget(key);
             }
             _ => {}
         }
+    }
+
+    fn has_emitted_output(&self, key: &TestKey) -> bool {
+        self.emitted_outputs
+            .iter()
+            .any(|emitted_key| emitted_key == key)
     }
 
     fn is_collecting(&self) -> bool {
@@ -1223,14 +1343,243 @@ impl SuccessfulOutputCollector {
     }
 
     fn finish_event(&mut self) -> Option<RunEvent> {
-        let key = self.collecting_for.take()?;
-        let stdout = clean_success_output_block(&key.name, &self.lines);
+        let fallback = self.collecting_for.take()?;
+        let key = self.resolve_output_key(fallback);
+        let text = clean_success_output_block(&key.name, &self.lines);
         self.lines.clear();
-        (!stdout.is_empty()).then_some(RunEvent::TestOutput {
-            key,
-            stdout,
-            stderr: String::new(),
-        })
+        self.mark_output_emitted(&key);
+        (!text.is_empty()).then_some(RunEvent::TestOutput { key, text })
+    }
+
+    fn resolve_output_key(&self, fallback: TestKey) -> TestKey {
+        let Some(test_name) = success_output_test_name(&self.lines) else {
+            return fallback;
+        };
+        if fallback.name == test_name {
+            return fallback;
+        }
+        self.output_candidates
+            .unique_key(&test_name)
+            .cloned()
+            .unwrap_or(fallback)
+    }
+
+    fn mark_output_emitted(&mut self, key: &TestKey) {
+        self.output_candidates.forget(key);
+        if self.last_success.as_ref() == Some(key) {
+            self.last_success = None;
+        }
+        if !self.has_emitted_output(key) {
+            self.emitted_outputs.push(key.clone());
+        }
+    }
+}
+
+#[derive(Default)]
+struct OutputCandidates {
+    by_name: BTreeMap<String, Vec<TestKey>>,
+}
+
+impl OutputCandidates {
+    fn remember(&mut self, key: &TestKey) {
+        let keys = self.by_name.entry(key.name.clone()).or_default();
+        if !keys.iter().any(|existing| existing == key) {
+            keys.push(key.clone());
+        }
+    }
+
+    fn forget(&mut self, key: &TestKey) {
+        let should_remove = if let Some(keys) = self.by_name.get_mut(&key.name) {
+            keys.retain(|existing| existing != key);
+            keys.is_empty()
+        } else {
+            false
+        };
+        if should_remove {
+            self.by_name.remove(&key.name);
+        }
+    }
+
+    fn unique_key(&self, name: &str) -> Option<&TestKey> {
+        match self.by_name.get(name)?.as_slice() {
+            [key] => Some(key),
+            _ => None,
+        }
+    }
+
+    fn unique_display_key(&self, line: &str) -> Option<&TestKey> {
+        let mut matches = self
+            .by_name
+            .iter()
+            .filter(|(name, _)| line.trim_end().ends_with(name.as_str()))
+            .flat_map(|(_, keys)| keys.iter());
+        let key = matches.next()?;
+        matches.next().is_none().then_some(key)
+    }
+}
+
+#[derive(Default)]
+struct OutputSnapshotTracker {
+    by_key: BTreeMap<String, String>,
+}
+
+impl OutputSnapshotTracker {
+    fn preview_event(&mut self, key: TestKey, output: String) -> Option<RunEvent> {
+        self.delta_for(key.clone(), output)
+            .map(|text| RunEvent::TestOutput { key, text })
+    }
+
+    fn dedupe_output(&mut self, key: &TestKey, output: &mut String) {
+        if output.is_empty() {
+            return;
+        }
+
+        let normalized = normalize_output_snapshot(std::mem::take(output));
+        if normalized.is_empty() {
+            output.clear();
+            return;
+        }
+
+        let snapshot_key = snapshot_key(key);
+        match self.by_key.entry(snapshot_key) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(normalized.clone());
+                *output = normalized;
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                match output_delta(entry.get(), &normalized) {
+                    Some(delta) => *output = delta,
+                    None => output.clear(),
+                }
+                entry.insert(normalized);
+            }
+        }
+    }
+
+    fn delta_for(&mut self, key: TestKey, output: String) -> Option<String> {
+        let output = normalize_output_snapshot(output);
+        if output.is_empty() {
+            return None;
+        }
+        let snapshot_key = snapshot_key(&key);
+
+        let delta = match self.by_key.get(&snapshot_key) {
+            Some(previous) => output_delta(previous, &output),
+            None => Some(output.clone()),
+        };
+        self.by_key.insert(snapshot_key, output);
+        delta.filter(|text| !text.trim().is_empty())
+    }
+}
+
+#[derive(Default)]
+struct InfoOutputCollector {
+    running: OutputCandidates,
+    block: Option<InfoOutputBlock>,
+}
+
+#[derive(Default)]
+struct InfoOutputBlock {
+    key: Option<TestKey>,
+    lines: Vec<String>,
+    in_output: bool,
+}
+
+impl InfoOutputCollector {
+    fn observe_event(&mut self, event: &RunEvent) {
+        match event {
+            RunEvent::TestStarted { key } => self.running.remember(key),
+            RunEvent::TestFinished { key, .. } => self.running.forget(key),
+            _ => {}
+        }
+    }
+
+    fn consume_line(
+        &mut self,
+        line: &str,
+        snapshots: &mut OutputSnapshotTracker,
+    ) -> (bool, Vec<RunEvent>) {
+        if self.block.is_none() {
+            if is_nextest_info_header(line) {
+                self.block = Some(InfoOutputBlock::default());
+                return (true, Vec::new());
+            }
+            return (is_nextest_hbar(line), Vec::new());
+        }
+
+        if should_finish_info_before(line) {
+            let events = self.finish(snapshots);
+            return (false, events);
+        }
+
+        if is_nextest_info_header(line) {
+            let events = self.finish(snapshots);
+            self.block = Some(InfoOutputBlock::default());
+            return (true, events);
+        }
+
+        if is_nextest_hbar(line) {
+            let events = self.finish_current_test(snapshots);
+            return (true, events);
+        }
+
+        if let Some(key) = self.running.unique_display_key(line).cloned() {
+            let events = self.finish_current_test(snapshots);
+            if let Some(block) = &mut self.block {
+                block.key = Some(key);
+                block.in_output = false;
+                block.lines.clear();
+            }
+            return (true, events);
+        }
+
+        let Some(block) = &mut self.block else {
+            return (false, Vec::new());
+        };
+
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("status:") {
+            return (true, Vec::new());
+        }
+        if trimmed == "output:" {
+            block.in_output = true;
+            return (true, Vec::new());
+        }
+        if trimmed.is_empty() {
+            if block.in_output {
+                block.lines.push(line.to_owned());
+            }
+            return (true, Vec::new());
+        }
+        if block.in_output && block.key.is_some() {
+            block.lines.push(line.to_owned());
+            return (true, Vec::new());
+        }
+
+        let events = self.finish(snapshots);
+        (false, events)
+    }
+
+    fn finish(&mut self, snapshots: &mut OutputSnapshotTracker) -> Vec<RunEvent> {
+        let events = self.finish_current_test(snapshots);
+        self.block = None;
+        events
+    }
+
+    fn finish_current_test(&mut self, snapshots: &mut OutputSnapshotTracker) -> Vec<RunEvent> {
+        let Some(block) = &mut self.block else {
+            return Vec::new();
+        };
+        let Some(key) = block.key.take() else {
+            block.lines.clear();
+            block.in_output = false;
+            return Vec::new();
+        };
+
+        let output = clean_info_output_block(&block.lines);
+        block.lines.clear();
+        block.in_output = false;
+        snapshots.preview_event(key, output).into_iter().collect()
     }
 }
 
@@ -1243,9 +1592,43 @@ fn observe_success_output_event(
     }
 }
 
+fn observe_info_output_event(event: &RunEvent, collector: &Arc<Mutex<InfoOutputCollector>>) {
+    if let Ok(mut collector) = collector.lock() {
+        collector.observe_event(event);
+    }
+}
+
+fn starts_test_execution(event: &RunEvent) -> bool {
+    matches!(
+        event,
+        RunEvent::SuiteStarted { .. } | RunEvent::TestStarted { .. }
+    )
+}
+
+fn dedupe_final_output_event(event: &mut RunEvent, snapshots: &Arc<Mutex<OutputSnapshotTracker>>) {
+    let RunEvent::TestFinished { key, output, .. } = event else {
+        return;
+    };
+
+    if let Ok(mut snapshots) = snapshots.lock() {
+        snapshots.dedupe_output(key, output);
+    }
+}
+
+fn dedupe_test_output_event(event: &mut RunEvent, snapshots: &Arc<Mutex<OutputSnapshotTracker>>) {
+    let RunEvent::TestOutput { key, text } = event else {
+        return;
+    };
+
+    if let Ok(mut snapshots) = snapshots.lock() {
+        snapshots.dedupe_output(key, text);
+    }
+}
+
 async fn consume_success_output_line(
     line: &str,
     collector: &Arc<Mutex<SuccessfulOutputCollector>>,
+    snapshots: &Arc<Mutex<OutputSnapshotTracker>>,
     tx: &mpsc::Sender<RunEvent>,
 ) -> bool {
     let mut event = None;
@@ -1264,7 +1647,25 @@ async fn consume_success_output_line(
         false
     };
 
-    if let Some(event) = event {
+    if let Some(mut event) = event {
+        dedupe_test_output_event(&mut event, snapshots);
+        let _ = tx.send(event).await;
+    }
+    consumed
+}
+
+async fn consume_info_output_line(
+    line: &str,
+    collector: &Arc<Mutex<InfoOutputCollector>>,
+    snapshots: &Arc<Mutex<OutputSnapshotTracker>>,
+    tx: &mpsc::Sender<RunEvent>,
+) -> bool {
+    let (consumed, events) = match (collector.lock(), snapshots.lock()) {
+        (Ok(mut collector), Ok(mut snapshots)) => collector.consume_line(line, &mut snapshots),
+        _ => (false, Vec::new()),
+    };
+
+    for event in events {
         let _ = tx.send(event).await;
     }
     consumed
@@ -1272,13 +1673,29 @@ async fn consume_success_output_line(
 
 async fn flush_success_output(
     collector: &Arc<Mutex<SuccessfulOutputCollector>>,
+    snapshots: &Arc<Mutex<OutputSnapshotTracker>>,
     tx: &mpsc::Sender<RunEvent>,
 ) {
     let event = collector
         .lock()
         .ok()
         .and_then(|mut collector| collector.finish_event());
-    if let Some(event) = event {
+    if let Some(mut event) = event {
+        dedupe_test_output_event(&mut event, snapshots);
+        let _ = tx.send(event).await;
+    }
+}
+
+async fn flush_info_output(
+    collector: &Arc<Mutex<InfoOutputCollector>>,
+    snapshots: &Arc<Mutex<OutputSnapshotTracker>>,
+    tx: &mpsc::Sender<RunEvent>,
+) {
+    let events = match (collector.lock(), snapshots.lock()) {
+        (Ok(mut collector), Ok(mut snapshots)) => collector.finish(&mut snapshots),
+        _ => Vec::new(),
+    };
+    for event in events {
         let _ = tx.send(event).await;
     }
 }
@@ -1286,6 +1703,23 @@ async fn flush_success_output(
 fn is_nextest_output_header(line: &str) -> bool {
     let trimmed = line.trim_start();
     trimmed.starts_with("output ") && trimmed.contains('─')
+}
+
+fn is_nextest_info_header(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("info: ") && trimmed.contains(" running")
+}
+
+fn is_nextest_hbar(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.is_empty() && trimmed.chars().all(|ch| ch == '─')
+}
+
+fn should_finish_info_before(line: &str) -> bool {
+    line.starts_with('{')
+        || is_nextest_output_header(line)
+        || parse_runner_line(line).is_some()
+        || line.trim_start().starts_with("Summary [")
 }
 
 fn clean_success_output_block(test_name: &str, lines: &[String]) -> String {
@@ -1296,6 +1730,25 @@ fn clean_success_output_block(test_name: &str, lines: &[String]) -> String {
         .collect::<Vec<_>>();
     trim_blank_edges(&mut cleaned);
     cleaned.join("\n")
+}
+
+fn clean_info_output_block(lines: &[String]) -> String {
+    let mut cleaned = lines
+        .iter()
+        .map(|line| line.strip_prefix("    ").unwrap_or(line).to_owned())
+        .filter(|line| line.trim() != "running 1 test")
+        .collect::<Vec<_>>();
+    trim_blank_edges(&mut cleaned);
+    cleaned.join("\n")
+}
+
+fn success_output_test_name(lines: &[String]) -> Option<String> {
+    lines.iter().find_map(|line| {
+        let line = line.trim();
+        let rest = line.strip_prefix("test ")?;
+        let (name, status) = rest.rsplit_once(" ... ")?;
+        (status == "ok").then(|| name.to_owned())
+    })
 }
 
 fn is_libtest_success_output_metadata(test_name: &str, line: &str) -> bool {
@@ -1313,6 +1766,40 @@ fn trim_blank_edges(lines: &mut Vec<String>) {
     }
     while lines.last().is_some_and(|line| line.trim().is_empty()) {
         lines.pop();
+    }
+}
+
+fn normalize_output_snapshot(output: String) -> String {
+    let mut lines = output.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
+    trim_blank_edges(&mut lines);
+    lines.join("\n")
+}
+
+fn combine_output(stdout: &str, stderr: &str) -> String {
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout.to_owned(),
+        (true, false) => stderr.to_owned(),
+        (false, false) if stdout.ends_with('\n') => format!("{stdout}{stderr}"),
+        (false, false) => format!("{stdout}\n{stderr}"),
+    }
+}
+
+fn snapshot_key(key: &TestKey) -> String {
+    match (&key.binary_id, &key.event_prefix) {
+        (Some(binary_id), _) => format!("binary:{binary_id}:{}", key.name),
+        (None, Some(event_prefix)) => format!("event:{event_prefix}:{}", key.name),
+        (None, None) => format!("name:{}", key.name),
+    }
+}
+
+fn output_delta(previous: &str, current: &str) -> Option<String> {
+    if current == previous {
+        return None;
+    }
+    match current.strip_prefix(previous) {
+        Some(rest) => Some(rest.strip_prefix('\n').unwrap_or(rest).to_owned()),
+        None => Some(current.to_owned()),
     }
 }
 
@@ -1354,6 +1841,15 @@ struct LibtestRecord {
     failed: Option<usize>,
     ignored: Option<usize>,
     filtered_out: Option<usize>,
+}
+
+impl LibtestRecord {
+    fn output(&mut self) -> String {
+        combine_output(
+            &self.stdout.take().unwrap_or_default(),
+            &self.stderr.take().unwrap_or_default(),
+        )
+    }
 }
 
 #[cfg(test)]

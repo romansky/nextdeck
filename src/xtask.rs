@@ -1,7 +1,6 @@
-use std::{collections::BTreeMap, path::PathBuf, process::Stdio};
+use std::{path::PathBuf, process::Stdio};
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::Command,
@@ -9,68 +8,23 @@ use tokio::{
 };
 
 use crate::{
-    field_schema::{ParameterDetails, on_off},
+    field_schema::ParameterDetails,
     input_field::{InputField, InputFieldInput},
     output::append_bounded_text,
     output_pane::OutputPaneState,
     request::RequestId,
-    scroll::SelectionViewport,
+    scroll::ViewportState,
+};
+pub use nextdeck_test_events::xtask::{
+    INFO_COMMAND, SCHEMA_VERSION, XtaskArg as XtaskArgSpec, XtaskCommand as XtaskCommandSpec,
+    XtaskManifest, XtaskValue as XtaskValueSpec,
 };
 
-pub const INFO_COMMAND: &str = "nextdeck-info";
-pub const SCHEMA_VERSION: u32 = 1;
+mod persistence;
+mod preferences;
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct XtaskManifest {
-    pub schema_version: u32,
-    #[serde(default)]
-    pub commands: Vec<XtaskCommandSpec>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct XtaskCommandSpec {
-    pub name: String,
-    #[serde(default)]
-    pub about: Option<String>,
-    #[serde(default)]
-    pub args: Vec<XtaskArgSpec>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct XtaskArgSpec {
-    pub name: String,
-    #[serde(default)]
-    pub long: Option<String>,
-    #[serde(default)]
-    pub short: Option<char>,
-    #[serde(default)]
-    pub help: Option<String>,
-    #[serde(default)]
-    pub required: bool,
-    pub value: XtaskValueSpec,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub enum XtaskValueSpec {
-    Bool {
-        #[serde(default)]
-        default: bool,
-    },
-    Number {
-        #[serde(default)]
-        default: Option<i64>,
-    },
-    String {
-        #[serde(default)]
-        default: Option<String>,
-    },
-    Enum {
-        values: Vec<String>,
-        #[serde(default)]
-        default: Option<String>,
-    },
-}
+pub(crate) use persistence::XtaskPersistence;
+use preferences::{XtaskArgValue, XtaskPreferences};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum XtaskDetailFocus {
@@ -91,12 +45,14 @@ pub struct XtaskState {
     pub manifest: Option<XtaskManifest>,
     pub selected_command: usize,
     pub selected_arg: usize,
-    pub parameters_viewport: SelectionViewport,
+    pub parameters_viewport: ViewportState,
     pub detail_focus: XtaskDetailFocus,
     pub output: OutputPaneState,
-    pub values: BTreeMap<String, BTreeMap<String, XtaskArgValue>>,
     pub editing: Option<XtaskEditState>,
     pub last_run: Option<XtaskRunOutput>,
+    preferences: XtaskPreferences,
+    preferences_revision: u64,
+    persisted_preferences_revision: u64,
 }
 
 impl Default for XtaskState {
@@ -112,12 +68,14 @@ impl Default for XtaskState {
             manifest: None,
             selected_command: 0,
             selected_arg: 0,
-            parameters_viewport: SelectionViewport::default(),
+            parameters_viewport: ViewportState::default(),
             detail_focus: XtaskDetailFocus::default(),
             output: OutputPaneState::default(),
-            values: BTreeMap::new(),
             editing: None,
             last_run: None,
+            preferences: XtaskPreferences::default(),
+            preferences_revision: 0,
+            persisted_preferences_revision: 0,
         }
     }
 }
@@ -127,14 +85,6 @@ pub struct XtaskEditState {
     pub command: String,
     pub arg: String,
     pub input: InputField,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum XtaskArgValue {
-    Bool(bool),
-    Number(String),
-    String(String),
-    Enum(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -181,8 +131,12 @@ pub enum XtaskEvent {
     },
 }
 
-impl XtaskManifest {
-    pub fn validate(&self) -> Result<()> {
+pub(crate) trait XtaskManifestExt {
+    fn validate(&self) -> Result<()>;
+}
+
+impl XtaskManifestExt for XtaskManifest {
+    fn validate(&self) -> Result<()> {
         if self.schema_version != SCHEMA_VERSION {
             bail!(
                 "unsupported xtask schema version {}, expected {}",
@@ -214,12 +168,31 @@ impl XtaskManifest {
     }
 }
 
-impl XtaskArgSpec {
-    pub fn flag(&self) -> String {
+pub(crate) trait XtaskArgSpecExt {
+    fn flag(&self) -> String;
+    fn parameter_line_count(&self) -> usize;
+}
+
+impl XtaskArgSpecExt for XtaskArgSpec {
+    fn flag(&self) -> String {
         format!("--{}", self.long.as_deref().unwrap_or(&self.name))
     }
 
-    pub fn default_value(&self) -> XtaskArgValue {
+    fn parameter_line_count(&self) -> usize {
+        let help_line = self
+            .help
+            .as_deref()
+            .is_some_and(|help| !help.trim().is_empty()) as usize;
+        2 + help_line
+    }
+}
+
+trait XtaskArgDefaultExt {
+    fn default_value(&self) -> XtaskArgValue;
+}
+
+impl XtaskArgDefaultExt for XtaskArgSpec {
+    fn default_value(&self) -> XtaskArgValue {
         match &self.value {
             XtaskValueSpec::Bool { default } => XtaskArgValue::Bool(*default),
             XtaskValueSpec::Number { default } => {
@@ -238,21 +211,25 @@ impl XtaskArgSpec {
     }
 }
 
-impl XtaskValueSpec {
-    pub(crate) fn parameter_details(&self) -> ParameterDetails {
+pub(crate) trait XtaskValueSpecExt {
+    fn parameter_details(&self) -> ParameterDetails;
+}
+
+impl XtaskValueSpecExt for XtaskValueSpec {
+    fn parameter_details(&self) -> ParameterDetails {
         match self {
-            Self::Bool { default } => ParameterDetails::bool(*default),
-            Self::Number {
+            XtaskValueSpec::Bool { default } => ParameterDetails::bool(*default),
+            XtaskValueSpec::Number {
                 default: Some(default),
             } => ParameterDetails::number().with_default(default.to_string()),
-            Self::Number { default: None } => ParameterDetails::number(),
-            Self::String {
+            XtaskValueSpec::Number { default: None } => ParameterDetails::number(),
+            XtaskValueSpec::String {
                 default: Some(default),
             } if !default.trim().is_empty() => {
                 ParameterDetails::string().with_default(default.clone())
             }
-            Self::String { .. } => ParameterDetails::string(),
-            Self::Enum { values, default } => {
+            XtaskValueSpec::String { .. } => ParameterDetails::string(),
+            XtaskValueSpec::Enum { values, default } => {
                 let details = ParameterDetails::enum_values(values.clone());
                 if let Some(default) = default {
                     details.with_default(default.clone())
@@ -260,15 +237,6 @@ impl XtaskValueSpec {
                     details
                 }
             }
-        }
-    }
-}
-
-impl XtaskArgValue {
-    pub fn display(&self) -> String {
-        match self {
-            Self::Bool(value) => on_off(*value).to_owned(),
-            Self::Number(value) | Self::String(value) | Self::Enum(value) => value.clone(),
         }
     }
 }
@@ -330,9 +298,11 @@ impl XtaskState {
                     Ok(manifest) => self.set_manifest(manifest),
                     Err(error) => {
                         self.error = Some(error);
+                        if let Some(manifest) = self.manifest.as_ref() {
+                            self.preferences = self.preferences.overrides_for(manifest);
+                        }
                         self.manifest = None;
                         self.detail_open = false;
-                        self.values.clear();
                     }
                 }
                 true
@@ -383,12 +353,17 @@ impl XtaskState {
     }
 
     pub fn set_manifest(&mut self, manifest: XtaskManifest) {
+        let previous_preferences = self.persistable_preferences();
         self.error = None;
         self.selected_command = self
             .selected_command
             .min(manifest.commands.len().saturating_sub(1));
         self.selected_arg = 0;
-        self.values = values_for_manifest(&manifest, &self.values);
+        self.preferences.reconcile(&manifest);
+        let next_preferences = self.preferences.overrides_for(&manifest);
+        if next_preferences != previous_preferences {
+            self.mark_preferences_dirty();
+        }
         self.manifest = Some(manifest);
         self.detail_open = false;
         self.detail_focus = XtaskDetailFocus::Parameters;
@@ -400,10 +375,17 @@ impl XtaskState {
         self.manifest.as_ref()?.commands.get(self.selected_command)
     }
 
-    pub fn selected_value(&self) -> Option<&XtaskArgValue> {
+    fn selected_value(&self) -> Option<&XtaskArgValue> {
         let command = self.selected_command()?;
         let arg = command.args.get(self.selected_arg)?;
-        self.values.get(&command.name)?.get(&arg.name)
+        self.preferences.value(&command.name, &arg.name)
+    }
+
+    pub(crate) fn arg_value_display(&self, command: &str, arg: &str) -> String {
+        self.preferences
+            .value(command, arg)
+            .map(XtaskArgValue::display)
+            .unwrap_or_default()
     }
 
     pub fn select_next_command(&mut self) {
@@ -459,9 +441,21 @@ impl XtaskState {
         self.ensure_selected_parameter_visible();
     }
 
-    pub fn set_parameters_page_size(&mut self, page_size: u16) {
-        self.parameters_viewport.set_page_size(page_size as usize);
-        self.ensure_selected_parameter_visible();
+    pub fn apply_parameters_viewport_metrics(&mut self, page_size: usize) {
+        let previous_page_size = self.parameters_viewport.page_size();
+        self.parameters_viewport.set_page_size(page_size);
+        self.sync_parameters_viewport_content();
+        if self.parameters_viewport.page_size() != previous_page_size {
+            self.ensure_selected_parameter_visible();
+        }
+    }
+
+    pub fn sync_parameters_viewport_content(&mut self) {
+        let line_count = self
+            .selected_command()
+            .map(XtaskCommandSpecExt::parameter_panel_line_count)
+            .unwrap_or(1);
+        self.parameters_viewport.set_content_len(line_count);
     }
 
     pub fn adjust_selected_arg(&mut self, delta: i8) -> bool {
@@ -471,13 +465,10 @@ impl XtaskState {
         let Some(arg) = command.args.get(self.selected_arg).cloned() else {
             return false;
         };
-        let Some(values) = self.values.get_mut(&command.name) else {
+        let Some(value) = self.preferences.value_mut(&command.name, &arg.name) else {
             return false;
         };
-        let Some(value) = values.get_mut(&arg.name) else {
-            return false;
-        };
-        match (&arg.value, value) {
+        let changed = match (&arg.value, value) {
             (_, XtaskArgValue::Bool(value)) => {
                 *value = !*value;
                 true
@@ -495,7 +486,11 @@ impl XtaskState {
                 }
             }
             _ => false,
+        };
+        if changed {
+            self.mark_preferences_dirty();
         }
+        changed
     }
 
     pub fn begin_edit_selected_arg(&mut self) -> bool {
@@ -552,32 +547,6 @@ impl XtaskState {
         self.run_request_id
     }
 
-    pub fn scroll_output_page_up(&mut self) {
-        self.output.scroll_up(self.output.page_size);
-    }
-
-    pub fn scroll_output_page_down(&mut self) {
-        self.output.scroll_down(self.output.page_size);
-    }
-
-    pub fn scroll_output_line_up(&mut self) {
-        self.output.scroll_up(1);
-    }
-
-    pub fn scroll_output_line_down(&mut self) {
-        self.output.scroll_down(1);
-    }
-
-    pub fn scroll_output_top(&mut self) {
-        self.output.scroll_top();
-        self.output.disable_snap();
-    }
-
-    pub fn scroll_output_bottom(&mut self) {
-        let line_count = self.output_text().lines().count().max(1);
-        self.output.snap_to_bottom(line_count);
-    }
-
     pub fn toggle_detail_focus(&mut self) {
         self.detail_focus = match self.detail_focus {
             XtaskDetailFocus::Parameters => XtaskDetailFocus::Output,
@@ -614,18 +583,19 @@ impl XtaskState {
                 .parse::<i64>()
                 .with_context(|| format!("{} must be a number", arg.name))?;
         }
-        let values = self
-            .values
-            .get_mut(&editing.command)
-            .context("edited xtask command values are no longer available")?;
-        let slot = values
-            .get_mut(&editing.arg)
+        let slot = self
+            .preferences
+            .value_mut(&editing.command, &editing.arg)
             .context("edited xtask argument value is no longer available")?;
-        *slot = match slot {
+        let next = match slot {
             XtaskArgValue::Number(_) => XtaskArgValue::Number(value),
             XtaskArgValue::String(_) => XtaskArgValue::String(value),
             XtaskArgValue::Bool(_) | XtaskArgValue::Enum(_) => slot.clone(),
         };
+        if *slot != next {
+            *slot = next;
+            self.mark_preferences_dirty();
+        }
         Ok(())
     }
 
@@ -636,9 +606,8 @@ impl XtaskState {
         let mut args = Vec::new();
         for spec in &command.args {
             let value = self
-                .values
-                .get(&command.name)
-                .and_then(|values| values.get(&spec.name))
+                .preferences
+                .value(&command.name, &spec.name)
                 .cloned()
                 .unwrap_or_else(|| spec.default_value());
             append_arg(&mut args, spec, &value)?;
@@ -683,29 +652,78 @@ impl XtaskState {
     }
 
     fn sync_output_scroll_to_content(&mut self) {
-        let line_count = self.output_text().lines().count().max(1);
-        self.output.set_line_count(line_count);
+        let line_count = self.output.output_view(&self.output_text()).line_count();
+        self.output.apply_content_len(line_count);
     }
 
     fn ensure_selected_parameter_visible(&mut self) {
-        let Some((selected_line, line_count)) = self.selected_parameter_line() else {
+        let Some((selected_line, selected_len, line_count)) = self.selected_parameter_range()
+        else {
             self.parameters_viewport.reset();
             return;
         };
+        self.parameters_viewport.set_content_len(line_count);
         self.parameters_viewport
-            .ensure_visible(selected_line, line_count);
+            .ensure_range_visible(selected_line, selected_len);
     }
 
-    fn selected_parameter_line(&self) -> Option<(usize, usize)> {
+    fn selected_parameter_range(&self) -> Option<(usize, usize, usize)> {
         let command = self.selected_command()?;
+        let selected_len = command
+            .args
+            .get(self.selected_arg)
+            .map(XtaskArgSpec::parameter_line_count)
+            .unwrap_or(1);
         Some((
             command.parameter_line_index(self.selected_arg),
-            command.parameter_line_count(),
+            selected_len,
+            command.parameter_panel_line_count(),
         ))
+    }
+
+    fn restore_preferences(&mut self, preferences: XtaskPreferences) {
+        self.preferences = preferences;
+        self.preferences_revision = 0;
+        self.persisted_preferences_revision = 0;
+        if let Some(manifest) = self.manifest.clone() {
+            let restored = self.preferences.clone();
+            self.preferences.reconcile(&manifest);
+            if self.preferences.overrides_for(&manifest) != restored {
+                self.mark_preferences_dirty();
+            }
+        }
+    }
+
+    fn pending_preferences(&self) -> Option<(u64, XtaskPreferences)> {
+        (self.preferences_revision != self.persisted_preferences_revision)
+            .then(|| (self.preferences_revision, self.persistable_preferences()))
+    }
+
+    fn mark_preferences_persisted(&mut self, revision: u64) {
+        if self.preferences_revision == revision {
+            self.persisted_preferences_revision = revision;
+        }
+    }
+
+    fn persistable_preferences(&self) -> XtaskPreferences {
+        self.manifest
+            .as_ref()
+            .map(|manifest| self.preferences.overrides_for(manifest))
+            .unwrap_or_else(|| self.preferences.clone())
+    }
+
+    fn mark_preferences_dirty(&mut self) {
+        self.preferences_revision = self.preferences_revision.wrapping_add(1);
     }
 }
 
-impl XtaskCommandSpec {
+trait XtaskCommandSpecExt {
+    fn parameter_line_count(&self) -> usize;
+    fn parameter_panel_line_count(&self) -> usize;
+    fn parameter_line_index(&self, selected_arg: usize) -> usize;
+}
+
+impl XtaskCommandSpecExt for XtaskCommandSpec {
     fn parameter_line_count(&self) -> usize {
         if self.args.is_empty() {
             return 1;
@@ -716,22 +734,21 @@ impl XtaskCommandSpec {
             .sum()
     }
 
+    fn parameter_panel_line_count(&self) -> usize {
+        let has_about = self
+            .about
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|about| !about.is_empty());
+        self.parameter_line_count() + 1 + usize::from(has_about) + 1
+    }
+
     fn parameter_line_index(&self, selected_arg: usize) -> usize {
         self.args
             .iter()
             .take(selected_arg.min(self.args.len()))
             .map(XtaskArgSpec::parameter_line_count)
             .sum()
-    }
-}
-
-impl XtaskArgSpec {
-    fn parameter_line_count(&self) -> usize {
-        let help_line = self
-            .help
-            .as_deref()
-            .is_some_and(|help| !help.trim().is_empty()) as usize;
-        2 + help_line
     }
 }
 
@@ -854,61 +871,6 @@ fn combined_output_fallback(stdout: &str, stderr: &str) -> String {
     }
     append_bounded_text(&mut combined, stderr);
     combined
-}
-
-fn default_values(manifest: &XtaskManifest) -> BTreeMap<String, BTreeMap<String, XtaskArgValue>> {
-    manifest
-        .commands
-        .iter()
-        .map(|command| {
-            (
-                command.name.clone(),
-                command
-                    .args
-                    .iter()
-                    .map(|arg| (arg.name.clone(), arg.default_value()))
-                    .collect(),
-            )
-        })
-        .collect()
-}
-
-fn values_for_manifest(
-    manifest: &XtaskManifest,
-    previous: &BTreeMap<String, BTreeMap<String, XtaskArgValue>>,
-) -> BTreeMap<String, BTreeMap<String, XtaskArgValue>> {
-    let mut values = default_values(manifest);
-    for command in &manifest.commands {
-        let Some(previous_args) = previous.get(&command.name) else {
-            continue;
-        };
-        let Some(next_args) = values.get_mut(&command.name) else {
-            continue;
-        };
-        for arg in &command.args {
-            let Some(previous_value) = previous_args.get(&arg.name) else {
-                continue;
-            };
-            if xtask_value_matches_spec(previous_value, &arg.value) {
-                next_args.insert(arg.name.clone(), previous_value.clone());
-            }
-        }
-    }
-    values
-}
-
-fn xtask_value_matches_spec(value: &XtaskArgValue, spec: &XtaskValueSpec) -> bool {
-    match (value, spec) {
-        (XtaskArgValue::Bool(_), XtaskValueSpec::Bool { .. }) => true,
-        (XtaskArgValue::Number(value), XtaskValueSpec::Number { .. }) => {
-            value.trim().is_empty() || value.parse::<i64>().is_ok()
-        }
-        (XtaskArgValue::String(_), XtaskValueSpec::String { .. }) => true,
-        (XtaskArgValue::Enum(value), XtaskValueSpec::Enum { values, .. }) => {
-            values.iter().any(|allowed| allowed == value)
-        }
-        _ => false,
-    }
 }
 
 fn append_arg(args: &mut Vec<String>, spec: &XtaskArgSpec, value: &XtaskArgValue) -> Result<()> {

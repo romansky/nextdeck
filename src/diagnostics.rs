@@ -22,12 +22,12 @@ impl ProcessTracker {
 }
 
 #[cfg(target_os = "macos")]
-pub async fn capture_running_test_snapshot(root_pid: Option<u32>) -> String {
-    macos::capture_running_test_snapshot(root_pid).await
+pub fn capture_running_test_snapshot(root_pid: Option<u32>) -> String {
+    macos::capture_running_test_snapshot(root_pid)
 }
 
 #[cfg(not(target_os = "macos"))]
-pub async fn capture_running_test_snapshot(_root_pid: Option<u32>) -> String {
+pub fn capture_running_test_snapshot(_root_pid: Option<u32>) -> String {
     "Running test snapshots are not supported on this OS yet.\n\nSupported OS: macOS.\n".to_owned()
 }
 
@@ -48,7 +48,7 @@ mod macos {
         command: String,
     }
 
-    pub async fn capture_running_test_snapshot(root_pid: Option<u32>) -> String {
+    pub fn capture_running_test_snapshot(root_pid: Option<u32>) -> String {
         let Some(root_pid) = root_pid else {
             return "No active cargo nextest process was found.\n\nStart a test run and capture while the selected test is still running.\n".to_owned();
         };

@@ -4,6 +4,7 @@ use crate::{
     input::InputEvent,
     input_field::{InputFieldInput, InputFieldKey},
     output_pane::{SearchEditorInput, SearchEditorKey},
+    scroll::ScrollAction,
     test_events::TestEventsFocus,
     xtask::XtaskDetailFocus,
 };
@@ -24,6 +25,7 @@ pub enum AppCommand {
     ToggleSelected,
     MoveHome,
     MoveEnd,
+    Scroll(ScrollAction),
     PageUp,
     PageDown,
     ActivateSelected,
@@ -64,12 +66,6 @@ pub enum AppCommand {
     ToggleTestEventsFocus,
     TestEventsNextRun,
     TestEventsPreviousRun,
-    TestEventsOutputLineUp,
-    TestEventsOutputLineDown,
-    TestEventsOutputPageUp,
-    TestEventsOutputPageDown,
-    TestEventsOutputTop,
-    TestEventsOutputBottom,
     OpenXtasks,
     CloseXtasks,
     RefreshXtasks,
@@ -83,12 +79,6 @@ pub enum AppCommand {
     XtaskAdjustRight,
     XtaskActivateArg,
     ToggleXtaskDetailFocus,
-    XtaskOutputLineUp,
-    XtaskOutputLineDown,
-    XtaskOutputPageUp,
-    XtaskOutputPageDown,
-    XtaskOutputTop,
-    XtaskOutputBottom,
     XtaskEdit(InputFieldInput),
     CommitXtaskEdit,
     CancelXtaskEdit,
@@ -446,6 +436,9 @@ impl AppCommand {
             Self::ToggleSelected => Some(CommandKind::ToggleSelected),
             Self::MoveHome | Self::MoveEnd => Some(CommandKind::MoveHomeEnd),
             Self::PageUp | Self::PageDown => Some(CommandKind::PageUpDown),
+            Self::Scroll(ScrollAction::PageUp | ScrollAction::PageDown) => {
+                Some(CommandKind::PageUpDown)
+            }
             Self::NarrowTestsPane => Some(CommandKind::NarrowTestsPane),
             Self::WidenTestsPane => Some(CommandKind::WidenTestsPane),
             Self::RefreshTests => Some(CommandKind::RefreshTests),
@@ -492,12 +485,6 @@ impl AppCommand {
             | Self::ToggleTestEventsFocus
             | Self::TestEventsNextRun
             | Self::TestEventsPreviousRun
-            | Self::TestEventsOutputLineUp
-            | Self::TestEventsOutputLineDown
-            | Self::TestEventsOutputPageUp
-            | Self::TestEventsOutputPageDown
-            | Self::TestEventsOutputTop
-            | Self::TestEventsOutputBottom
             | Self::CloseXtasks
             | Self::RefreshXtasks
             | Self::OpenSelectedXtask
@@ -510,12 +497,6 @@ impl AppCommand {
             | Self::XtaskAdjustRight
             | Self::XtaskActivateArg
             | Self::ToggleXtaskDetailFocus
-            | Self::XtaskOutputLineUp
-            | Self::XtaskOutputLineDown
-            | Self::XtaskOutputPageUp
-            | Self::XtaskOutputPageDown
-            | Self::XtaskOutputTop
-            | Self::XtaskOutputBottom
             | Self::XtaskEdit(_)
             | Self::CommitXtaskEdit
             | Self::CancelXtaskEdit
@@ -531,6 +512,7 @@ impl AppCommand {
             Self::ToggleOutputFilter => Some(CommandKind::ToggleOutputFilter),
             Self::ToggleOutputRegex => Some(CommandKind::ToggleOutputRegex),
             Self::ToggleOutputCaseSensitive => Some(CommandKind::ToggleOutputCaseSensitive),
+            Self::Scroll(_) => None,
         }
     }
 
@@ -574,12 +556,6 @@ impl AppCommand {
             Self::CloseTestEvents => Some("events close"),
             Self::ToggleTestEventsFocus => Some("events focus"),
             Self::TestEventsNextRun | Self::TestEventsPreviousRun => Some("events run"),
-            Self::TestEventsOutputLineUp
-            | Self::TestEventsOutputLineDown
-            | Self::TestEventsOutputPageUp
-            | Self::TestEventsOutputPageDown
-            | Self::TestEventsOutputTop
-            | Self::TestEventsOutputBottom => Some("events output"),
             Self::CloseXtasks => Some("xtasks close"),
             Self::RefreshXtasks => Some("xtasks refresh"),
             Self::OpenSelectedXtask => Some("xtasks open"),
@@ -589,16 +565,11 @@ impl AppCommand {
             Self::XtaskAdjustLeft | Self::XtaskAdjustRight => Some("xtasks adjust"),
             Self::XtaskActivateArg => Some("xtasks edit"),
             Self::ToggleXtaskDetailFocus => Some("xtasks focus"),
-            Self::XtaskOutputLineUp
-            | Self::XtaskOutputLineDown
-            | Self::XtaskOutputPageUp
-            | Self::XtaskOutputPageDown
-            | Self::XtaskOutputTop
-            | Self::XtaskOutputBottom => Some("xtasks output"),
             Self::XtaskEdit(_) => Some("xtasks input"),
             Self::CommitXtaskEdit => Some("xtasks save"),
             Self::CancelXtaskEdit => Some("xtasks cancel"),
             Self::RunXtask => Some("xtasks run"),
+            Self::Scroll(_) => Some("scroll"),
             Self::ReportStatus(_) => Some("status"),
             _ => self.info().map(|info| info.ticker),
         }
@@ -707,6 +678,9 @@ fn command_for_input_mode(code: KeyCode, modifiers: KeyModifiers, input: InputMo
 }
 
 fn command_for_help(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+    if let Some(command) = scroll_key(code, ScrollKeys::Page) {
+        return command;
+    }
     match code {
         KeyCode::Esc | KeyCode::Char('q') => AppCommand::CloseHelp,
         code if is_help_key(code, modifiers) => AppCommand::CloseHelp,
@@ -717,6 +691,7 @@ fn command_for_help(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
 fn command_for_output_search_input(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
     match code {
         KeyCode::Esc => AppCommand::CancelOutputSearch,
+        code if is_output_search_apply_key(code, modifiers) => AppCommand::ApplyOutputSearch,
         KeyCode::Enter if is_advanced_search_modifier(modifiers) => {
             AppCommand::OpenOutputSearchModal
         }
@@ -731,7 +706,7 @@ fn command_for_output_search_input(code: KeyCode, modifiers: KeyModifiers) -> Ap
 }
 
 fn is_advanced_search_modifier(modifiers: KeyModifiers) -> bool {
-    modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::SUPER)
+    modifiers.contains(KeyModifiers::SHIFT)
 }
 
 fn command_for_discovery_running(code: KeyCode) -> AppCommand {
@@ -821,6 +796,9 @@ fn command_for_xtask_command_modal(
 }
 
 fn command_for_xtask_params(code: KeyCode) -> AppCommand {
+    if let Some(command) = scroll_key(code, ScrollKeys::Page) {
+        return command;
+    }
     match code {
         KeyCode::Up => AppCommand::XtaskPreviousArg,
         KeyCode::Down => AppCommand::XtaskNextArg,
@@ -832,13 +810,10 @@ fn command_for_xtask_params(code: KeyCode) -> AppCommand {
 }
 
 fn command_for_xtask_output(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+    if let Some(command) = scroll_key(code, ScrollKeys::LineAndPage) {
+        return command;
+    }
     match code {
-        KeyCode::Up => AppCommand::XtaskOutputLineUp,
-        KeyCode::Down => AppCommand::XtaskOutputLineDown,
-        KeyCode::PageUp => AppCommand::XtaskOutputPageUp,
-        KeyCode::PageDown => AppCommand::XtaskOutputPageDown,
-        KeyCode::Home => AppCommand::XtaskOutputTop,
-        KeyCode::End => AppCommand::XtaskOutputBottom,
         KeyCode::Char('/') => AppCommand::StartOutputSearch,
         KeyCode::Char('n') => AppCommand::FindNextOutputMatch,
         KeyCode::Char('N') => AppCommand::FindPreviousOutputMatch,
@@ -881,14 +856,11 @@ fn command_for_test_event_runs(code: KeyCode) -> AppCommand {
 }
 
 fn command_for_test_event_output(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+    if let Some(command) = scroll_key(code, ScrollKeys::LineAndPage) {
+        return command;
+    }
     match code {
         KeyCode::Left => AppCommand::ToggleTestEventsFocus,
-        KeyCode::Up => AppCommand::TestEventsOutputLineUp,
-        KeyCode::Down => AppCommand::TestEventsOutputLineDown,
-        KeyCode::PageUp => AppCommand::TestEventsOutputPageUp,
-        KeyCode::PageDown => AppCommand::TestEventsOutputPageDown,
-        KeyCode::Home => AppCommand::TestEventsOutputTop,
-        KeyCode::End => AppCommand::TestEventsOutputBottom,
         KeyCode::Char('/') => AppCommand::StartOutputSearch,
         KeyCode::Char('n') => AppCommand::FindNextOutputMatch,
         KeyCode::Char('N') => AppCommand::FindPreviousOutputMatch,
@@ -907,13 +879,15 @@ fn command_for_test_event_output(code: KeyCode, modifiers: KeyModifiers) -> AppC
 }
 
 fn command_for_test_details_modal(code: KeyCode) -> AppCommand {
+    if let Some(command) = scroll_key(code, ScrollKeys::Page) {
+        return command;
+    }
     match code {
         KeyCode::Esc => AppCommand::CloseTestDetails,
         KeyCode::Up | KeyCode::BackTab => AppCommand::CustomRunPrevious,
         KeyCode::Down | KeyCode::Tab => AppCommand::CustomRunNext,
         KeyCode::Left => AppCommand::CustomRunAdjustLeft,
         KeyCode::Right => AppCommand::CustomRunAdjustRight,
-        KeyCode::Enter => AppCommand::RunCustom,
         KeyCode::Char('e') => AppCommand::CustomRunActivate,
         KeyCode::Char('r') => AppCommand::RunCustom,
         KeyCode::Char('s') => AppCommand::CaptureTestSnapshot,
@@ -927,9 +901,7 @@ fn command_for_output_search_modal(code: KeyCode, modifiers: KeyModifiers) -> Ap
         KeyCode::Esc => AppCommand::CancelOutputSearch,
         KeyCode::Tab => AppCommand::SearchModalNextControl,
         KeyCode::BackTab => AppCommand::SearchModalPreviousControl,
-        KeyCode::Enter if modifiers.contains(KeyModifiers::CONTROL) => {
-            AppCommand::ApplyOutputSearch
-        }
+        code if is_output_search_apply_key(code, modifiers) => AppCommand::ApplyOutputSearch,
         KeyCode::Enter => AppCommand::SearchModalActivate,
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
             AppCommand::ClearOutputSearch
@@ -943,6 +915,15 @@ fn command_for_output_search_modal(code: KeyCode, modifiers: KeyModifiers) -> Ap
         _ => search_editor_input_for_key(code, modifiers)
             .map(AppCommand::OutputSearchEdit)
             .unwrap_or(AppCommand::Noop),
+    }
+}
+
+fn is_output_search_apply_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    match code {
+        KeyCode::Enter => modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER),
+        KeyCode::Char('\n' | '\r') => true,
+        KeyCode::Char('j' | 'm') => modifiers.contains(KeyModifiers::CONTROL),
+        _ => false,
     }
 }
 
@@ -993,6 +974,12 @@ fn input_field_input_for_key(code: KeyCode, modifiers: KeyModifiers) -> Option<I
 }
 
 fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) -> AppCommand {
+    if focus == CommandFocus::Output
+        && let Some(command) = scroll_key(code, ScrollKeys::LineAndPage)
+    {
+        return command;
+    }
+
     match code {
         KeyCode::Char('q') => AppCommand::Quit,
         code if is_stop_key(code, modifiers) => AppCommand::StopRun,
@@ -1019,6 +1006,25 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) 
             CommandFocus::Output => command_for_output_key(code, modifiers),
         },
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScrollKeys {
+    Page,
+    LineAndPage,
+}
+
+fn scroll_key(code: KeyCode, keys: ScrollKeys) -> Option<AppCommand> {
+    let action = match code {
+        KeyCode::Up if keys == ScrollKeys::LineAndPage => ScrollAction::LineUp,
+        KeyCode::Down if keys == ScrollKeys::LineAndPage => ScrollAction::LineDown,
+        KeyCode::PageUp => ScrollAction::PageUp,
+        KeyCode::PageDown => ScrollAction::PageDown,
+        KeyCode::Home => ScrollAction::Top,
+        KeyCode::End => ScrollAction::Bottom,
+        _ => return None,
+    };
+    Some(AppCommand::Scroll(action))
 }
 
 fn command_for_tests_key(code: KeyCode) -> AppCommand {
