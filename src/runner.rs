@@ -33,19 +33,18 @@ pub async fn run(
     terminal: &mut AppTerminal,
     app: &mut App,
     client: &NextestClient,
-    run_on_start: bool,
     theme: Theme,
     editor: EditorConfig,
     cli_open_with: Option<String>,
 ) -> Result<()> {
-    let xtask_persistence = XtaskPersistence::resolve(client.project_dir()).await;
+    let xtask_persistence = XtaskPersistence::resolve(Some(client.project_dir())).await;
     if let Err(error) = xtask_persistence.restore(&mut app.xtasks) {
         tracing::warn!(%error, "failed to restore xtask preferences");
         app.status = format!("Failed to restore xtask preferences: {error}");
     }
     let (queue_tx, queue_rx) = queue::channel();
 
-    let git_status = start_git_status(client.project_dir(), queue_tx.clone());
+    let git_status = start_git_status(Some(client.project_dir()), queue_tx.clone());
     let input = InputSource::start(queue_tx.clone());
     let ticker = queue::start_ticker(queue_tx.clone(), UI_TICK_INTERVAL);
     let mut context = RunLoopContext {
@@ -62,7 +61,7 @@ pub async fn run(
     for effect in app.startup_effects() {
         handle_effect(app, &mut context, effect, &mut run_control);
     }
-    let result = run_loop(terminal, app, run_on_start, context, queue_rx, run_control).await;
+    let result = run_loop(terminal, app, context, queue_rx, run_control).await;
     git_status.abort();
     ticker.abort();
     drop(input);
@@ -72,7 +71,6 @@ pub async fn run(
 async fn run_loop(
     terminal: &mut AppTerminal,
     app: &mut App,
-    mut run_on_start: bool,
     mut context: RunLoopContext<'_>,
     mut queue_rx: queue::QueueReceiver,
     mut run_control: Option<RunControl>,
@@ -90,13 +88,7 @@ async fn run_loop(
             };
             pending_events.push(event);
             drain_pending_events(&mut queue_rx, &mut pending_events);
-            dirty |= handle_queue_events(
-                app,
-                &mut context,
-                &mut run_on_start,
-                &mut pending_events,
-                &mut run_control,
-            );
+            dirty |= handle_queue_events(app, &mut context, &mut pending_events, &mut run_control);
             pending_events.clear();
         }
         Ok(())
@@ -145,7 +137,7 @@ impl RunLoopContext<'_> {
     fn refresh_disk_usage(&mut self, request_id: RequestId) {
         self.cancel_disk_usage();
         self.disk_usage = Some(start_disk_usage(
-            self.client.project_dir(),
+            Some(self.client.project_dir()),
             request_id,
             self.queue_tx.clone(),
         ));
@@ -194,7 +186,6 @@ impl RuntimeSettings {
 fn handle_queue_events(
     app: &mut App,
     context: &mut RunLoopContext<'_>,
-    run_on_start: &mut bool,
     events: &mut [QueueEvent],
     run_control: &mut Option<RunControl>,
 ) -> UiDirty {
@@ -214,7 +205,7 @@ fn handle_queue_events(
             continue;
         }
         let event = std::mem::replace(&mut events[index], QueueEvent::Tick);
-        dirty |= handle_queue_event(app, context, run_on_start, event, run_control);
+        dirty |= handle_queue_event(app, context, event, run_control);
         if app.should_quit {
             break;
         }
@@ -295,7 +286,6 @@ fn context_accepts_tests_pane_width(context: CommandContext) -> bool {
 fn handle_queue_event(
     app: &mut App,
     context: &mut RunLoopContext<'_>,
-    run_on_start: &mut bool,
     event: QueueEvent,
     run_control: &mut Option<RunControl>,
 ) -> UiDirty {
@@ -318,10 +308,7 @@ fn handle_queue_event(
             UiDirty::ALL
         }
         QueueEvent::Discovery(request_id, event) => {
-            if app.apply_discovery_event(request_id, event) && *run_on_start {
-                *run_on_start = false;
-                *run_control = start_run(app, context, RunRequest::default());
-            }
+            app.apply_discovery_event(request_id, event);
             UiDirty::ALL
         }
         QueueEvent::DiskUsage(request_id, result) => {
@@ -421,21 +408,21 @@ fn handle_effect(
         }
         AppEffect::RunCargoClean(request_id) => {
             start_cargo_clean(
-                context.client.project_dir(),
+                Some(context.client.project_dir()),
                 request_id,
                 context.queue_tx.clone(),
             );
         }
         AppEffect::RefreshXtasks(request_id) => {
             start_xtask_info(
-                context.client.project_dir(),
+                Some(context.client.project_dir()),
                 request_id,
                 context.queue_tx.clone(),
             );
         }
         AppEffect::RunXtask(request_id, request) => {
             start_xtask_run(
-                context.client.project_dir(),
+                Some(context.client.project_dir()),
                 request_id,
                 request,
                 context.queue_tx.clone(),

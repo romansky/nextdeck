@@ -63,43 +63,25 @@ impl From<ThemeArg> for ThemeMode {
 }
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Terminal-native UI for cargo-nextest")]
+#[command(
+    version,
+    about = "A TUI wrapper for cargo-nextest, Clap-powered xtasks, and more."
+)]
 struct Cli {
-    #[arg(long)]
-    manifest_path: Option<PathBuf>,
+    #[arg(long, help = "Working directory (default: current directory)")]
+    working_dir: Option<PathBuf>,
 
-    #[arg(long)]
-    current_dir: Option<PathBuf>,
-
-    #[arg(long, help = "Run all discovered tests immediately on startup")]
-    run: bool,
-
-    #[arg(
-        long,
-        help = "Write diagnostic logs to ~/.nextdeck/debug.log for later inspection"
-    )]
+    #[arg(long, help = "Write diagnostic logs to ~/.nextdeck/debug.log")]
     debug: bool,
 
-    #[arg(long, value_enum, help = "Theme mode to use")]
+    #[arg(long, value_enum, help = "Color theme")]
     theme: Option<ThemeArg>,
 
     #[arg(
         long = "open-with",
-        help = "Command for opening sources/output. Also reads NEXTDECK_EDITOR, VISUAL, EDITOR"
+        help = "Command used to open sources and output (fallback: NEXTDECK_EDITOR, VISUAL, EDITOR)"
     )]
     open_with: Option<String>,
-
-    #[arg(long, help = "Print discovered tests as JSON and exit")]
-    list_json: bool,
-
-    #[arg(long, help = "Print discovered xtasks as JSON and exit")]
-    list_xtasks_json: bool,
-
-    #[arg(
-        last = true,
-        help = "Additional arguments forwarded to cargo nextest list/run"
-    )]
-    nextest_args: Vec<String>,
 }
 
 #[tokio::main]
@@ -111,23 +93,10 @@ async fn main() -> Result<()> {
         tracing::debug!(path = %path.display(), "debug logging enabled");
     }
 
-    let run_on_start = cli.run;
     let settings = config::load();
     let editor =
         editor::EditorConfig::resolve(cli.open_with.clone(), settings.open_with_command.clone());
-    let client = NextestClient::new(cli.manifest_path, cli.current_dir, cli.nextest_args);
-    if cli.list_json {
-        let tests = client.discover().await?.tests;
-        serde_json::to_writer_pretty(io::stdout(), &tests)?;
-        println!();
-        return Ok(());
-    }
-    if cli.list_xtasks_json {
-        let manifest = xtask::load(client.project_dir()).await?;
-        serde_json::to_writer_pretty(io::stdout(), &manifest)?;
-        println!();
-        return Ok(());
-    }
+    let client = NextestClient::resolve(cli.working_dir).await?;
 
     let mut app = App::discovering(settings);
     let theme_mode = cli
@@ -140,7 +109,6 @@ async fn main() -> Result<()> {
         terminal.terminal_mut(),
         &mut app,
         &client,
-        run_on_start,
         theme,
         editor,
         cli.open_with,

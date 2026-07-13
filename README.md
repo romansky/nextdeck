@@ -1,11 +1,6 @@
 # nextdeck
 
-A TUI wrapper for [`cargo-nextest`](https://nexte.st/), Clap-powered xtasks,
-and more.
-
-Nextdeck puts tests, output, and project commands in one terminal UI. It uses
-the tools a Rust project already has rather than introducing a new test runner
-or task system.
+A TUI wrapper for [`cargo-nextest`](https://nexte.st/), Clap-powered xtasks, and more.
 
 ## Install
 
@@ -22,8 +17,6 @@ Run it from a Cargo workspace:
 nextdeck
 ```
 
-Use `nextdeck --run` to discover and run the whole workspace immediately.
-
 This is Nextdeck after running its own test suite at 120x24. The home path,
 run ID, and machine-specific storage values have been shortened.
 
@@ -31,9 +24,9 @@ run ID, and machine-specific storage values have been shortened.
 ┌ Tests <filters: [p]ass:✓ [f┐┌ Info ──────────────────────────────────────────────────────────────────────────────────┐
 │v [   2.911s] ~/nextdeck    ││Latest Nextest Run                                     Storage                          │
 │  > [   2.911s] nextdeck •  ││run id       87fa9e9f...                               status    healthy                │
-│                            ││status       idle                                      available -                     │
-│                            ││result       passed                                    updated   -                     │
-│                            ││profile      default                                   /target   -                     │
+│                            ││status       idle                                      available -                      │
+│                            ││result       passed                                    updated   -                      │
+│                            ││profile      default                                   /target   -                      │
 │                            ││scope        workspace                                                                  │
 │                            ││duration     wall:3.168s aggregate:14.628s build:0.2...                                 │
 │                            ││latest event warn dogfood-output: stderr reached war...                                 │
@@ -50,6 +43,7 @@ run ID, and machine-specific storage values have been shortened.
 │                            ││                                                                                        │
 │                            ││                                                                                        │
 └ [enter]details [r]un [R]run┘└ [/]search<[            ]> [o]pen-editor ───────────────────────────────────────────────┘
+─ [Tab]focus [Shift+[/Left]narrow [Shift+]/Right]widen [X]tasks [E]vents [,]settings [D]isk-cleanup [Q]uit ─────────────
  branch main | run idle | storage healthy | key - | Passed: 338 passed, 0 skipped
 ```
 
@@ -89,12 +83,8 @@ the main test view.
 
 ## Integrations
 
-Nextdeck works with an existing nextest setup. It reads the workspace's
-`.config/nextest.toml`, and extra arguments after `--` are passed to nextest:
-
-```sh
-nextdeck -- --all-features
-```
+Nextdeck works with an existing nextest setup and reads the workspace's
+`.config/nextest.toml`.
 
 - [Nextest integration](docs/nextest-integration/README.md)
 - [Clap xtask integration](docs/xtask-integration/README.md)
@@ -105,13 +95,14 @@ Both optional integrations use the small
 
 ## Project selection
 
-Open a workspace other than the current directory with `--current-dir`, or
-select a manifest explicitly:
+Open a workspace other than the current directory with `--working-dir`:
 
 ```sh
-nextdeck --current-dir ../my-workspace
-nextdeck --manifest-path crates/service/Cargo.toml
+nextdeck --working-dir ../my-workspace
 ```
+
+The directory may be the workspace root or any directory inside it. Nextdeck
+resolves the workspace root before starting Nextest or xtasks.
 
 Run `nextdeck --help` for the full command-line reference.
 

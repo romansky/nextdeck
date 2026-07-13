@@ -243,30 +243,17 @@ fn idle_tick_does_not_request_redraw() {
     let settings = AppSettings::default();
     let mut context = runtime_context(&client, &settings, Theme::dark());
     let mut app = App::with_settings(crate::tree::Tree::from_tests(Vec::new()), settings);
-    let mut run_on_start = false;
     let mut run_control = None;
     let mut events = [QueueEvent::Tick];
 
     assert_eq!(
-        handle_queue_events(
-            &mut app,
-            &mut context,
-            &mut run_on_start,
-            &mut events,
-            &mut run_control,
-        ),
+        handle_queue_events(&mut app, &mut context, &mut events, &mut run_control,),
         UiDirty::NONE
     );
 
     app.record_key("x");
     let mut events = [QueueEvent::Tick];
-    let dirty = handle_queue_events(
-        &mut app,
-        &mut context,
-        &mut run_on_start,
-        &mut events,
-        &mut run_control,
-    );
+    let dirty = handle_queue_events(&mut app, &mut context, &mut events, &mut run_control);
 
     assert!(dirty.contains(UiDirty::STATUS));
     assert!(!dirty.contains(UiDirty::TREE));

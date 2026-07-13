@@ -25,11 +25,17 @@ use crate::{
     tree::{DiscoveredTest, TestKey, TestStatus},
 };
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct NextestClient {
-    manifest_path: Option<PathBuf>,
-    current_dir: Option<PathBuf>,
-    passthrough_args: Vec<String>,
+    project_dir: PathBuf,
+}
+
+impl Default for NextestClient {
+    fn default() -> Self {
+        Self {
+            project_dir: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -494,34 +500,47 @@ pub enum DiscoveryEvent {
 }
 
 impl NextestClient {
-    pub fn new(
-        manifest_path: Option<PathBuf>,
-        current_dir: Option<PathBuf>,
-        passthrough_args: Vec<String>,
-    ) -> Self {
-        Self {
-            manifest_path,
-            current_dir,
-            passthrough_args,
+    pub async fn resolve(working_dir: Option<PathBuf>) -> Result<Self> {
+        let working_dir = working_dir
+            .map(Ok)
+            .unwrap_or_else(env::current_dir)
+            .context("resolving current directory")?;
+        let output = Command::new("cargo")
+            .args(["locate-project", "--workspace", "--message-format", "plain"])
+            .current_dir(&working_dir)
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .context("running cargo locate-project --workspace")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "cargo locate-project --workspace exited with {}: {}",
+                output.status,
+                stderr.trim()
+            );
         }
+        let manifest_path =
+            String::from_utf8(output.stdout).context("reading cargo workspace manifest path")?;
+        let manifest_path = PathBuf::from(manifest_path.trim());
+        let project_dir = manifest_path.parent().with_context(|| {
+            format!(
+                "cargo returned a workspace manifest without a parent: {}",
+                manifest_path.display()
+            )
+        })?;
+        let project_dir = project_dir
+            .canonicalize()
+            .with_context(|| format!("resolving Cargo workspace root {}", project_dir.display()))?;
+        Ok(Self::for_project_dir(project_dir))
     }
 
-    pub fn project_dir(&self) -> Option<PathBuf> {
-        self.manifest_dir().or_else(|| self.current_dir.clone())
+    fn for_project_dir(project_dir: PathBuf) -> Self {
+        Self { project_dir }
     }
 
-    fn manifest_dir(&self) -> Option<PathBuf> {
-        let manifest_path = self.manifest_path.as_ref()?;
-        let manifest_path = if manifest_path.is_absolute() {
-            manifest_path.clone()
-        } else if let Some(current_dir) = &self.current_dir {
-            current_dir.join(manifest_path)
-        } else {
-            env::current_dir().ok()?.join(manifest_path)
-        };
-        manifest_path
-            .parent()
-            .map(|manifest_dir| cargo_project_root_for_manifest_dir(manifest_dir.to_path_buf()))
+    pub fn project_dir(&self) -> PathBuf {
+        self.project_dir.clone()
     }
 
     pub async fn discover(&self) -> Result<DiscoveryOutput> {
@@ -760,14 +779,8 @@ impl NextestClient {
 
     fn list_command(&self) -> Command {
         let mut command = Command::new("cargo");
-        if let Some(path) = &self.current_dir {
-            command.current_dir(path);
-        }
+        command.current_dir(&self.project_dir);
         command.args(["nextest", "list", "--message-format", "json"]);
-        if let Some(path) = &self.manifest_path {
-            command.args(["--manifest-path", &path.to_string_lossy()]);
-        }
-        command.args(&self.passthrough_args);
         command
     }
 
@@ -778,13 +791,8 @@ impl NextestClient {
         capture_test_events: bool,
     ) -> Command {
         let mut command = Command::new("cargo-nextest");
-        if let Some(path) = &self.current_dir {
-            command.current_dir(path);
-        }
+        command.current_dir(&self.project_dir);
         command.args(["nextest", "run"]);
-        if let Some(path) = &self.manifest_path {
-            command.args(["--manifest-path", &path.to_string_lossy()]);
-        }
         command.args([
             "--message-format",
             "libtest-json-plus",
@@ -800,7 +808,6 @@ impl NextestClient {
             "immediate",
             "--no-input-handler",
         ]);
-        command.args(&self.passthrough_args);
         command.args(options.nextest_args());
         command.args(scope_args);
         command.env("NEXTEST_EXPERIMENTAL_LIBTEST_JSON", "1");
@@ -814,11 +821,7 @@ impl NextestClient {
     }
 
     fn discover_run_config(&self, tests: &[DiscoveredTest]) -> RunConfig {
-        let profiles = self
-            .project_dir()
-            .and_then(|project_dir| {
-                read_nextest_profiles(&project_dir.join(".config/nextest.toml"))
-            })
+        let profiles = read_nextest_profiles(&self.project_dir.join(".config/nextest.toml"))
             .unwrap_or_else(|| RunConfig::default().profiles);
         let mut filter_presets = profile_filter_presets(&profiles);
         filter_presets.extend(ignored_reason_presets(tests));
@@ -988,28 +991,6 @@ fn signal_child_process_group(child: &Child, signal: libc::c_int) -> io::Result<
     } else {
         Err(error)
     }
-}
-
-fn cargo_project_root_for_manifest_dir(manifest_dir: PathBuf) -> PathBuf {
-    let mut root = None;
-    let mut current = Some(manifest_dir.as_path());
-    while let Some(dir) = current {
-        if manifest_has_workspace_table(&dir.join("Cargo.toml")) {
-            root = Some(dir.to_path_buf());
-        }
-        current = dir.parent();
-    }
-    root.unwrap_or(manifest_dir)
-}
-
-fn manifest_has_workspace_table(path: &Path) -> bool {
-    let Ok(text) = fs::read_to_string(path) else {
-        return false;
-    };
-    text.lines().any(|line| {
-        let line = line.trim();
-        line == "[workspace]" || line.starts_with("[workspace.")
-    })
 }
 
 fn read_nextest_profiles(path: &Path) -> Option<Vec<NextestProfile>> {

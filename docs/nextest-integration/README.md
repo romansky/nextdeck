@@ -51,36 +51,17 @@ Nextdeck reads profile names and default filtersets from
 `.config/nextest.toml`. The file remains owned by nextest and continues to
 control normal nextest behavior.
 
-## Forwarding Arguments
-
-Arguments after `--` are passed to both test discovery and execution. This is
-useful for Cargo options that affect which tests are built:
-
-```sh
-nextdeck -- --all-features
-nextdeck -- --features integration-tests
-nextdeck -- --target aarch64-apple-darwin
-```
-
-Nextdeck adds the arguments required for its machine-readable nextest output.
-Avoid passing competing `--message-format`, progress, or status-output options.
-
 ## Other Workspaces
 
-Use `--current-dir` to run as if Nextdeck had been started in another directory:
+Use `--working-dir` to open another Cargo workspace:
 
 ```sh
-nextdeck --current-dir ../my-workspace
+nextdeck --working-dir ../my-workspace
 ```
 
-Use `--manifest-path` when a specific manifest should anchor discovery:
-
-```sh
-nextdeck --manifest-path crates/service/Cargo.toml
-```
-
-The two options can be combined; a relative manifest path is resolved from
-`--current-dir`.
+The directory may be the workspace root or any directory inside it. Nextdeck
+resolves the workspace root and uses it for Nextest, xtasks, Git status,
+storage, and saved xtask values.
 
 ## Output and Source Files
 

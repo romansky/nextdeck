@@ -11,28 +11,14 @@ fn output_chunks_text(output: &[TestOutputChunk]) -> String {
 }
 use crate::diagnostics::ProcessTracker;
 
-#[test]
-fn project_dir_prefers_manifest_parent_resolved_from_current_dir() {
-    let client = NextestClient::new(
-        Some(PathBuf::from("crates/demo/Cargo.toml")),
-        Some(PathBuf::from("/workspace")),
-        Vec::new(),
-    );
-
-    assert_eq!(
-        client.project_dir(),
-        Some(PathBuf::from("/workspace/crates/demo"))
-    );
-}
-
-#[test]
-fn project_dir_uses_workspace_root_for_nested_manifest() {
+#[tokio::test]
+async fn working_dir_resolves_workspace_root_from_nested_package() {
     let root = env::temp_dir().join(format!(
         "nextdeck-nextest-project-dir-{}",
         std::process::id()
     ));
     let package = root.join("crates/demo");
-    fs::create_dir_all(&package).expect("create package");
+    fs::create_dir_all(package.join("src")).expect("create package");
     fs::write(
         root.join("Cargo.toml"),
         "[workspace]\nmembers = [\"crates/demo\"]\n",
@@ -43,23 +29,17 @@ fn project_dir_uses_workspace_root_for_nested_manifest() {
         "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
     )
     .expect("write package manifest");
-    let client = NextestClient::new(Some(package.join("Cargo.toml")), None, Vec::new());
+    fs::write(package.join("src/lib.rs"), "").expect("write package source");
+    let client = NextestClient::resolve(Some(package)).await.unwrap();
 
-    assert_eq!(client.project_dir(), Some(root.clone()));
+    assert_eq!(client.project_dir(), root.canonicalize().unwrap());
 
     let _ = fs::remove_dir_all(root);
 }
 
-#[test]
-fn project_dir_uses_current_dir_without_manifest_path() {
-    let client = NextestClient::new(None, Some(PathBuf::from("/workspace")), Vec::new());
-
-    assert_eq!(client.project_dir(), Some(PathBuf::from("/workspace")));
-}
-
 #[tokio::test]
 async fn fixture_run_attaches_success_output_from_lib_test() {
-    let events = run_output_fixture("pass_prints_stdout_and_stderr", Vec::new()).await;
+    let events = run_output_fixture("pass_prints_stdout_and_stderr").await;
 
     let output = test_output_event(&events, "pass_prints_stdout_and_stderr");
     assert!(output.text.contains("PASS_STDOUT: lib pass stdout"));
@@ -70,7 +50,7 @@ async fn fixture_run_attaches_success_output_from_lib_test() {
 
 #[tokio::test]
 async fn fixture_run_attaches_success_output_from_integration_test_binary() {
-    let events = run_output_fixture("integration_pass_prints_output", Vec::new()).await;
+    let events = run_output_fixture("integration_pass_prints_output").await;
 
     let output = test_output_event(&events, "integration_pass_prints_output");
     assert!(
@@ -87,7 +67,7 @@ async fn fixture_run_attaches_success_output_from_integration_test_binary() {
 
 #[tokio::test]
 async fn fixture_run_preserves_child_like_success_output() {
-    let events = run_output_fixture("pass_prints_child_like_output", Vec::new()).await;
+    let events = run_output_fixture("pass_prints_child_like_output").await;
 
     let output = test_output_event(&events, "pass_prints_child_like_output");
     assert!(output.text.contains("CHILD_STDOUT: command started"));
@@ -97,7 +77,7 @@ async fn fixture_run_preserves_child_like_success_output() {
 
 #[tokio::test]
 async fn fixture_run_streams_info_preview_before_final_output() {
-    let events = run_output_fixture("pass_prints_slow_output_for_info_poll", Vec::new()).await;
+    let events = run_output_fixture("pass_prints_slow_output_for_info_poll").await;
     let outputs = test_output_events(&events, "pass_prints_slow_output_for_info_poll");
 
     assert!(
@@ -125,8 +105,7 @@ async fn fixture_run_captures_nextdeck_test_events() {
         "fixture" => "pass_emits_nextdeck_event",
     );
 
-    let events =
-        run_output_fixture_with_events("pass_emits_nextdeck_event", Vec::new(), true).await;
+    let events = run_output_fixture_with_events("pass_emits_nextdeck_event", true).await;
 
     assert!(
         events.iter().any(|event| matches!(
@@ -146,7 +125,7 @@ async fn fixture_run_captures_nextdeck_test_events() {
 
 #[tokio::test]
 async fn fixture_run_captures_failed_output_from_json_event() {
-    let events = run_output_fixture("fail_prints_stdout_and_stderr", Vec::new()).await;
+    let events = run_output_fixture("fail_prints_stdout_and_stderr").await;
 
     let finished = finished_test_event(&events, "fail_prints_stdout_and_stderr");
     assert_eq!(finished.status, TestStatus::Failed);
@@ -161,9 +140,13 @@ async fn fixture_run_captures_failed_output_from_json_event() {
 
 #[tokio::test]
 async fn fixture_run_can_capture_ignored_test_when_requested() {
-    let events = run_output_fixture(
+    let events = run_output_fixture_with_options(
         "ignored_prints_when_explicitly_run",
-        vec!["--run-ignored".to_owned(), "only".to_owned()],
+        RunOptions {
+            ignored: RunIgnored::Only,
+            ..RunOptions::default()
+        },
+        false,
     )
     .await;
 
@@ -831,17 +814,21 @@ struct FinishedTestOutput {
     output: String,
 }
 
-async fn run_output_fixture(filter: &str, passthrough_args: Vec<String>) -> Vec<RunEvent> {
-    run_output_fixture_with_events(filter, passthrough_args, false).await
+async fn run_output_fixture(filter: &str) -> Vec<RunEvent> {
+    run_output_fixture_with_events(filter, false).await
 }
 
-async fn run_output_fixture_with_events(
+async fn run_output_fixture_with_events(filter: &str, capture_events: bool) -> Vec<RunEvent> {
+    run_output_fixture_with_options(filter, RunOptions::default(), capture_events).await
+}
+
+async fn run_output_fixture_with_options(
     filter: &str,
-    passthrough_args: Vec<String>,
+    options: RunOptions,
     capture_events: bool,
 ) -> Vec<RunEvent> {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/output-workspace");
-    let client = NextestClient::new(None, Some(fixture), passthrough_args);
+    let client = NextestClient::for_project_dir(fixture);
     let (tx, mut rx) = tokio::sync::mpsc::channel(crate::queue::APP_EVENT_QUEUE_CAPACITY);
     let (_stop_tx, stop_rx) = tokio::sync::mpsc::unbounded_channel();
     let (binary, kind) = if filter.starts_with("integration_") {
@@ -858,7 +845,7 @@ async fn run_output_fixture_with_events(
                     kind,
                     filter,
                 )),
-                options: RunOptions::default(),
+                options,
             },
             tx,
             stop_rx,

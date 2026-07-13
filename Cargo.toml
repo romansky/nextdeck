@@ -2,7 +2,7 @@
 name = "nextdeck"
 version = "0.1.0"
 edition = "2024"
-description = "Terminal-native UI for cargo-nextest"
+description = "A TUI wrapper for cargo-nextest, Clap-powered xtasks, and more."
 license = "Apache-2.0"
 readme = "README.md"
 documentation = "https://docs.rs/nextdeck"
