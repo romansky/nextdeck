@@ -45,12 +45,6 @@ fn list_xtasks_json_discovers_nextdeck_xtask_endpoint() {
             .iter()
             .any(|command| command["name"] == "repro-nextdeck-run")
     );
-    for removed in ["check", "package", "install-path", "install-package"] {
-        assert!(
-            !commands.iter().any(|command| command["name"] == removed),
-            "{removed} should not be exposed"
-        );
-    }
     let release = commands
         .iter()
         .find(|command| command["name"] == "tui-release")

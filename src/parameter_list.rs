@@ -8,6 +8,8 @@ use crate::text_fit::fit_line_prefix;
 
 const EMPTY_VALUE_PLACEHOLDER: &str = "[empty]";
 const LABEL_VALUE_GAP: usize = 1;
+const VALUE_HINT_GAP: usize = 1;
+const INLINE_HINT_MIN_WIDTH: usize = 3;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ParameterListRow {
@@ -24,7 +26,7 @@ pub(crate) struct ParameterListRow {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum ParameterListRowKind {
     #[default]
-    Selectable,
+    Control,
     Detail,
 }
 
@@ -73,12 +75,6 @@ impl ParameterList<'_> {
 
     fn render_row(&self, row: &ParameterListRow) -> Vec<Line<'static>> {
         let mut lines = vec![self.value_line(row)];
-        if let Some(hint) = row.hint.as_deref().and_then(non_empty) {
-            lines.push(Line::styled(
-                fit_line_prefix(&format!("# {hint}"), self.content_width),
-                self.styles.hint,
-            ));
-        }
         if let Some(details) = row.details.as_ref().map(ParameterDetails::render) {
             lines.push(Line::styled(
                 fit_line_prefix(&details, self.content_width),
@@ -93,18 +89,38 @@ impl ParameterList<'_> {
         let label = fit_line_prefix(row.label.trim_end(), self.label_width);
         let prefix = format!("{marker}{label}{}", " ".repeat(LABEL_VALUE_GAP));
         let prefix_width = self.marker_width + self.label_width + LABEL_VALUE_GAP;
-        let value_width = self.content_width.saturating_sub(prefix_width);
+        let available_width = self.content_width.saturating_sub(prefix_width);
         let label_style = self.label_style(row);
         let mut spans = vec![Span::styled(prefix, label_style)];
         let value_style = row.value_style.unwrap_or(label_style);
+        let value = display_value(row);
 
-        if row.value.trim().is_empty() {
-            let placeholder = fit_line_prefix(EMPTY_VALUE_PLACEHOLDER, value_width);
-            spans.push(Span::styled(placeholder, self.styles.empty_value));
+        if let Some(hint) = row.hint.as_deref().and_then(non_empty)
+            && available_width >= self.inline_value_width() + VALUE_HINT_GAP + INLINE_HINT_MIN_WIDTH
+        {
+            let value_width = self.inline_value_width();
+            spans.push(Span::styled(
+                fit_line_prefix(value, value_width),
+                if row.value.trim().is_empty() {
+                    self.styles.empty_value
+                } else {
+                    value_style
+                },
+            ));
+            spans.push(Span::raw(" ".repeat(VALUE_HINT_GAP)));
+            let hint_width = available_width.saturating_sub(value_width + VALUE_HINT_GAP);
+            spans.push(Span::styled(
+                fit_line_prefix(&format!("# {hint}"), hint_width),
+                self.styles.hint,
+            ));
         } else {
             spans.push(Span::styled(
-                fit_line_prefix(row.value.trim_end(), value_width),
-                value_style,
+                fit_line_prefix(value, available_width),
+                if row.value.trim().is_empty() {
+                    self.styles.empty_value
+                } else {
+                    value_style
+                },
             ));
         }
 
@@ -112,16 +128,33 @@ impl ParameterList<'_> {
     }
 
     fn row_marker(&self, row: &ParameterListRow) -> &'static str {
-        if row.selected { ">" } else { "" }
+        if row.kind == ParameterListRowKind::Control && row.selected {
+            "@"
+        } else {
+            ""
+        }
+    }
+
+    fn inline_value_width(&self) -> usize {
+        self.rows
+            .iter()
+            .map(display_value)
+            .map(|value| value.chars().count())
+            .max()
+            .unwrap_or_default()
     }
 
     fn label_style(&self, row: &ParameterListRow) -> Style {
         match row.kind {
-            ParameterListRowKind::Selectable if row.active => self.styles.selected,
-            ParameterListRowKind::Selectable => self.styles.text,
+            ParameterListRowKind::Control if row.active => self.styles.selected,
+            ParameterListRowKind::Control => self.styles.text,
             ParameterListRowKind::Detail => self.styles.label,
         }
     }
+}
+
+fn display_value(row: &ParameterListRow) -> &str {
+    non_empty(&row.value).unwrap_or(EMPTY_VALUE_PLACEHOLDER)
 }
 
 fn non_empty(text: &str) -> Option<&str> {
@@ -148,14 +181,10 @@ mod tests {
 
         assert_eq!(
             line_text(&lines[0]),
-            "> --profile  debug                        "
+            "@ --profile  debug # Build profile        "
         );
         assert_eq!(
             line_text(&lines[1]),
-            "# Build profile                           "
-        );
-        assert_eq!(
-            line_text(&lines[2]),
             "# enum: debug, release                    "
         );
     }

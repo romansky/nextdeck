@@ -65,7 +65,7 @@ impl<'a> DiscoveryModal<'a> {
                 area,
                 ModalChrome {
                     title: "Discovery",
-                    actions: Some("[q]quit"),
+                    actions: Some("[Q]uit"),
                 },
                 lines,
             );
@@ -73,6 +73,6 @@ impl<'a> DiscoveryModal<'a> {
     }
 
     pub(in crate::ui) fn error_actions(output_actions: &str) -> String {
-        format!("[u]retry {output_actions} [q]quit")
+        format!("[u]retry {output_actions} [Q]uit")
     }
 }

@@ -10,6 +10,7 @@ use crate::{
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CustomRunState {
+    pub open: bool,
     pub selected: CustomRunField,
     pub editing: Option<CustomRunEditField>,
     pub input: InputField,
@@ -66,6 +67,7 @@ pub enum CustomRunEditField {
 impl Default for CustomRunState {
     fn default() -> Self {
         Self {
+            open: false,
             selected: CustomRunField::Scope,
             editing: None,
             input: InputField::default(),
@@ -93,12 +95,14 @@ impl CustomRunState {
     }
 
     pub fn open(&mut self) {
+        self.open = true;
         self.editing = None;
         self.selected = CustomRunField::Scope;
         self.viewport.reset();
     }
 
     pub fn close(&mut self) {
+        self.open = false;
         self.editing = None;
     }
 

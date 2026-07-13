@@ -56,12 +56,16 @@ pub async fn run(
         queue_tx,
         runtime_settings: RuntimeSettings::from_settings(&app.settings),
         xtask_persistence,
+        disk_usage: None,
     };
     let mut run_control = None;
     for effect in app.startup_effects() {
         handle_effect(app, &mut context, effect, &mut run_control);
     }
     let result = run_loop(terminal, app, run_on_start, context, queue_rx, run_control).await;
+    if let Err(error) = test_events::cleanup_process_files() {
+        tracing::warn!(%error, "failed to clean test event files");
+    }
     git_status.abort();
     ticker.abort();
     drop(input);
@@ -78,26 +82,36 @@ async fn run_loop(
 ) -> Result<()> {
     let mut pending_events = Vec::new();
     let mut dirty = UiDirty::ALL;
-    while !app.should_quit {
-        if dirty.any() {
-            draw_frame(terminal, app, &context.theme)?;
-            dirty = UiDirty::NONE;
+    let result = async {
+        while !app.should_quit {
+            if dirty.any() {
+                draw_frame(terminal, app, &context.theme)?;
+                dirty = UiDirty::NONE;
+            }
+            let Some(event) = queue_rx.recv().await else {
+                break;
+            };
+            pending_events.push(event);
+            drain_pending_events(&mut queue_rx, &mut pending_events);
+            dirty |= handle_queue_events(
+                app,
+                &mut context,
+                &mut run_on_start,
+                &mut pending_events,
+                &mut run_control,
+            );
+            pending_events.clear();
         }
-        let Some(event) = queue_rx.recv().await else {
-            break;
-        };
-        pending_events.push(event);
-        drain_pending_events(&mut queue_rx, &mut pending_events);
-        dirty |= handle_queue_events(
-            app,
-            &mut context,
-            &mut run_on_start,
-            &mut pending_events,
-            &mut run_control,
-        );
-        pending_events.clear();
+        Ok(())
     }
-    Ok(())
+    .await;
+
+    context.cancel_disk_usage();
+    drop(queue_rx);
+    if let Some(control) = run_control {
+        control.shutdown().await;
+    }
+    result
 }
 
 fn draw_frame(terminal: &mut AppTerminal, app: &mut App, theme: &Theme) -> Result<()> {
@@ -127,6 +141,32 @@ struct RunLoopContext<'a> {
     queue_tx: QueueSender,
     runtime_settings: RuntimeSettings,
     xtask_persistence: XtaskPersistence,
+    disk_usage: Option<DiskUsageControl>,
+}
+
+impl RunLoopContext<'_> {
+    fn refresh_disk_usage(&mut self, request_id: RequestId) {
+        self.cancel_disk_usage();
+        self.disk_usage = Some(start_disk_usage(
+            self.client.project_dir(),
+            request_id,
+            self.queue_tx.clone(),
+        ));
+    }
+
+    fn finish_disk_usage(&mut self, request_id: RequestId) {
+        if self
+            .disk_usage
+            .as_ref()
+            .is_some_and(|control| control.request_id == request_id)
+        {
+            self.cancel_disk_usage();
+        }
+    }
+
+    fn cancel_disk_usage(&mut self) {
+        drop(self.disk_usage.take());
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -283,16 +323,12 @@ fn handle_queue_event(
         QueueEvent::Discovery(request_id, event) => {
             if app.apply_discovery_event(request_id, event) && *run_on_start {
                 *run_on_start = false;
-                *run_control = start_run(
-                    app,
-                    context.client.clone(),
-                    RunRequest::default(),
-                    context.queue_tx.clone(),
-                );
+                *run_control = start_run(app, context, RunRequest::default());
             }
             UiDirty::ALL
         }
         QueueEvent::DiskUsage(request_id, result) => {
+            context.finish_disk_usage(request_id);
             app.apply_disk_usage(request_id, result);
             UiDirty::DETAILS | UiDirty::STATUS
         }
@@ -306,23 +342,16 @@ fn handle_queue_event(
             UiDirty::STATUS
         }
         QueueEvent::Run(event) => {
-            let finished = matches!(
-                event,
-                RunEvent::RunnerFinished { .. } | RunEvent::RunnerStopped
-            );
             app.apply_run_event(event);
-            if finished {
-                *run_control = None;
-            }
             UiDirty::TREE | UiDirty::DETAILS | UiDirty::OUTPUT | UiDirty::STATUS | UiDirty::MODAL
         }
         QueueEvent::TestSnapshot(request) => {
             match context.editor.open_text(&request.title, &request.text) {
                 Ok(path) => {
-                    app.status = format!("Opened test snapshot {}", path.display());
+                    app.status = format!("Opened test stack sample {}", path.display());
                 }
                 Err(error) => {
-                    app.status = format!("Failed to open test snapshot: {error}");
+                    app.status = format!("Failed to open test stack sample: {error}");
                 }
             }
             UiDirty::STATUS
@@ -362,16 +391,11 @@ fn handle_effect(
             start_discovery(context.client.clone(), request_id, context.queue_tx.clone());
         }
         AppEffect::StartRun(request) => {
-            *run_control = start_run(
-                app,
-                context.client.clone(),
-                *request,
-                context.queue_tx.clone(),
-            );
+            *run_control = start_run(app, context, *request);
         }
         AppEffect::StopRun => {
             if let Some(control) = run_control {
-                if control.stop_tx.send(()).is_err() {
+                if !control.request_stop() {
                     app.status = "Run already stopped".to_owned();
                 }
             } else {
@@ -403,11 +427,7 @@ fn handle_effect(
             }
         }
         AppEffect::RefreshDiskUsage(request_id) => {
-            start_disk_usage(
-                context.client.project_dir(),
-                request_id,
-                context.queue_tx.clone(),
-            );
+            context.refresh_disk_usage(request_id);
         }
         AppEffect::RunCargoClean(request_id) => {
             start_cargo_clean(
@@ -454,8 +474,51 @@ fn apply_runtime_settings(context: &mut RunLoopContext<'_>, settings: &AppSettin
 }
 
 struct RunControl {
-    stop_tx: mpsc::UnboundedSender<()>,
+    stop_tx: Option<mpsc::UnboundedSender<()>>,
     process_tracker: ProcessTracker,
+    producer: Option<tokio::task::JoinHandle<()>>,
+    forwarder: Option<tokio::task::JoinHandle<()>>,
+}
+
+struct DiskUsageControl {
+    request_id: RequestId,
+    cancellation: disk_usage::DiskScanCancellation,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for DiskUsageControl {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        self.task.abort();
+    }
+}
+
+impl RunControl {
+    fn request_stop(&mut self) -> bool {
+        self.stop_tx
+            .take()
+            .is_some_and(|stop_tx| stop_tx.send(()).is_ok())
+    }
+
+    async fn shutdown(mut self) {
+        self.request_stop();
+        await_run_task(self.producer.take(), "producer").await;
+        await_run_task(self.forwarder.take(), "forwarder").await;
+    }
+}
+
+impl Drop for RunControl {
+    fn drop(&mut self) {
+        self.request_stop();
+    }
+}
+
+async fn await_run_task(task: Option<tokio::task::JoinHandle<()>>, name: &str) {
+    if let Some(task) = task
+        && let Err(error) = task.await
+    {
+        tracing::warn!(%error, task = name, "run task failed during shutdown");
+    }
 }
 
 fn start_discovery(
@@ -503,11 +566,22 @@ fn start_disk_usage(
     cwd: Option<std::path::PathBuf>,
     request_id: RequestId,
     tx: QueueSender,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let result = disk_usage::load(cwd).await;
+) -> DiskUsageControl {
+    let cancellation = disk_usage::DiskScanCancellation::default();
+    let scan_cancellation = cancellation.clone();
+    let task = tokio::spawn(async move {
+        let result = match disk_usage::load(cwd, scan_cancellation).await {
+            Ok(Some(snapshot)) => Ok(snapshot),
+            Ok(None) => return,
+            Err(error) => Err(error),
+        };
         let _ = tx.send(QueueEvent::DiskUsage(request_id, result)).await;
-    })
+    });
+    DiskUsageControl {
+        request_id,
+        cancellation,
+        task,
+    }
 }
 
 fn start_cargo_clean(
@@ -608,9 +682,8 @@ fn start_xtask_run(
 
 fn start_run(
     app: &mut App,
-    client: NextestClient,
+    context: &mut RunLoopContext<'_>,
     request: RunRequest,
-    tx: QueueSender,
 ) -> Option<RunControl> {
     tracing::debug!(?request, "starting run request");
     let Some(disk_usage_request_id) = app.begin_run(&request) else {
@@ -618,7 +691,9 @@ fn start_run(
         return None;
     };
 
-    start_disk_usage(client.project_dir(), disk_usage_request_id, tx.clone());
+    context.refresh_disk_usage(disk_usage_request_id);
+    let client = context.client.clone();
+    let tx = context.queue_tx.clone();
     let test_event_run = match test_events::create_run_file() {
         Ok(run) => {
             app.begin_test_event_run(run.clone());
@@ -630,12 +705,12 @@ fn start_run(
         }
     };
 
-    let (run_tx, mut run_rx) = mpsc::channel::<RunEvent>(queue::APP_EVENT_QUEUE_CAPACITY);
+    let (run_tx, run_rx) = mpsc::channel::<RunEvent>(queue::APP_EVENT_QUEUE_CAPACITY);
     let (stop_tx, stop_rx) = mpsc::unbounded_channel();
     let process_tracker = ProcessTracker::default();
     let run_process_tracker = process_tracker.clone();
     let info_output_poll_interval = app.settings.test_output_poll_interval();
-    tokio::spawn(async move {
+    let producer = tokio::spawn(async move {
         let tailer = test_event_run
             .as_ref()
             .map(|run| test_events::start_tailer(run.id.clone(), run.dir.clone(), run_tx.clone()));
@@ -665,18 +740,31 @@ fn start_run(
         }
     });
 
-    tokio::spawn(async move {
-        while let Some(event) = run_rx.recv().await {
-            if tx.send(QueueEvent::Run(event)).await.is_err() {
-                break;
-            }
-        }
-    });
+    let forwarder = tokio::spawn(forward_run_events(run_rx, tx));
 
     Some(RunControl {
-        stop_tx,
+        stop_tx: Some(stop_tx),
         process_tracker,
+        producer: Some(producer),
+        forwarder: Some(forwarder),
     })
+}
+
+async fn forward_run_events(mut run_rx: mpsc::Receiver<RunEvent>, tx: QueueSender) {
+    let mut terminal_event = None;
+    while let Some(event) = run_rx.recv().await {
+        if matches!(
+            event,
+            RunEvent::RunnerFinished { .. } | RunEvent::RunnerStopped
+        ) {
+            terminal_event = Some(event);
+        } else if tx.send(QueueEvent::Run(event)).await.is_err() {
+            return;
+        }
+    }
+    if let Some(event) = terminal_event {
+        let _ = tx.send(QueueEvent::Run(event)).await;
+    }
 }
 
 #[cfg(test)]

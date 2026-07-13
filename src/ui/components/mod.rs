@@ -1,6 +1,5 @@
 pub(in crate::ui) mod discovery;
 pub(in crate::ui) mod disk_cleanup;
-pub(in crate::ui) mod help;
 pub(in crate::ui) mod info;
 pub(in crate::ui) mod output;
 pub(in crate::ui) mod output_search;

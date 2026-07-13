@@ -17,7 +17,6 @@ mod view_helpers;
 
 use components::discovery::DiscoveryModal;
 use components::disk_cleanup::DiskCleanupModal;
-use components::help::HelpModal;
 use components::info::InfoPanel;
 use components::output::OutputPanel;
 #[cfg(test)]
@@ -42,7 +41,7 @@ pub struct AppLayout {
 pub fn layout(area: Rect, tree_width_percent: u16) -> AppLayout {
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(area);
 
     let tree_width_percent = config::clamp_tree_width(tree_width_percent);
@@ -109,13 +108,6 @@ pub fn viewport_metrics(area: Rect, app: &App) -> FrameViewportMetrics {
             ViewportId::TestDetails,
             ViewportMetrics::new(panel_body_page_size(centered_rect(86, 88, area))),
         ),
-        ViewportSpec::new(
-            ViewportId::Help,
-            ViewportMetrics::with_content_len(
-                panel_body_page_size(centered_rect(72, 96, area)),
-                HelpModal::content_len(app.focus),
-            ),
-        ),
     ])
 }
 
@@ -138,7 +130,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         Some(OverlayMode::TestEvents) => TestEventsModal::new(app).render(frame, theme),
         Some(OverlayMode::TestDetails) => TestDetailsModal::new(app).render(frame, theme),
         Some(OverlayMode::Settings) => SettingsModal::new(app).render(frame, theme),
-        Some(OverlayMode::Help) => HelpModal::new(app).render(frame, theme),
         None => {}
     }
     if app.xtasks.modal_open && app.xtasks.output.search.modal_open {

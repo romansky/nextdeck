@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::{
     config::TreeDurationMode,
-    output::{TestOutput, bounded_text},
+    output::{TestOutput, append_bounded_text, bounded_output_section, bounded_text},
     state::StatusCounts,
 };
 
@@ -941,29 +941,33 @@ fn node_matches(node: &TestNode, key: &TestKey) -> bool {
 }
 
 fn descendant_outputs(node: &TestNode) -> String {
-    let mut outputs = Vec::new();
+    let mut output = String::new();
+    let mut has_output = false;
     visit(node, &mut |child| {
         if let NodeKind::Test(test) = &child.kind
             && has_observable_output(child)
         {
-            outputs.push(format!(
-                "{}::{} [{}]\n{}",
+            let prefix = format!(
+                "{}{}::{} [{}]\n",
+                if has_output { "\n\n" } else { "" },
                 test.package,
                 test.full_name,
-                status_label(child.status),
-                child.output.display_text()
-            ));
+                status_label(child.status)
+            );
+            let section = bounded_output_section(&prefix, child.output.display_text());
+            append_bounded_text(&mut output, &section);
+            has_output = true;
         }
     });
 
-    if outputs.is_empty() {
+    if !has_output {
         if descendant_test_count(node) == 0 {
             "No tests under this selection".to_owned()
         } else {
             "No captured output for tests under this selection yet".to_owned()
         }
     } else {
-        outputs.join("\n\n")
+        output
     }
 }
 

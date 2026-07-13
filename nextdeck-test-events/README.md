@@ -1,77 +1,45 @@
 # nextdeck-test-events
 
-Tiny optional test-run event side channel for projects launched by NextDeck.
+Optional integrations for [Nextdeck](../README.md): test events and Clap-based
+xtask discovery.
 
-The crate writes JSONL only when `NEXTDECK_TEST_EVENTS` points at a directory.
-In normal test runs it is a no-op. Events append to `<pid>.jsonl` inside that
-directory so NextDeck can treat each test process as its own event stream.
+Test-event emission has no effect on ordinary test runs unless Nextdeck sets
+`NEXTDECK_TEST_EVENTS`.
+
+## Test events
 
 ```rust
+let cache_key = "docs-v2";
 nextdeck_test_events::event!(
     level: nextdeck_test_events::Level::Info,
     target: "artifact-cache",
     "cache hit";
     "key" => cache_key,
-    "source" => "local",
 );
 ```
 
-Each line is a schema-versioned generic event:
-
-```json
-{
-  "schema_version": 1,
-  "time": 1783420000000,
-  "pid": 12345,
-  "thread": "tests::cache_hit",
-  "level": "info",
-  "target": "artifact-cache",
-  "message": "cache hit",
-  "fields": { "key": "abc" },
-  "source": {
-    "module": "my_crate::tests",
-    "file": "src/lib.rs",
-    "line": 42
-  }
-}
-```
+See the [test events guide](../docs/test-events/README.md) for setup, event
+fields, and how events appear in Nextdeck.
 
 ## Clap xtask metadata
 
-Enable `xtask-clap` to let an xtask expose NextDeck metadata from a normal Clap
-command tree:
+Enable the `xtask-clap` feature in an xtask crate:
 
 ```toml
 [dependencies]
 nextdeck-test-events = { version = "0.1", features = ["xtask-clap"] }
 ```
 
+Then call the metadata handler before parsing the CLI:
+
 ```rust
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-
-#[derive(Parser)]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Subcommand)]
-enum Command {
-    Check {
-        #[arg(long)]
-        allow_dirty: bool,
-    },
-}
-
-fn main() -> Result<()> {
+fn main() -> anyhow::Result<()> {
     nextdeck_test_events::xtask_clap_info!(Cli);
-
-    match Cli::parse().command {
-        Command::Check { allow_dirty } => {
-            let _ = allow_dirty;
-            Ok(())
-        }
-    }
+    let cli = Cli::parse();
+    // Dispatch the existing command.
+    Ok(())
 }
 ```
+
+See the [xtask integration guide](../docs/xtask-integration/README.md) for a
+complete Clap example and the JSON contract.

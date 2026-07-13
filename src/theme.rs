@@ -120,15 +120,23 @@ impl Theme {
         actions: Option<&'a str>,
         focused: bool,
     ) -> Block<'a> {
+        let actions = actions
+            .map(|actions| Line::styled(format!(" {actions} "), self.panel_actions(focused)));
+        self.panel_block_with_actions(status, actions, focused)
+    }
+
+    pub fn panel_block_with_actions<'a>(
+        &self,
+        status: &'a str,
+        actions: Option<Line<'a>>,
+        focused: bool,
+    ) -> Block<'a> {
         let block = Block::default()
             .title(self.panel_title(status, focused))
             .borders(Borders::ALL)
             .border_style(self.border(focused));
         if let Some(actions) = actions {
-            block.title_bottom(Line::styled(
-                format!(" {actions} "),
-                self.panel_actions(focused),
-            ))
+            block.title_bottom(actions)
         } else {
             block
         }

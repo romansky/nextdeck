@@ -17,8 +17,7 @@ use crate::{
         TargetSelector, TestSelector, manual_run_request_command,
     },
     output_pane::{
-        OutputPaneState, OutputSearchState, OutputView, SearchDirection, SearchEditorInput,
-        SearchEditorKey, SearchModalFocus,
+        OutputPaneState, OutputSearchState, OutputView, SearchDirection, SearchModalFocus,
     },
     request::RequestId,
     scroll,
@@ -56,8 +55,6 @@ pub struct App {
     pub should_quit: bool,
     pub main_output: OutputPaneState,
     pub focus: FocusPane,
-    pub show_help: bool,
-    pub help_viewport: scroll::ViewportState,
     pub show_test_details: bool,
     pub discovery: DiscoveryState,
     pub git_status: GitStatus,
@@ -79,7 +76,6 @@ pub enum ViewportId {
     XtaskOutput,
     TestEventsOutput,
     TestDetails,
-    Help,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,13 +89,6 @@ impl ViewportMetrics {
         Self {
             page_size: page_size.max(1),
             content_len: None,
-        }
-    }
-
-    pub fn with_content_len(page_size: usize, content_len: usize) -> Self {
-        Self {
-            page_size: page_size.max(1),
-            content_len: Some(content_len.max(1)),
         }
     }
 }
@@ -122,7 +111,7 @@ impl ViewportId {
             Self::MainOutput => Some(OutputPaneId::Main),
             Self::XtaskOutput => Some(OutputPaneId::Xtask),
             Self::TestEventsOutput => Some(OutputPaneId::TestEvents),
-            Self::Tree | Self::XtaskParameters | Self::TestDetails | Self::Help => None,
+            Self::Tree | Self::XtaskParameters | Self::TestDetails => None,
         }
     }
 }
@@ -251,8 +240,6 @@ impl App {
             should_quit: false,
             main_output: OutputPaneState::default(),
             focus: FocusPane::Tree,
-            show_help: false,
-            help_viewport: scroll::ViewportState::default(),
             show_test_details: false,
             discovery: DiscoveryState::default(),
             git_status: GitStatus::unknown(),
@@ -315,14 +302,6 @@ impl App {
             ViewportId::TestDetails => {
                 self.apply_test_details_viewport_metrics(viewport.metrics);
             }
-            ViewportId::Help => {
-                if let Some(content_len) = viewport.metrics.content_len {
-                    self.help_viewport
-                        .set_metrics(viewport.metrics.page_size, content_len);
-                } else {
-                    self.help_viewport.set_page_size(viewport.metrics.page_size);
-                }
-            }
         }
     }
 
@@ -352,9 +331,6 @@ impl App {
             .unwrap_or_else(|| self.output_content_len(output));
         self.output_state_mut(output)
             .apply_viewport_metrics(metrics.page_size, line_count);
-        if output == OutputPaneId::Main {
-            self.clamp_output_scroll();
-        }
     }
 
     fn output_viewport_is_active(&self, output: OutputPaneId) -> bool {
@@ -372,16 +348,8 @@ impl App {
         };
     }
 
-    pub fn toggle_help(&mut self) {
-        self.show_help = !self.show_help;
-        if self.show_help {
-            self.help_viewport.reset();
-        }
-    }
-
     pub fn on_resize(&mut self) {
         self.ensure_tree_selection_visible();
-        self.clamp_output_scroll();
     }
 
     pub fn command_context(&self) -> CommandContext {
@@ -389,9 +357,7 @@ impl App {
             FocusPane::Tree => CommandFocus::Tests,
             FocusPane::Output => CommandFocus::Output,
         };
-        let overlay = if self.show_help {
-            Some(OverlayMode::Help)
-        } else if self.global_settings.modal_open {
+        let overlay = if self.global_settings.modal_open {
             Some(OverlayMode::Settings)
         } else if self.disk_cleanup.modal_open {
             Some(OverlayMode::DiskCleanup)
@@ -411,7 +377,6 @@ impl App {
             None
         };
         let input = match overlay {
-            Some(OverlayMode::Help) => InputMode::Help,
             Some(OverlayMode::Settings) if self.global_settings.open_with_editing => {
                 InputMode::SettingsOpenWith
             }
@@ -439,6 +404,7 @@ impl App {
             Some(OverlayMode::TestDetails) if self.custom_run.editing.is_some() => {
                 InputMode::CustomRunInput
             }
+            Some(OverlayMode::TestDetails) if self.custom_run.open => InputMode::CustomRunModal,
             Some(OverlayMode::TestDetails) => InputMode::TestDetailsModal,
             Some(OverlayMode::Discovery) => InputMode::DiscoveryRunning,
             Some(OverlayMode::DiscoveryError) => InputMode::Normal(CommandFocus::Output),
@@ -804,20 +770,6 @@ impl App {
                 self.on_resize();
                 AppEffect::None
             }
-            AppCommand::ToggleHelp => {
-                self.toggle_help();
-                self.status = if self.show_help {
-                    "Help opened".to_owned()
-                } else {
-                    "Help closed".to_owned()
-                };
-                AppEffect::None
-            }
-            AppCommand::CloseHelp => {
-                self.show_help = false;
-                self.status = "Help closed".to_owned();
-                AppEffect::None
-            }
             AppCommand::ToggleFocus => {
                 self.toggle_focus();
                 AppEffect::None
@@ -912,6 +864,10 @@ impl App {
             }
             AppCommand::OpenCustomRun => {
                 self.open_custom_run();
+                AppEffect::None
+            }
+            AppCommand::CloseCustomRun => {
+                self.close_custom_run();
                 AppEffect::None
             }
             AppCommand::CustomRunNext => {
@@ -1269,7 +1225,7 @@ impl App {
             self.status = "No selection".to_owned();
             return;
         }
-        self.custom_run.cancel_edit();
+        self.custom_run.close();
         self.show_test_details = true;
         self.ensure_custom_run_selection_visible();
         self.status = "Details opened".to_owned();
@@ -1350,7 +1306,6 @@ impl App {
 
         self.settings.tree_width_percent = after;
         self.ensure_tree_selection_visible();
-        self.clamp_output_scroll();
         self.status = format!("Tests pane width: {after}%");
         AppEffect::SaveSettings(self.settings.clone())
     }
@@ -1577,6 +1532,12 @@ impl App {
         self.status = "Run options opened".to_owned();
     }
 
+    fn close_custom_run(&mut self) {
+        self.custom_run.close();
+        self.custom_run.viewport.reset();
+        self.status = "Test details".to_owned();
+    }
+
     fn ensure_custom_run_selection_visible(&mut self) {
         let Some((start, len, line_count)) = self.test_details_focused_range() else {
             self.custom_run.viewport.reset();
@@ -1590,6 +1551,9 @@ impl App {
         if !self.show_test_details {
             return None;
         }
+        if !self.custom_run.open {
+            return None;
+        }
         let custom_run_start = self.test_details_custom_run_start_line()?;
         let (field_start, field_len, custom_run_lines) =
             self.custom_run.selected_field_line_range();
@@ -1601,15 +1565,19 @@ impl App {
     }
 
     fn test_details_line_count(&self) -> usize {
-        let Some(custom_run_start) = self.test_details_custom_run_start_line() else {
+        let Some(node) = self.tree.selected_node() else {
             return 1;
         };
-        custom_run_start + self.custom_run.line_count() + 2
+        if self.custom_run.open {
+            2 + self.custom_run.line_count() + 2
+        } else {
+            2 + test_details_row_count(node)
+        }
     }
 
     fn test_details_custom_run_start_line(&self) -> Option<usize> {
-        let node = self.tree.selected_node()?;
-        Some(2 + test_details_row_count(node) + 2)
+        self.tree.selected_node()?;
+        self.custom_run.open.then_some(2)
     }
 
     fn run_custom_effect(&mut self) -> AppEffect {
@@ -1649,7 +1617,7 @@ impl App {
             return AppEffect::None;
         };
         if !matches!(node.kind, NodeKind::Test(_)) {
-            self.status = "Snapshot is available for a single test".to_owned();
+            self.status = "Stack sampling is available for a single test".to_owned();
             return AppEffect::None;
         }
         if !self.running {
@@ -1661,8 +1629,8 @@ impl App {
             return AppEffect::None;
         }
 
-        let title = format!("Running test snapshot: {}", self.tree.selected_path());
-        self.status = "Capturing running test snapshot...".to_owned();
+        let title = format!("Running test stack sample: {}", self.tree.selected_path());
+        self.status = "Sampling running test stacks...".to_owned();
         AppEffect::CaptureTestSnapshot(TestSnapshotRequest { title })
     }
 
@@ -1774,9 +1742,6 @@ impl App {
     }
 
     fn active_scroll_target(&self) -> Option<ViewportId> {
-        if self.show_help {
-            return Some(ViewportId::Help);
-        }
         if self.xtasks.modal_open && self.xtasks.detail_open {
             return Some(match self.xtasks.detail_focus {
                 crate::xtask::XtaskDetailFocus::Parameters => ViewportId::XtaskParameters,
@@ -1808,7 +1773,6 @@ impl App {
                 self.output_state_mut(output)
                     .apply_scroll(action, line_count);
             }
-            ViewportId::Help => self.help_viewport.apply_scroll(action),
             ViewportId::TestDetails => {
                 self.custom_run
                     .viewport
@@ -1855,7 +1819,7 @@ impl App {
         let output = self.active_output_pane();
         let line_count = self.sync_output_content_len(output);
         let enabled = self.output_state_mut(output).toggle_snap(line_count);
-        self.status = format!("Output snap: {}", if enabled { "on" } else { "off" });
+        self.status = format!("Output snap-bottom: {}", if enabled { "on" } else { "off" });
     }
 
     fn disable_output_snap(&mut self, output: OutputPaneId) {
@@ -1914,8 +1878,6 @@ impl App {
     fn after_tree_view_changed(&mut self, selection_change: SelectionChange) {
         if selection_change.changed() {
             self.reset_output_for_source_change();
-        } else {
-            self.clamp_output_scroll();
         }
     }
 
@@ -1924,10 +1886,6 @@ impl App {
         self.tree_viewport.set_content_len(rows_len);
         self.tree_viewport
             .ensure_visible(self.tree.selected_index());
-    }
-
-    fn clamp_output_scroll(&mut self) {
-        self.main_output.clamp_following_scroll_to_top();
     }
 
     fn reset_for_run(&mut self, request: &RunRequest) {
@@ -2042,7 +2000,7 @@ impl App {
         };
     }
 
-    fn edit_output_search(&mut self, input: SearchEditorInput) {
+    fn edit_output_search(&mut self, input: InputFieldInput) {
         let output = self.active_output_pane();
         let status = {
             let search = &mut self.output_state_mut(output).search;
@@ -2094,9 +2052,6 @@ impl App {
             search.input_active = false;
             search.modal_open = true;
             search.modal_focus = SearchModalFocus::Query;
-            if search.draft_query.is_empty() && !search.query.is_empty() {
-                search.sync_draft_from_applied();
-            }
         }
         self.status = "Output search options".to_owned();
     }
@@ -2139,16 +2094,7 @@ impl App {
     fn activate_output_search_modal_control(&mut self) {
         let output = self.active_output_pane();
         match self.output_state(output).search.modal_focus {
-            SearchModalFocus::Query => {
-                self.output_state_mut(output)
-                    .search
-                    .edit_draft(SearchEditorInput::new(
-                        SearchEditorKey::Enter,
-                        false,
-                        false,
-                        false,
-                    ));
-            }
+            SearchModalFocus::Query => self.apply_output_search(),
             SearchModalFocus::Clear => self.output_state_mut(output).search.clear_draft(),
             SearchModalFocus::Apply => self.apply_output_search(),
             SearchModalFocus::Filter => {

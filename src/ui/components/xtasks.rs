@@ -109,11 +109,25 @@ impl<'a> XtasksModal<'a> {
             return lines;
         }
 
+        let comments = manifest
+            .commands
+            .iter()
+            .map(|command| {
+                command
+                    .about
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|about| !about.is_empty())
+                    .map(|about| format!("# {about}"))
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
         let rows = manifest
             .commands
             .iter()
+            .zip(&comments)
             .enumerate()
-            .map(|(index, command)| {
+            .map(|(index, (command, comment))| {
                 vec![
                     if index == xtasks.selected_command {
                         ">"
@@ -121,7 +135,7 @@ impl<'a> XtasksModal<'a> {
                         " "
                     },
                     command.name.as_str(),
-                    command.about.as_deref().unwrap_or(""),
+                    comment.as_str(),
                 ]
             })
             .collect::<Vec<_>>();
@@ -144,12 +158,12 @@ impl<'a> XtasksModal<'a> {
             } else {
                 theme.text()
             };
-            let about = command.about.as_deref().unwrap_or("");
+            let comment = comments.get(index).map(String::as_str).unwrap_or("");
             let marker = if selected { ">" } else { " " };
             lines.push(layout.row(&[
                 (marker, style),
                 (command.name.as_str(), style),
-                (about, style),
+                (comment, theme.muted()),
             ]));
         }
 
@@ -259,11 +273,7 @@ impl<'a> XtasksModal<'a> {
         focused: bool,
     ) {
         let content_width = area.width.saturating_sub(2).max(1) as usize;
-        let block = theme.panel_block(
-            "Parameters",
-            focused.then_some("[up/down]select [pgUp/pgDn]scroll [left/right]change"),
-            focused,
-        );
+        let block = theme.panel_block("Parameters", None, focused);
         let inner = block.inner(area);
         let paragraph = scrollable_paragraph(
             Self::parameter_lines(&self.app.xtasks, theme, content_width, focused),
@@ -367,18 +377,14 @@ impl<'a> XtasksModal<'a> {
 
     fn actions(xtasks: &XtaskState) -> &'static str {
         if xtasks.editing.is_some() {
-            "[enter]save [esc]cancel"
+            "[esc]cancel"
         } else if xtasks.detail_open {
             match xtasks.detail_focus {
-                XtaskDetailFocus::Parameters => {
-                    "[esc]back [tab]output [up/down]param [left/right]change [e]edit [r]run"
-                }
-                XtaskDetailFocus::Output => {
-                    "[esc]back [tab]params [up/down]scroll [/]search [n/N]match [r]run"
-                }
+                XtaskDetailFocus::Parameters => "[esc]back [tab]output [r]run",
+                XtaskDetailFocus::Output => "[esc]back [tab]params [/]search [n/N]match [r]run",
             }
         } else {
-            "[up/down]command [enter]open [u]refresh [esc]close"
+            "[u]refresh [esc]close"
         }
     }
 }

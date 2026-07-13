@@ -85,7 +85,6 @@ struct Cli {
 
     #[arg(
         long = "open-with",
-        alias = "editor",
         help = "Command for opening sources/output. Also reads NEXTDECK_EDITOR, VISUAL, EDITOR"
     )]
     open_with: Option<String>,

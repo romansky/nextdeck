@@ -36,13 +36,7 @@ enum XtaskCommand {
         allow_dirty: bool,
     },
     #[command(about = "Install the TUI package locally from the workspace")]
-    TuiPublishLocal {
-        #[arg(
-            long,
-            help = "Accepted for compatibility; ignored for workspace installs"
-        )]
-        allow_dirty: bool,
-    },
+    TuiPublishLocal,
     #[command(about = "Build, archive, checksum, and sign a TUI release artifact")]
     TuiRelease {
         #[arg(
@@ -125,7 +119,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         XtaskCommand::TuiCheck { allow_dirty } => tui_check(&workspace, allow_dirty),
-        XtaskCommand::TuiPublishLocal { allow_dirty: _ } => install_tui_workspace(&workspace),
+        XtaskCommand::TuiPublishLocal => install_tui_workspace(&workspace),
         XtaskCommand::TuiRelease {
             version,
             target,
@@ -163,13 +157,45 @@ fn main() -> Result<()> {
 
 fn tui_check(workspace: &Path, allow_dirty: bool) -> Result<()> {
     run(workspace, "cargo", ["fmt", "--all", "--check"])?;
-    run(workspace, "cargo", ["test", "-p", TUI_PACKAGE])?;
-    package_crate(workspace, TUI_PACKAGE, allow_dirty)?;
+    run(
+        workspace,
+        "cargo",
+        [
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )?;
+    run(
+        workspace,
+        "cargo",
+        ["test", "--workspace", "--all-features"],
+    )?;
+    check_package_contents(workspace, TUI_PACKAGE, allow_dirty)?;
     Ok(())
 }
 
 fn lib_check(workspace: &Path, allow_dirty: bool) -> Result<()> {
     run(workspace, "cargo", ["fmt", "--all", "--check"])?;
+    run(
+        workspace,
+        "cargo",
+        [
+            "clippy",
+            "-p",
+            LIB_PACKAGE,
+            "--all-targets",
+            "--features",
+            "xtask-clap",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )?;
     run(
         workspace,
         "cargo",
@@ -225,6 +251,20 @@ fn package_crate(workspace: &Path, package: &str, allow_dirty: bool) -> Result<P
         crate_path,
         unpacked_dir,
     })
+}
+
+fn check_package_contents(workspace: &Path, package: &str, allow_dirty: bool) -> Result<()> {
+    let mut args = vec![
+        "package".to_owned(),
+        "-p".to_owned(),
+        package.to_owned(),
+        "--locked".to_owned(),
+        "--list".to_owned(),
+    ];
+    if allow_dirty {
+        args.push("--allow-dirty".to_owned());
+    }
+    run(workspace, "cargo", args)
 }
 
 fn install_tui_workspace(workspace: &Path) -> Result<()> {
@@ -393,14 +433,19 @@ enum Command {
 
 #[test]
 fn emits_events_and_xtask_metadata() {
-    let path = std::env::temp_dir().join("nextdeck-test-events-smoke.jsonl");
-    let _ = std::fs::remove_file(&path);
-    std::env::set_var(nextdeck_test_events::ENV_VAR, &path);
+    let dir = std::env::temp_dir().join(format!(
+        "nextdeck-test-events-smoke-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::env::set_var(nextdeck_test_events::ENV_VAR, &dir);
+    let path = nextdeck_test_events::event_file_path().expect("event path");
     nextdeck_test_events::event!("smoke"; "kind" => "local");
     std::env::remove_var(nextdeck_test_events::ENV_VAR);
 
     let events = std::fs::read_to_string(&path).expect("event file");
     assert!(events.contains("\"message\":\"smoke\""));
+    let _ = std::fs::remove_dir_all(dir);
 
     let mut metadata = Vec::new();
     let handled = nextdeck_test_events::xtask::handle_nextdeck_info_from::<Cli, _, _, _>(
@@ -596,6 +641,10 @@ fn create_release_archive(
             .with_context(|| format!("adding {}", readme.display()))?;
     }
 
+    let license = workspace.join("LICENSE");
+    tar.append_path_with_name(&license, format!("{asset_stem}/LICENSE"))
+        .with_context(|| format!("adding {}", license.display()))?;
+
     tar.finish()
         .with_context(|| format!("finishing archive {}", archive_path.display()))?;
     let encoder = tar
@@ -716,7 +765,7 @@ fn write_homebrew_formula(
         "  homepage \"https://github.com/{github_repo}\"\n"
     ));
     formula.push_str(&format!("  version \"{version}\"\n"));
-    formula.push_str("  license \"MIT OR Apache-2.0\"\n\n");
+    formula.push_str("  license \"Apache-2.0\"\n\n");
     formula.push_str("  depends_on \"cargo-nextest\"\n\n");
 
     let mut wrote_any = false;

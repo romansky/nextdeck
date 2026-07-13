@@ -1,6 +1,10 @@
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -21,6 +25,19 @@ pub struct DiskUsageEntry {
     pub label: &'static str,
     pub path: PathBuf,
     pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DiskScanCancellation(Arc<AtomicBool>);
+
+impl DiskScanCancellation {
+    pub(crate) fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -125,13 +142,22 @@ impl DiskCleanupState {
     }
 }
 
-pub async fn load(cwd: Option<PathBuf>) -> Result<DiskUsageSnapshot, String> {
-    tokio::task::spawn_blocking(move || load_blocking(cwd))
+pub async fn load(
+    cwd: Option<PathBuf>,
+    cancellation: DiskScanCancellation,
+) -> Result<Option<DiskUsageSnapshot>, String> {
+    tokio::task::spawn_blocking(move || load_blocking(cwd, &cancellation))
         .await
         .map_err(|error| format!("disk scan task failed: {error}"))?
 }
 
-fn load_blocking(cwd: Option<PathBuf>) -> Result<DiskUsageSnapshot, String> {
+fn load_blocking(
+    cwd: Option<PathBuf>,
+    cancellation: &DiskScanCancellation,
+) -> Result<Option<DiskUsageSnapshot>, String> {
+    if cancellation.is_cancelled() {
+        return Ok(None);
+    }
     let roots = disk_roots(cwd)?;
     let available_bytes = roots
         .first()
@@ -139,21 +165,29 @@ fn load_blocking(cwd: Option<PathBuf>) -> Result<DiskUsageSnapshot, String> {
         .and_then(available_space);
     let mut entries = Vec::new();
     for (label, path) in roots {
+        if cancellation.is_cancelled() {
+            return Ok(None);
+        }
         if path.exists() {
-            entries.push(DiskUsageEntry {
-                label,
-                bytes: dir_size(&path).map_err(|error| {
-                    format!("failed to scan {} at {}: {error}", label, path.display())
-                })?,
-                path,
-            });
+            let bytes = match dir_size(&path, cancellation) {
+                Ok(bytes) => bytes,
+                Err(_) if cancellation.is_cancelled() => return Ok(None),
+                Err(error) => {
+                    return Err(format!(
+                        "failed to scan {} at {}: {error}",
+                        label,
+                        path.display()
+                    ));
+                }
+            };
+            entries.push(DiskUsageEntry { label, bytes, path });
         }
     }
-    Ok(DiskUsageSnapshot {
+    Ok(Some(DiskUsageSnapshot {
         entries,
         available_bytes,
         updated_at: SystemTime::now(),
-    })
+    }))
 }
 
 fn disk_roots(cwd: Option<PathBuf>) -> Result<Vec<(&'static str, PathBuf)>, String> {
@@ -163,12 +197,22 @@ fn disk_roots(cwd: Option<PathBuf>) -> Result<Vec<(&'static str, PathBuf)>, Stri
     Ok(vec![("target", workspace.join("target"))])
 }
 
-fn dir_size(path: &Path) -> io::Result<u64> {
+fn dir_size(path: &Path, cancellation: &DiskScanCancellation) -> io::Result<u64> {
     let mut seen = SeenFiles::default();
-    dir_size_with_seen(path, &mut seen)
+    dir_size_with_seen(path, &mut seen, cancellation)
 }
 
-fn dir_size_with_seen(path: &Path, seen: &mut SeenFiles) -> io::Result<u64> {
+fn dir_size_with_seen(
+    path: &Path,
+    seen: &mut SeenFiles,
+    cancellation: &DiskScanCancellation,
+) -> io::Result<u64> {
+    if cancellation.is_cancelled() {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "disk scan cancelled",
+        ));
+    }
     let metadata = fs::symlink_metadata(path)?;
     if !seen.should_count(&metadata) {
         return Ok(0);
@@ -179,8 +223,14 @@ fn dir_size_with_seen(path: &Path, seen: &mut SeenFiles) -> io::Result<u64> {
 
     let mut total = disk_usage_bytes(&metadata);
     for entry in fs::read_dir(path)? {
+        if cancellation.is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "disk scan cancelled",
+            ));
+        }
         let entry = entry?;
-        total += dir_size_with_seen(&entry.path(), seen)?;
+        total += dir_size_with_seen(&entry.path(), seen, cancellation)?;
     }
     Ok(total)
 }

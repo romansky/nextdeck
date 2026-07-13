@@ -179,11 +179,7 @@ impl XtaskArgSpecExt for XtaskArgSpec {
     }
 
     fn parameter_line_count(&self) -> usize {
-        let help_line = self
-            .help
-            .as_deref()
-            .is_some_and(|help| !help.trim().is_empty()) as usize;
-        2 + help_line
+        2
     }
 }
 
@@ -264,7 +260,6 @@ impl XtaskState {
         self.selected_arg = 0;
         self.parameters_viewport.reset();
         self.ensure_selected_parameter_visible();
-        self.output.scroll_top();
         self.output.search.close_interaction();
         true
     }

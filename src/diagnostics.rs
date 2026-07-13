@@ -28,7 +28,8 @@ pub fn capture_running_test_snapshot(root_pid: Option<u32>) -> String {
 
 #[cfg(not(target_os = "macos"))]
 pub fn capture_running_test_snapshot(_root_pid: Option<u32>) -> String {
-    "Running test snapshots are not supported on this OS yet.\n\nSupported OS: macOS.\n".to_owned()
+    "Running test stack sampling is not supported on this OS yet.\n\nSupported OS: macOS.\n"
+        .to_owned()
 }
 
 #[cfg(target_os = "macos")]
@@ -65,8 +66,8 @@ mod macos {
         }
 
         let mut text = String::new();
-        text.push_str("Running test snapshot\n");
-        text.push_str("=====================\n\n");
+        text.push_str("Running test stack sample\n");
+        text.push_str("=========================\n\n");
         text.push_str("Process tree\n");
         text.push_str("------------\n");
         text.push_str(&format_process_tree(root_pid, &process_tree));

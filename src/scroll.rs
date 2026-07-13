@@ -161,6 +161,13 @@ impl FollowViewportState {
         }
     }
 
+    pub fn set_metrics(&mut self, page_size: usize, content_len: usize) {
+        self.viewport.set_metrics(page_size, content_len);
+        if self.follow {
+            self.viewport.scroll_to_bottom();
+        }
+    }
+
     pub fn set_scroll(&mut self, scroll: usize) {
         self.viewport.set_scroll(scroll);
     }
@@ -190,10 +197,6 @@ impl FollowViewportState {
                 self.viewport.scroll_to_bottom();
             }
         }
-    }
-
-    pub fn scroll_top(&mut self) {
-        self.viewport.reset();
     }
 
     pub fn disable_follow(&mut self) {
@@ -231,12 +234,6 @@ impl FollowViewportState {
     pub fn reset_for_modal(&mut self) {
         self.viewport.reset();
         self.follow = false;
-    }
-
-    pub fn clamp_following_scroll_to_top(&mut self) {
-        if self.follow {
-            self.viewport.reset();
-        }
     }
 
     pub fn render_scroll_for(&self, content_len: usize) -> u16 {

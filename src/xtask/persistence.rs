@@ -4,6 +4,7 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     process,
+    time::{Duration, Instant},
 };
 
 #[cfg(unix)]
@@ -17,12 +18,19 @@ use crate::config;
 
 const FILE_SCHEMA_VERSION: u32 = 1;
 const STATE_FILE_NAME: &str = "xtask-state.json";
+const SAVE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Default)]
 pub(crate) struct XtaskPersistence {
     path: Option<PathBuf>,
     workspace: Option<String>,
-    attempted_revision: Option<u64>,
+    last_attempt: Option<PersistenceAttempt>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PersistenceAttempt {
+    revision: u64,
+    retry_at: Instant,
 }
 
 impl XtaskPersistence {
@@ -38,14 +46,26 @@ impl XtaskPersistence {
     }
 
     pub(crate) fn flush(&mut self, state: &mut XtaskState) -> io::Result<bool> {
+        self.flush_at(state, Instant::now())
+    }
+
+    fn flush_at(&mut self, state: &mut XtaskState, now: Instant) -> io::Result<bool> {
         let Some((revision, preferences)) = state.pending_preferences() else {
+            self.last_attempt = None;
             return Ok(false);
         };
-        if self.attempted_revision == Some(revision) {
+        if self
+            .last_attempt
+            .is_some_and(|attempt| attempt.revision == revision && now < attempt.retry_at)
+        {
             return Ok(false);
         }
-        self.attempted_revision = Some(revision);
+        self.last_attempt = Some(PersistenceAttempt {
+            revision,
+            retry_at: now + SAVE_RETRY_INTERVAL,
+        });
         self.save(preferences)?;
+        self.last_attempt = None;
         state.mark_preferences_persisted(revision);
         Ok(true)
     }
@@ -54,7 +74,7 @@ impl XtaskPersistence {
         Self {
             path,
             workspace: workspace.map(|path| path.to_string_lossy().into_owned()),
-            attempted_revision: None,
+            last_attempt: None,
         }
     }
 
@@ -85,7 +105,6 @@ impl XtaskPersistence {
 #[derive(Debug, Deserialize, Serialize)]
 struct XtaskPreferencesFile {
     schema_version: u32,
-    #[serde(default)]
     workspaces: BTreeMap<String, XtaskPreferences>,
 }
 

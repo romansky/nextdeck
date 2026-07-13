@@ -6,6 +6,7 @@ use super::{
         storage_status,
     },
 };
+use crate::command::AppCommand;
 use crate::custom_run::CustomRunFilter;
 use crate::disk_usage::{DiskUsageEntry, DiskUsageSnapshot};
 use crate::parameter_list::ParameterList;
@@ -27,7 +28,7 @@ fn output_status_shows_all_when_text_fits() {
 
     assert_eq!(
         app.main_output.status("Output", text),
-        "Output [PageUp/PageDown]<#1-2/2> [s]nap:✓"
+        "Output <#1-2/2> [s]nap-bottom:✓"
     );
 }
 
@@ -41,21 +42,21 @@ fn output_status_shows_clamped_line_ranges() {
     app.main_output.set_scroll(0);
     assert_eq!(
         app.main_output.status("Output", text),
-        "Output [PageUp/PageDown]<#1-3/6> [s]nap:✓"
+        "Output <#1-3/6> [s]nap-bottom:✓"
     );
 
     app.main_output.set_scroll(2);
     app.main_output.set_follow(false);
     assert_eq!(
         app.main_output.status("Output", text),
-        "Output [PageUp/PageDown]<#3-5/6> [s]nap:✗"
+        "Output <#3-5/6> [s]nap-bottom:✗"
     );
 
     app.main_output.set_scroll(3);
     app.main_output.set_follow(true);
     assert_eq!(
         app.main_output.status("Output", text),
-        "Output [PageUp/PageDown]<#4-6/6> [s]nap:✓"
+        "Output <#4-6/6> [s]nap-bottom:✓"
     );
 }
 
@@ -65,8 +66,8 @@ fn fit_line_prefix_preserves_xtask_text_prefix() {
         fit_line_prefix("Publish the verified package locally", 18),
         "Publish the ver..."
     );
-    let fitted = fit_line_prefix("cargo xtask check", 30);
-    assert!(fitted.starts_with("cargo xtask check"));
+    let fitted = fit_line_prefix("cargo xtask tui-check", 30);
+    assert!(fitted.starts_with("cargo xtask tui-check"));
     assert_eq!(fitted.len(), 30);
 }
 
@@ -93,7 +94,7 @@ fn xtask_list_uses_auto_command_column_width() {
     let lines = XtasksModal::command_lines(&xtasks, &theme, 96);
     let selected = line_text(&lines[1]);
 
-    assert!(selected.starts_with("> tui-homebrew-formula Generate a Homebrew formula"));
+    assert!(selected.starts_with("> tui-homebrew-formula # Generate a Homebrew formula"));
     assert!(selected.contains("release artifact checksums"));
 }
 
@@ -113,8 +114,8 @@ fn xtask_list_caps_long_command_column_width() {
     let lines = XtasksModal::command_lines(&xtasks, &theme, 50);
     let text = line_text(&lines[0]);
 
-    assert!(text.starts_with("> this-command-name-is-too-lo... "));
-    assert!(text.contains("Visible descr"));
+    assert!(text.starts_with("> this-command-name-is-too-lo... #"));
+    assert!(text.contains("# Visible"));
 }
 
 #[test]
@@ -340,14 +341,88 @@ fn footer_includes_run_and_storage_status_before_key() {
         .map(|span| span.content.as_ref())
         .collect::<String>();
 
-    assert!(text.contains(" | run idle | storage healthy | key "));
+    assert!(text.contains(" | tests: idle | storage healthy | key "));
+}
+
+#[test]
+fn footer_shows_stop_next_to_running_tests() {
+    let mut app = app_with_tree(Tree::from_tests(Vec::new()));
+    app.running = true;
+    app.run.phase = crate::app::RunPhase::RunningTests;
+
+    let text = StatusBar::spans(&app, &Theme::dark())
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+    assert!(text.contains(" | tests: running [Ctrl+C]stop | storage "));
+}
+
+#[test]
+fn action_bar_shows_only_explicit_global_shortcuts() {
+    let app = app_with_tree(Tree::from_tests(Vec::new()));
+    let text = StatusBar::action_spans(&app, &Theme::dark(), 200)
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+    assert!(text.contains("[Tab]focus"));
+    assert!(text.contains("[Shift+Left/[]narrow"));
+    assert!(text.contains("[Shift+Right/]]widen"));
+    assert!(text.contains("[X]tasks"));
+    assert!(text.contains("[E]vents"));
+    assert!(text.contains("[,]settings"));
+    assert!(text.contains("[D]isk-cleanup"));
+    assert!(text.contains("[Q]uit"));
+    assert!(!text.contains("[d]"));
+    assert!(!text.contains("[Ctrl+C]stop"));
+    assert!(!text.contains("Page"));
+    assert!(!text.contains("Home"));
+    assert!(!text.contains("Enter"));
+}
+
+#[test]
+fn action_bar_dims_normal_commands_when_input_is_captured() {
+    let theme = Theme::dark();
+    let mut app = app_with_tree(Tree::from_tests(Vec::new()));
+    app.main_output.search.input_active = true;
+    app.running = true;
+
+    let spans = StatusBar::action_spans(&app, &theme, 200);
+    let style = |label| {
+        spans
+            .iter()
+            .find(|span| span.content == label)
+            .expect("action span")
+            .style
+    };
+
+    assert_eq!(style("[Tab]focus"), theme.muted().bg(theme.footer_bg));
+    assert_eq!(style("[Q]uit"), theme.muted().bg(theme.footer_bg));
+}
+
+#[test]
+fn action_bar_uses_complete_compact_labels_at_narrow_widths() {
+    let mut app = app_with_tree(Tree::from_tests(Vec::new()));
+    app.running = true;
+    let text = StatusBar::action_spans(&app, &Theme::dark(), 80)
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+    assert!(text.chars().count() <= 80);
+    assert!(text.contains("[⇧←/[]-"));
+    assert!(text.contains("[⇧→/]]+"));
+    assert!(text.contains("[D]cleanup"));
+    assert!(text.contains("[Q]uit"));
+    assert!(!text.ends_with('['));
 }
 
 #[test]
 fn panel_actions_describe_local_commands() {
     assert_eq!(
         TestsPanel::actions(),
-        "[enter]details [r]un [R]run-custom [o]pen-editor [u]update"
+        "[r]un [j/J]failure [o]pen-editor [u]update"
     );
     assert_eq!(
         DiskCleanupModal::actions(),
@@ -359,7 +434,7 @@ fn panel_actions_describe_local_commands() {
     );
     assert_eq!(
         DiscoveryModal::error_actions("[/]search<[            ]> [o]pen-editor"),
-        "[u]retry [/]search<[            ]> [o]pen-editor [q]quit"
+        "[u]retry [/]search<[            ]> [o]pen-editor [Q]uit"
     );
 }
 
@@ -370,19 +445,19 @@ fn custom_run_options_render_values_without_accidental_editors() {
     let lines = TestDetailsModal::custom_run_lines(&app.custom_run, &theme, 100);
     let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
 
-    assert!(text.contains("> scope"));
+    assert!(text.contains("@ scope"));
     assert!(text.contains("selected"));
     assert!(text.contains("# enum: selected, workspace, failed (default: selected)"));
     assert!(text.contains("  profile"));
     assert!(text.contains("# enum: default (default: default)"));
     assert!(text.contains("  filterset"));
-    assert!(text.contains("# enum: none (default: none; [e] custom)"));
+    assert!(text.contains("# enum: none (default: none; custom)"));
     assert!(text.contains("# enum: profile, pass, fail (default: profile)"));
-    assert!(text.contains("# number: profile, 0..20 (default: profile; [e] custom)"));
+    assert!(text.contains("# number: profile, 0..20 (default: profile; custom)"));
     assert!(text.contains("# bool: off, on (default: off)"));
-    assert!(text.contains("# string: off, rust-lldb --args (default: off; [e] custom)"));
-    assert!(text.contains("# number: off, 0..100 (default: off; [e] custom)"));
-    assert!(text.contains("# string: off, 30s (default: off; [e] custom)"));
+    assert!(text.contains("# string: off, rust-lldb --args (default: off; custom)"));
+    assert!(text.contains("# number: off, 0..100 (default: off; custom)"));
+    assert!(text.contains("# string: off, 30s (default: off; custom)"));
     assert!(!text.contains("stress-durationoff"));
     assert!(!text.contains("[_"));
 
@@ -451,8 +526,7 @@ fn xtask_params_use_parameter_component_with_help_details_and_command_preview() 
         .collect::<Vec<_>>();
     let text = rendered.join("\n");
 
-    assert!(text.contains("> --profile     debug"));
-    assert!(text.contains("# Build profile"));
+    assert!(text.contains("@ --profile     debug   # Build profile"));
     assert!(text.contains("# enum: debug, release"));
     assert!(text.contains("  --allow-dirty off"));
     assert!(text.contains("# Allow dirty worktree"));
@@ -475,7 +549,8 @@ fn xtask_params_use_parameter_component_with_help_details_and_command_preview() 
 
 #[test]
 fn test_details_places_run_command_below_options() {
-    let app = app_with_tree(Tree::from_tests(Vec::new()));
+    let mut app = app_with_tree(Tree::from_tests(Vec::new()));
+    app.apply_command(AppCommand::OpenCustomRun);
     let theme = Theme::dark();
     let lines = TestDetailsModal::lines(&app, &theme);
     let rendered = lines.iter().map(line_text).collect::<Vec<_>>();
@@ -511,126 +586,14 @@ fn pane_focus_is_suppressed_while_modal_is_visible() {
     assert!(!pane_focused(&app, FocusPane::Tree));
 
     app.discovery.error = None;
-    app.show_help = true;
-    app.focus = FocusPane::Output;
-    assert!(!pane_focused(&app, FocusPane::Output));
-
-    app.show_help = false;
     app.show_test_details = true;
     app.focus = FocusPane::Tree;
     assert!(!pane_focused(&app, FocusPane::Tree));
-}
 
-#[test]
-fn help_text_uses_contextual_sections() {
-    let theme = Theme::dark();
-    let text = HelpModal::text(&theme, FocusPane::Tree);
-    let lines = text.iter().map(line_text).collect::<Vec<_>>();
-
-    assert_eq!(
-        lines.first(),
-        Some(&format!("NextDeck {}", env!("CARGO_PKG_VERSION")))
-    );
-    assert!(lines.contains(&"Global".to_owned()));
-    assert!(lines.contains(&"  Navigation".to_owned()));
-    assert!(lines.contains(&"Tests".to_owned()));
-    assert!(lines.contains(&"  Runs".to_owned()));
-    assert!(lines.contains(&"  View".to_owned()));
-    assert!(lines.contains(&"Output".to_owned()));
-    assert!(lines.iter().any(|line| line.contains("h/?/F1")));
-    assert!(lines.iter().any(|line| line.contains("q")));
-}
-
-#[test]
-fn help_content_len_matches_rendered_help_text() {
-    let theme = Theme::dark();
-
-    assert_eq!(
-        HelpModal::content_len(FocusPane::Tree),
-        HelpModal::text(&theme, FocusPane::Tree).len()
-    );
-    assert_eq!(
-        HelpModal::content_len(FocusPane::Output),
-        HelpModal::text(&theme, FocusPane::Output).len()
-    );
-}
-
-#[test]
-fn help_text_sorts_commands_alpha_numerically_within_groups() {
-    let theme = Theme::dark();
-    let text = HelpModal::text(&theme, FocusPane::Tree);
-
-    assert_help_order(
-        &text,
-        &[
-            "open selected details",
-            "first or last row",
-            "collapse or expand",
-            "page active pane",
-            "narrow tests pane",
-            "widen tests pane",
-            "toggle selected branch",
-            "switch tree/output focus",
-            "move selection",
-        ],
-    );
-    assert_help_order(
-        &text,
-        &[
-            "open global settings",
-            "stop running tests",
-            "open disk cleanup",
-            "refresh disk usage",
-            "open or close help",
-            "quit",
-        ],
-    );
-    assert_help_order(
-        &text,
-        &[
-            "next or previous failure",
-            "open selected test source",
-            "run custom",
-            "run selected scope",
-            "update test list",
-        ],
-    );
-    assert_help_order(
-        &text,
-        &[
-            "search output",
-            "toggle output case sensitivity",
-            "toggle output match filter",
-            "next or previous output match",
-            "open output as text file",
-            "toggle output regex",
-            "toggle output snap",
-        ],
-    );
-}
-
-#[test]
-fn help_text_dims_inactive_pane_commands() {
-    let theme = Theme::dark();
-    let tests_help = HelpModal::text(&theme, FocusPane::Tree);
-    let output_help = HelpModal::text(&theme, FocusPane::Output);
-
-    assert_eq!(
-        help_line_with_label(&tests_help, "search output").spans[1].style,
-        theme.muted()
-    );
-    assert_eq!(
-        help_line_with_label(&tests_help, "run selected scope").spans[1].style,
-        theme.accent()
-    );
-    assert_eq!(
-        help_line_with_label(&output_help, "run selected scope").spans[1].style,
-        theme.muted()
-    );
-    assert_eq!(
-        help_line_with_label(&output_help, "search output").spans[1].style,
-        theme.accent()
-    );
+    app.show_test_details = false;
+    app.main_output.search.input_active = true;
+    app.focus = FocusPane::Output;
+    assert!(!pane_focused(&app, FocusPane::Output));
 }
 
 #[test]
@@ -755,7 +718,7 @@ fn running_duration_field_rolls_up_to_parent_rows() {
 }
 
 #[test]
-fn test_details_modal_includes_live_info_and_run_command() {
+fn test_details_modal_separates_details_from_custom_run() {
     let test = DiscoveredTest {
         key: TestKey {
             binary_id: Some("demo::demo".to_owned()),
@@ -787,7 +750,8 @@ fn test_details_modal_includes_live_info_and_run_command() {
     app.tree.select_next();
     app.tree.select_next();
 
-    let text = TestDetailsModal::lines(&app, &Theme::dark())
+    let theme = Theme::dark();
+    let text = TestDetailsModal::lines(&app, &theme)
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
@@ -797,16 +761,28 @@ fn test_details_modal_includes_live_info_and_run_command() {
     assert!(text.contains("status   passed"));
     assert!(text.contains("duration 0.250s"));
     assert!(text.contains("output   text 5 chars"));
-    assert!(text.contains("Run"));
-    assert!(text.contains("> scope"));
-    assert!(text.contains("selected"));
-    assert!(text.contains("# enum: selected, workspace, failed (default: selected)"));
-    assert!(text.contains("cargo nextest run --run-ignored only -p demo --lib 'tests::case one'"));
+    assert!(!text.contains("@ scope"));
+    assert!(!text.contains("cargo nextest run"));
     assert!(!text.contains("[esc] close"));
+
+    app.apply_command(AppCommand::OpenCustomRun);
+    let custom_run = TestDetailsModal::lines(&app, &theme)
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert_eq!(TestDetailsModal::title(&app), "Test Details > Custom Run");
+    assert!(custom_run.contains("@ scope"));
+    assert!(custom_run.contains("selected"));
+    assert!(custom_run.contains("# enum: selected, workspace, failed (default: selected)"));
+    assert!(
+        custom_run.contains("cargo nextest run --run-ignored only -p demo --lib 'tests::case one'")
+    );
 }
 
 #[test]
-fn test_details_modal_for_parent_includes_scoped_run_command() {
+fn test_details_modal_for_parent_keeps_run_options_in_custom_view() {
     let mut app = app_with_tree(Tree::from_tests(vec![DiscoveredTest {
         key: TestKey {
             binary_id: Some("demo::demo".to_owned()),
@@ -827,7 +803,8 @@ fn test_details_modal_for_parent_includes_scoped_run_command() {
     }]));
     app.tree.select_next();
 
-    let text = TestDetailsModal::lines(&app, &Theme::dark())
+    let theme = Theme::dark();
+    let text = TestDetailsModal::lines(&app, &theme)
         .iter()
         .map(line_text)
         .collect::<Vec<_>>()
@@ -835,12 +812,19 @@ fn test_details_modal_for_parent_includes_scoped_run_command() {
 
     assert!(text.contains("kind     package"));
     assert!(text.contains("package  demo"));
-    assert!(text.contains("Run"));
-    assert!(text.contains("cargo nextest run -p demo"));
+    assert!(!text.contains("cargo nextest run -p demo"));
+
+    app.apply_command(AppCommand::OpenCustomRun);
+    let custom_run = TestDetailsModal::lines(&app, &theme)
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(custom_run.contains("cargo nextest run -p demo"));
 }
 
 #[test]
-fn test_details_actions_include_snapshot_for_leaf_tests() {
+fn test_details_actions_mute_stack_sampling_until_test_is_running() {
     let mut app = app_with_tree(Tree::from_tests(vec![DiscoveredTest {
         key: TestKey {
             binary_id: Some("demo::demo".to_owned()),
@@ -861,18 +845,42 @@ fn test_details_actions_include_snapshot_for_leaf_tests() {
     }]));
     expand_all(&mut app.tree.root);
 
+    let theme = Theme::dark();
     app.tree.select_next();
-    assert_eq!(
-        TestDetailsModal::actions(&app),
-        "[up/down]option [pgUp/pgDn]scroll [left/right]change [e]edit [r]run [esc]close"
-    );
+    assert_eq!(TestDetailsModal::actions(&app), "[R]custom-run [esc]close");
 
     app.tree.select_next();
     app.tree.select_next();
     assert_eq!(
         TestDetailsModal::actions(&app),
-        "[up/down]option [pgUp/pgDn]scroll [left/right]change [e]edit [r]run [s]snapshot [esc]close"
+        "[R]custom-run [s]sample-stacks [esc]close"
     );
+
+    let sample_style = |app: &App| {
+        TestDetailsModal::action_line(app, &theme)
+            .spans
+            .into_iter()
+            .find(|span| span.content.contains("sample-stacks"))
+            .expect("stack sampling action")
+            .style
+    };
+    assert!(!TestDetailsModal::stack_sample_available(&app));
+    assert_eq!(sample_style(&app), theme.muted());
+
+    app.running = true;
+    app.tree.start_test(&TestKey {
+        binary_id: Some("demo::demo".to_owned()),
+        event_prefix: Some("demo::demo".to_owned()),
+        name: "tests::case".to_owned(),
+    });
+
+    assert!(TestDetailsModal::stack_sample_available(&app));
+    assert_eq!(sample_style(&app), theme.title(true));
+
+    app.running = false;
+    app.apply_command(AppCommand::OpenCustomRun);
+    assert_eq!(TestDetailsModal::title(&app), "Test Details > Custom Run");
+    assert_eq!(TestDetailsModal::actions(&app), "[r]run [esc]back");
 }
 
 fn expand_all(node: &mut TestNode) {
@@ -1005,7 +1013,8 @@ fn output_lines_marks_only_current_search_range_active() {
 #[test]
 fn output_search_box_marks_active_input() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.main_output.search.draft_query = "panic".to_owned();
+    app.main_output.search.query = "panic".to_owned();
+    app.main_output.search.sync_draft_from_applied();
     app.main_output.search.input_active = true;
 
     assert_eq!(app.main_output.search.box_text(18), "[panic_            ]");
@@ -1014,7 +1023,11 @@ fn output_search_box_marks_active_input() {
 #[test]
 fn output_actions_show_submit_and_advanced_hints_while_searching() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.main_output.search.draft_query = "panic".to_owned();
+    for char in "panic".chars() {
+        app.main_output
+            .search
+            .edit_draft(crate::input_field::InputFieldInput::char(char));
+    }
     app.main_output.search.input_active = true;
 
     assert_eq!(
@@ -1030,30 +1043,6 @@ fn output_search_box_keeps_fixed_width_for_long_query() {
 
     assert_eq!(app.main_output.search.box_text(18).len(), 20);
     assert_eq!(app.main_output.search.box_text(18), "[ijklmnopqrstuvwxyz]");
-}
-
-fn help_line_with_label<'a>(lines: &'a [Line<'a>], label: &str) -> &'a Line<'a> {
-    lines
-        .iter()
-        .find(|line| line_text(line).contains(label))
-        .expect("help line")
-}
-
-fn assert_help_order(lines: &[Line<'_>], labels: &[&str]) {
-    let indexes = labels
-        .iter()
-        .map(|label| help_line_index(lines, label))
-        .collect::<Vec<_>>();
-    let mut sorted = indexes.clone();
-    sorted.sort_unstable();
-    assert_eq!(indexes, sorted);
-}
-
-fn help_line_index(lines: &[Line<'_>], label: &str) -> usize {
-    lines
-        .iter()
-        .position(|line| line_text(line).contains(label))
-        .expect("help line")
 }
 
 fn xtask_command(name: &str, about: &str) -> crate::xtask::XtaskCommandSpec {

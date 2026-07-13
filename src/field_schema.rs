@@ -77,7 +77,7 @@ impl ParameterDetails {
             notes.push(format!("default: {default}"));
         }
         if self.custom_value {
-            notes.push("[e] custom".to_owned());
+            notes.push("custom".to_owned());
         }
         if !notes.is_empty() {
             details.push_str(" (");
@@ -125,7 +125,7 @@ mod tests {
                 .with_default("profile")
                 .custom_value()
                 .render(),
-            "# number: profile, 0..20 (default: profile; [e] custom)"
+            "# number: profile, 0..20 (default: profile; custom)"
         );
     }
 }

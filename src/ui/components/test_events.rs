@@ -84,7 +84,7 @@ impl<'a> TestEventsModal<'a> {
 
     fn actions(test_events: &TestEventsState) -> &'static str {
         match test_events.focus {
-            TestEventsFocus::Runs => "[esc]close [tab]events [up/down]run",
+            TestEventsFocus::Runs => "[esc]close [tab]events",
             TestEventsFocus::Events => "[esc]close [tab]runs [/]search [n/N]match",
         }
     }
@@ -96,7 +96,7 @@ impl<'a> TestEventsModal<'a> {
         test_events: &TestEventsState,
         focused: bool,
     ) {
-        let block = theme.panel_block("Runs", Some("[up/down]select [tab]events"), focused);
+        let block = theme.panel_block("Runs", focused.then_some("[tab]events"), focused);
         let inner = block.inner(area);
         let content_width = inner.width.max(1) as usize;
         let paragraph = Paragraph::new(Self::run_lines(test_events, theme, content_width, focused))
@@ -148,7 +148,7 @@ impl<'a> TestEventsModal<'a> {
         let label = format!(
             "{marker} {:<8} {:>4} {}",
             run.status,
-            run.events.len(),
+            run.event_count(),
             run.scope
         );
         Line::styled(fit_line_prefix(&label, content_width), style)

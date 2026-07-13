@@ -46,6 +46,23 @@ fn viewport_keeps_selected_item_visible() {
 }
 
 #[test]
+fn following_viewport_uses_complete_metrics_to_track_or_preserve_position() {
+    let mut viewport = FollowViewportState::default();
+
+    viewport.set_metrics(2, 5);
+
+    assert!(viewport.follow());
+    assert_eq!(viewport.viewport().scroll(), 3);
+
+    viewport.apply_scroll(ScrollAction::PageUp);
+    let manual_scroll = viewport.viewport().scroll();
+    viewport.set_metrics(2, 8);
+
+    assert!(!viewport.follow());
+    assert_eq!(viewport.viewport().scroll(), manual_scroll);
+}
+
+#[test]
 fn ensure_range_visible_keeps_multiline_item_in_view() {
     assert_eq!(ensure_range_visible(0, 7, 3, 20, 5), 5);
     assert_eq!(ensure_range_visible(5, 3, 3, 20, 5), 3);

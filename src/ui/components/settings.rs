@@ -60,9 +60,9 @@ impl<'a> SettingsModal<'a> {
 
     pub(in crate::ui) fn actions(app: &App) -> &'static str {
         if app.global_settings.open_with_editing {
-            "[enter]save [esc]cancel"
+            "[esc]cancel"
         } else {
-            "[up/down]select [left/right]change [enter]edit/apply [esc]close"
+            "[esc]close"
         }
     }
 

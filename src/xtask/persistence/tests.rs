@@ -69,6 +69,37 @@ fn controller_flushes_and_restores_state_revision() {
 }
 
 #[test]
+fn controller_retries_failed_revision_after_cooldown() {
+    let root = temp_dir("controller-retry");
+    let path = root.join("xtask-state.json");
+    fs::create_dir_all(&path).expect("create blocking directory");
+    let mut persistence =
+        XtaskPersistence::new(Some(path.clone()), Some(PathBuf::from("/workspace")));
+    let mut state = XtaskState::default();
+    state.set_manifest(bool_manifest());
+    assert!(state.adjust_selected_arg(1));
+    let now = Instant::now();
+
+    assert!(persistence.flush_at(&mut state, now).is_err());
+    assert!(state.pending_preferences().is_some());
+    fs::remove_dir_all(&path).expect("remove blocking directory");
+
+    assert!(
+        !persistence
+            .flush_at(&mut state, now + SAVE_RETRY_INTERVAL / 2)
+            .expect("cooldown is idle")
+    );
+    assert!(
+        persistence
+            .flush_at(&mut state, now + SAVE_RETRY_INTERVAL)
+            .expect("retry succeeds")
+    );
+    assert_eq!(state.pending_preferences(), None);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn stores_preferences_independently_per_workspace() {
     let root = temp_dir("workspace-isolation");
     let path = root.join("xtask-state.json");

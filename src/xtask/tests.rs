@@ -369,6 +369,53 @@ fn live_run_output_appends_while_running() {
 }
 
 #[test]
+fn output_pane_is_shared_between_commands() {
+    let mut manifest = sample_manifest();
+    let mut check = manifest.commands[0].clone();
+    check.name = "check".to_owned();
+    manifest.commands.push(check);
+
+    let mut state = XtaskState::default();
+    state.set_manifest(manifest);
+    assert!(state.open_detail());
+    state.output.apply_viewport_page_size(2);
+
+    let request_id = state.begin_run("cargo xtask release".to_owned());
+    assert!(state.apply_event(XtaskEvent::RunFinished {
+        request_id,
+        result: Ok(XtaskRunOutput {
+            command_line: "cargo xtask release".to_owned(),
+            success: true,
+            exit_code: Some(0),
+            combined: "one\ntwo\nthree\nfour\n".to_owned(),
+            stdout: "one\ntwo\nthree\nfour\n".to_owned(),
+            stderr: String::new(),
+        }),
+    }));
+    let output_text = state.output_text();
+    let line_count = state.output.output_view(&output_text).line_count();
+    state
+        .output
+        .apply_scroll(crate::scroll::ScrollAction::PageUp, line_count);
+    let scroll = state.output.scroll();
+    assert!(!state.output.follow());
+
+    state.close_detail();
+    state.select_next_command();
+    assert!(state.open_detail());
+
+    assert_eq!(
+        state
+            .selected_command()
+            .map(|command| command.name.as_str()),
+        Some("check")
+    );
+    assert_eq!(state.output_text(), output_text);
+    assert_eq!(state.output.scroll(), scroll);
+    assert!(!state.output.follow());
+}
+
+#[test]
 fn run_finished_preserves_live_interleaved_output() {
     let mut state = XtaskState::default();
     let request_id = state.begin_run("cargo xtask release".to_owned());

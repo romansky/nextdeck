@@ -1,4 +1,5 @@
 use super::*;
+use crate::input_field::InputFieldKey;
 
 #[test]
 fn filters_literal_matches_case_insensitively_by_default() {
@@ -88,14 +89,19 @@ fn finds_next_match_occurrences_on_same_line() {
 
 #[test]
 fn search_box_view_is_fixed_width_and_marks_active_input() {
-    let search = OutputSearchState {
-        draft_query: "panic".to_owned(),
-        input_active: true,
+    let mut search = OutputSearchState {
+        query: "panic".to_owned(),
         ..OutputSearchState::default()
     };
+    search.sync_draft_from_applied();
+    search.input_active = true;
 
     assert_eq!(search.box_text(18), "[panic_            ]");
     assert_eq!(search.box_text(18).len(), 20);
+
+    search.edit_draft(InputFieldInput::new(InputFieldKey::Left));
+
+    assert_eq!(search.box_text(18), "[pani_c            ]");
 }
 
 #[test]

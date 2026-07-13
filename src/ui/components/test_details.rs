@@ -1,4 +1,8 @@
-use ratatui::{Frame, text::Line};
+use ratatui::{
+    Frame,
+    text::{Line, Span},
+    widgets::Clear,
+};
 
 use crate::{
     app::App,
@@ -11,7 +15,7 @@ use crate::{
 
 use super::super::{
     geometry::centered_rect,
-    primitives::{ModalChrome, draw_modal_shell, scrollable_paragraph},
+    primitives::scrollable_paragraph,
     view_helpers::{
         SELECTABLE_FIELD_PREFIX_WIDTH, duration_label, first_source_path, output_summary,
         parameter_list_styles, parameter_value_width, status_label,
@@ -34,15 +38,14 @@ impl<'a> TestDetailsModal<'a> {
 
     pub(in crate::ui) fn render(self, frame: &mut Frame<'_>, theme: &Theme) {
         let area = centered_rect(86, 88, frame.area());
-        let inner = draw_modal_shell(
-            frame,
-            theme,
-            area,
-            ModalChrome {
-                title: "Test Details",
-                actions: Some(Self::actions(self.app)),
-            },
+        let block = theme.panel_block_with_actions(
+            Self::title(self.app),
+            Some(Self::action_line(self.app, theme)),
+            true,
         );
+        let inner = block.inner(area);
+        frame.render_widget(Clear, area);
+        frame.render_widget(block, area);
         let lines = Self::lines_with_width(self.app, theme, inner.width as usize);
         let paragraph = scrollable_paragraph(lines, theme, &self.app.custom_run.viewport);
         frame.render_widget(paragraph, inner);
@@ -50,17 +53,61 @@ impl<'a> TestDetailsModal<'a> {
 
     pub(in crate::ui) fn actions(app: &App) -> &'static str {
         if app.custom_run.editing.is_some() {
-            return "[enter]save [esc]cancel";
+            return "[esc]cancel";
+        }
+        if app.custom_run.open {
+            return "[r]run [esc]back";
         }
         if app
             .tree
             .selected_node()
             .is_some_and(|node| matches!(node.kind, NodeKind::Test(_)))
         {
-            "[up/down]option [pgUp/pgDn]scroll [left/right]change [e]edit [r]run [s]snapshot [esc]close"
+            "[R]custom-run [s]sample-stacks [esc]close"
         } else {
-            "[up/down]option [pgUp/pgDn]scroll [left/right]change [e]edit [r]run [esc]close"
+            "[R]custom-run [esc]close"
         }
+    }
+
+    pub(in crate::ui) fn title(app: &App) -> &'static str {
+        if app.custom_run.open {
+            "Test Details > Custom Run"
+        } else {
+            "Test Details"
+        }
+    }
+
+    pub(in crate::ui) fn action_line(app: &App, theme: &Theme) -> Line<'static> {
+        let active = theme.title(true);
+        if app.custom_run.open || app.custom_run.editing.is_some() {
+            return Line::styled(format!(" {} ", Self::actions(app)), active);
+        }
+
+        let mut spans = vec![Span::styled(" [R]custom-run", active)];
+        if app
+            .tree
+            .selected_node()
+            .is_some_and(|node| matches!(node.kind, NodeKind::Test(_)))
+        {
+            spans.push(Span::styled(
+                " [s]sample-stacks",
+                if Self::stack_sample_available(app) {
+                    active
+                } else {
+                    theme.muted()
+                },
+            ));
+        }
+        spans.push(Span::styled(" [esc]close ", active));
+        Line::from(spans)
+    }
+
+    pub(in crate::ui) fn stack_sample_available(app: &App) -> bool {
+        app.running
+            && app.tree.selected_node().is_some_and(|node| {
+                matches!(node.kind, NodeKind::Test(_))
+                    && node.status == crate::tree::TestStatus::Running
+            })
     }
 
     #[cfg(test)]
@@ -90,6 +137,10 @@ impl<'a> TestDetailsModal<'a> {
         let Some(node) = app.tree.selected_node() else {
             return vec![Line::styled("No selection", theme.muted())];
         };
+
+        if app.custom_run.open {
+            return Self::custom_run_view_lines(app, theme, content_width);
+        }
 
         let scope = app.selected_scope();
         let counts = app.tree.status_counts_for_scope(&scope);
@@ -187,8 +238,14 @@ impl<'a> TestDetailsModal<'a> {
             )
             .render(),
         );
-        lines.push(Line::from(""));
-        lines.push(Line::styled("Run", theme.title(true)));
+        lines
+    }
+
+    fn custom_run_view_lines(app: &App, theme: &Theme, content_width: usize) -> Vec<Line<'static>> {
+        let mut lines = vec![
+            Line::styled(app.tree.selected_path(), theme.title(true)),
+            Line::from(""),
+        ];
         lines.extend(Self::custom_run_lines(
             &app.custom_run,
             theme,

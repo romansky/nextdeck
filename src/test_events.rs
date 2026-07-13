@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fs::{self, OpenOptions},
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -11,9 +11,18 @@ use anyhow::{Context, Result};
 use nextdeck_test_events::{SCHEMA_VERSION, TestEvent};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{nextest::RunEvent, output_pane::OutputPaneState};
+use crate::{
+    nextest::RunEvent,
+    output::{OUTPUT_TEXT_LIMIT_BYTES, append_bounded_text, bounded_text_with_limit},
+    output_pane::OutputPaneState,
+};
 
 const MAX_EVENT_RUNS: usize = 20;
+const MAX_EVENTS_PER_RUN: usize = 2_000;
+const EVENT_RUN_RETENTION_BYTES: usize = OUTPUT_TEXT_LIMIT_BYTES;
+const EVENT_DETAIL_LIMIT_BYTES: usize = 64 * 1024;
+const EVENT_SUMMARY_LIMIT_BYTES: usize = 4 * 1024;
+const EVENTS_TRUNCATED_MARKER: &str = "[... earlier events discarded ...]\n";
 const TAIL_INTERVAL: Duration = Duration::from_millis(100);
 
 static RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -48,7 +57,16 @@ pub struct TestEventRunLog {
     pub dir: PathBuf,
     pub scope: String,
     pub status: String,
-    pub events: Vec<TestEvent>,
+    events: VecDeque<RetainedTestEvent>,
+    retained_bytes: usize,
+    total_events: usize,
+    events_truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RetainedTestEvent {
+    summary: String,
+    detail: String,
 }
 
 pub struct TestEventTailer {
@@ -83,19 +101,9 @@ impl Default for TestEventsState {
 
 impl TestEventsState {
     pub fn begin_run(&mut self, run: TestEventRun, scope: String) {
-        if self.runs.len() >= MAX_EVENT_RUNS {
-            let overflow = self.runs.len() + 1 - MAX_EVENT_RUNS;
-            self.runs.drain(0..overflow);
-            self.selected_run = self.selected_run.saturating_sub(overflow);
-        }
+        self.make_room_for_run();
         self.active_run_id = Some(run.id.clone());
-        self.runs.push(TestEventRunLog {
-            id: run.id,
-            dir: run.dir,
-            scope,
-            status: "running".to_owned(),
-            events: Vec::new(),
-        });
+        self.runs.push(TestEventRunLog::new(run, scope, "running"));
         self.selected_run = self.runs.len().saturating_sub(1);
         self.output.reset_for_source_change();
     }
@@ -111,20 +119,33 @@ impl TestEventsState {
 
     pub fn append_event(&mut self, run_id: &str, event: TestEvent) {
         if let Some(run) = self.runs.iter_mut().find(|run| run.id == run_id) {
-            run.events.push(event);
+            run.append_event(&event);
         } else {
-            self.runs.push(TestEventRunLog {
-                id: run_id.to_owned(),
-                dir: PathBuf::new(),
-                scope: "external".to_owned(),
-                status: "unknown".to_owned(),
-                events: vec![event],
-            });
+            self.make_room_for_run();
+            let mut run = TestEventRunLog::new(
+                TestEventRun {
+                    id: run_id.to_owned(),
+                    dir: PathBuf::new(),
+                },
+                "external".to_owned(),
+                "unknown",
+            );
+            run.append_event(&event);
+            self.runs.push(run);
             self.selected_run = self.runs.len().saturating_sub(1);
         }
         if !self.modal_open {
             self.unread = true;
         }
+    }
+
+    fn make_room_for_run(&mut self) {
+        if self.runs.len() < MAX_EVENT_RUNS {
+            return;
+        }
+        let overflow = self.runs.len() + 1 - MAX_EVENT_RUNS;
+        self.runs.drain(0..overflow);
+        self.selected_run = self.selected_run.saturating_sub(overflow);
     }
 
     pub fn open(&mut self) {
@@ -169,11 +190,16 @@ impl TestEventsState {
     }
 
     pub fn latest_event_label(&self) -> String {
-        let Some(event) = self.runs.iter().rev().find_map(|run| run.events.last()) else {
+        let Some(event) = self
+            .runs
+            .iter()
+            .rev()
+            .find_map(TestEventRunLog::latest_event)
+        else {
             return "-".to_owned();
         };
         let suffix = if self.unread { " •" } else { "" };
-        format!("{}{}", event_summary(event), suffix)
+        format!("{}{}", event.summary, suffix)
     }
 
     pub fn output_text(&self) -> String {
@@ -188,7 +214,59 @@ impl TestEventsState {
                 run.dir.display()
             );
         }
-        render_events(&run.events)
+        render_events(run)
+    }
+}
+
+impl TestEventRunLog {
+    fn new(run: TestEventRun, scope: String, status: &str) -> Self {
+        Self {
+            id: run.id,
+            dir: run.dir,
+            scope,
+            status: status.to_owned(),
+            events: VecDeque::new(),
+            retained_bytes: 0,
+            total_events: 0,
+            events_truncated: false,
+        }
+    }
+
+    fn append_event(&mut self, event: &TestEvent) {
+        let event = RetainedTestEvent::new(event);
+        self.retained_bytes += event.retained_bytes();
+        self.total_events += 1;
+        self.events.push_back(event);
+        while self.events.len() > MAX_EVENTS_PER_RUN
+            || self.retained_bytes > EVENT_RUN_RETENTION_BYTES
+        {
+            let Some(event) = self.events.pop_front() else {
+                break;
+            };
+            self.retained_bytes -= event.retained_bytes();
+            self.events_truncated = true;
+        }
+    }
+
+    fn latest_event(&self) -> Option<&RetainedTestEvent> {
+        self.events.back()
+    }
+
+    pub fn event_count(&self) -> usize {
+        self.total_events
+    }
+}
+
+impl RetainedTestEvent {
+    fn new(event: &TestEvent) -> Self {
+        Self {
+            summary: bounded_text_with_limit(event_summary(event), EVENT_SUMMARY_LIMIT_BYTES),
+            detail: bounded_text_with_limit(render_event_detail(event), EVENT_DETAIL_LIMIT_BYTES),
+        }
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.summary.len() + self.detail.len()
     }
 }
 
@@ -200,12 +278,98 @@ impl TestEventTailer {
 }
 
 pub fn create_run_file() -> Result<TestEventRun> {
-    let root = std::env::temp_dir().join("nextdeck").join("test-events");
-    fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
+    create_run_file_in(&event_root())
+}
+
+fn create_run_file_in(root: &Path) -> Result<TestEventRun> {
+    fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
+    prune_stale_process_dirs(root);
+    let process_dir = process_event_dir(root);
+    fs::create_dir_all(&process_dir)
+        .with_context(|| format!("create {}", process_dir.display()))?;
+    prune_run_dirs(&process_dir, MAX_EVENT_RUNS.saturating_sub(1));
     let id = run_id();
-    let dir = root.join(&id);
+    let dir = process_dir.join(&id);
     fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     Ok(TestEventRun { id, dir })
+}
+
+pub fn cleanup_process_files() -> Result<()> {
+    cleanup_process_files_in(&event_root())
+}
+
+fn cleanup_process_files_in(root: &Path) -> Result<()> {
+    let process_dir = process_event_dir(root);
+    if process_dir.exists() {
+        fs::remove_dir_all(&process_dir)
+            .with_context(|| format!("remove {}", process_dir.display()))?;
+    }
+    Ok(())
+}
+
+fn event_root() -> PathBuf {
+    std::env::temp_dir().join("nextdeck").join("test-events")
+}
+
+fn process_event_dir(root: &Path) -> PathBuf {
+    root.join(std::process::id().to_string())
+}
+
+fn prune_stale_process_dirs(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if !path.is_dir() || path == process_event_dir(root) {
+            continue;
+        }
+        let active = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+            .is_some_and(process_is_alive);
+        if !active {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
+fn prune_run_dirs(process_dir: &Path, retain: usize) {
+    let Ok(entries) = fs::read_dir(process_dir) else {
+        return;
+    };
+    let mut dirs = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .collect::<Vec<_>>();
+    dirs.sort_by_key(|entry| {
+        (
+            entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok(),
+            entry.file_name(),
+        )
+    });
+    let remove_count = dirs.len().saturating_sub(retain);
+    for entry in dirs.into_iter().take(remove_count) {
+        let _ = fs::remove_dir_all(entry.path());
+    }
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(_pid: u32) -> bool {
+    true
 }
 
 pub fn start_tailer(run_id: String, dir: PathBuf, tx: mpsc::Sender<RunEvent>) -> TestEventTailer {
@@ -235,35 +399,44 @@ pub fn parse_event_line(line: &str) -> Result<TestEvent, String> {
     Ok(event)
 }
 
-fn render_events(events: &[TestEvent]) -> String {
+fn render_events(run: &TestEventRunLog) -> String {
     let mut text = String::new();
-    for (index, event) in events.iter().enumerate() {
-        if index > 0 {
+    if run.events_truncated {
+        append_bounded_text(&mut text, EVENTS_TRUNCATED_MARKER);
+    }
+    let first_index = run.total_events.saturating_sub(run.events.len()) + 1;
+    for (offset, event) in run.events.iter().enumerate() {
+        let index = first_index + offset;
+        if offset > 0 {
+            append_bounded_text(&mut text, "\n");
+        }
+        append_bounded_text(&mut text, &format!("#{index:<4} {}", event.detail));
+    }
+    text
+}
+
+fn render_event_detail(event: &TestEvent) -> String {
+    let mut text = format!(
+        "{:>13} {:<5} {:<24} {}\n",
+        event.time,
+        level_label(event.level),
+        event.target.as_deref().unwrap_or("-"),
+        event.message
+    );
+    if !event.fields.is_empty() {
+        let fields = serde_json::to_string_pretty(&event.fields)
+            .unwrap_or_else(|_| format!("{:?}", event.fields));
+        for line in fields.lines() {
+            text.push_str("      ");
+            text.push_str(line);
             text.push('\n');
         }
+    }
+    if let Some(source) = &event.source {
         text.push_str(&format!(
-            "#{:<4} {:>13} {:<5} {:<24} {}\n",
-            index + 1,
-            event.time,
-            level_label(event.level),
-            event.target.as_deref().unwrap_or("-"),
-            event.message
+            "      at {} {}:{}\n",
+            source.module, source.file, source.line
         ));
-        if !event.fields.is_empty() {
-            let fields = serde_json::to_string_pretty(&event.fields)
-                .unwrap_or_else(|_| format!("{:?}", event.fields));
-            for line in fields.lines() {
-                text.push_str("      ");
-                text.push_str(line);
-                text.push('\n');
-            }
-        }
-        if let Some(source) = &event.source {
-            text.push_str(&format!(
-                "      at {} {}:{}\n",
-                source.module, source.file, source.line
-            ));
-        }
     }
     text
 }
@@ -465,12 +638,92 @@ mod tests {
                 json!("abc"),
             )]))
             .with_source("demo::tests", "src/lib.rs", 42);
+        let mut run = TestEventRunLog::new(
+            TestEventRun {
+                id: "run-1".to_owned(),
+                dir: PathBuf::new(),
+            },
+            "workspace".to_owned(),
+            "passed",
+        );
+        run.append_event(&event);
 
-        let text = render_events(&[event]);
+        let text = render_events(&run);
 
         assert!(text.contains("artifact-cache"));
         assert!(text.contains("cache hit"));
         assert!(text.contains("\"key\": \"abc\""));
         assert!(text.contains("demo::tests src/lib.rs:42"));
+    }
+
+    #[test]
+    fn state_bounds_events_by_count_and_preserves_total() {
+        let mut state = TestEventsState::default();
+        state.begin_run(
+            TestEventRun {
+                id: "run-1".to_owned(),
+                dir: PathBuf::new(),
+            },
+            "workspace".to_owned(),
+        );
+        for index in 0..MAX_EVENTS_PER_RUN + 5 {
+            state.append_event(
+                "run-1",
+                TestEvent::new(Level::Info, format!("event-{index}")),
+            );
+        }
+
+        let run = state.selected_run().expect("run exists");
+        assert_eq!(run.event_count(), MAX_EVENTS_PER_RUN + 5);
+        assert_eq!(run.events.len(), MAX_EVENTS_PER_RUN);
+        assert!(run.events_truncated);
+        assert!(state.output_text().contains("earlier events discarded"));
+        assert!(state.output_text().contains("event-2004"));
+    }
+
+    #[test]
+    fn state_bounds_event_details_by_bytes() {
+        let mut state = TestEventsState::default();
+        state.begin_run(
+            TestEventRun {
+                id: "run-1".to_owned(),
+                dir: PathBuf::new(),
+            },
+            "workspace".to_owned(),
+        );
+        for index in 0..20 {
+            state.append_event(
+                "run-1",
+                TestEvent::new(
+                    Level::Info,
+                    format!("event-{index} {}", "x".repeat(100_000)),
+                ),
+            );
+        }
+
+        let run = state.selected_run().expect("run exists");
+        assert!(run.retained_bytes <= EVENT_RUN_RETENTION_BYTES);
+        assert!(run.events_truncated);
+        assert!(state.output_text().len() <= OUTPUT_TEXT_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn run_directories_are_scoped_and_pruned_per_process() {
+        let root = std::env::temp_dir().join(format!("nextdeck-events-prune-{}", run_id()));
+        for _ in 0..MAX_EVENT_RUNS + 3 {
+            create_run_file_in(&root).expect("create run directory");
+        }
+
+        let process_dir = process_event_dir(&root);
+        let run_count = fs::read_dir(&process_dir)
+            .expect("read process directory")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir())
+            .count();
+        assert_eq!(run_count, MAX_EVENT_RUNS);
+
+        cleanup_process_files_in(&root).expect("clean process directory");
+        assert!(!process_dir.exists());
+        let _ = fs::remove_dir_all(root);
     }
 }

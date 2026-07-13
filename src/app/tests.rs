@@ -1,7 +1,7 @@
 use super::*;
 use crate::command::command_for_input;
 use crate::input::InputEvent;
-use crate::output_pane::{SearchEditorInput, SearchEditorKey};
+use crate::input_field::{InputFieldInput, InputFieldKey};
 use crate::test_events::TestEventRun;
 use crate::tree::{DiscoveredTest, TestKey, TestStatus};
 use crate::xtask::{
@@ -22,8 +22,6 @@ struct TestViewportSizes {
     xtask_output_page_size: usize,
     test_events_output_page_size: usize,
     test_details_page_size: usize,
-    help_page_size: usize,
-    help_content_len: usize,
 }
 
 impl Default for TestViewportSizes {
@@ -35,8 +33,6 @@ impl Default for TestViewportSizes {
             xtask_output_page_size: 1,
             test_events_output_page_size: 1,
             test_details_page_size: 1,
-            help_page_size: 1,
-            help_content_len: 1,
         }
     }
 }
@@ -63,10 +59,6 @@ fn test_viewport_metrics(sizes: TestViewportSizes) -> FrameViewportMetrics {
         ViewportSpec::new(
             ViewportId::TestDetails,
             ViewportMetrics::new(sizes.test_details_page_size),
-        ),
-        ViewportSpec::new(
-            ViewportId::Help,
-            ViewportMetrics::with_content_len(sizes.help_page_size, sizes.help_content_len),
         ),
     ])
 }
@@ -172,7 +164,7 @@ fn command_context_uses_test_details_modal_when_open() {
 fn command_context_uses_custom_run_input_inside_test_details() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
 
-    app.show_test_details = true;
+    app.apply_command(AppCommand::OpenCustomRun);
     app.custom_run.next_field();
     app.custom_run.next_field();
     app.custom_run.begin_edit_selected();
@@ -181,6 +173,21 @@ fn command_context_uses_custom_run_input_inside_test_details() {
         app.command_context(),
         CommandContext {
             input: InputMode::CustomRunInput,
+            overlay: Some(OverlayMode::TestDetails),
+        }
+    );
+}
+
+#[test]
+fn command_context_uses_custom_run_modal_inside_test_details() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+
+    app.apply_command(AppCommand::OpenCustomRun);
+
+    assert_eq!(
+        app.command_context(),
+        CommandContext {
+            input: InputMode::CustomRunModal,
             overlay: Some(OverlayMode::TestDetails),
         }
     );
@@ -207,50 +214,6 @@ fn command_context_distinguishes_settings_browsing_from_text_input() {
             overlay: Some(OverlayMode::Settings),
         }
     );
-}
-
-#[test]
-fn command_context_routes_top_help_overlay_to_help_input() {
-    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
-
-    app.global_settings.modal_open = true;
-    app.show_help = true;
-
-    assert_eq!(
-        app.command_context(),
-        CommandContext {
-            input: InputMode::Help,
-            overlay: Some(OverlayMode::Help),
-        }
-    );
-}
-
-#[test]
-fn help_page_commands_scroll_and_reset_help_viewport() {
-    let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.prepare_frame(test_viewport_metrics(TestViewportSizes {
-        help_page_size: 4,
-        help_content_len: 14,
-        ..Default::default()
-    }));
-
-    app.apply_command(AppCommand::ToggleHelp);
-    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::PageDown));
-
-    assert_eq!(app.help_viewport.scroll(), 4);
-
-    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::PageDown));
-
-    assert_eq!(app.help_viewport.scroll(), 8);
-
-    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::PageUp));
-
-    assert_eq!(app.help_viewport.scroll(), 4);
-
-    app.apply_command(AppCommand::CloseHelp);
-    app.apply_command(AppCommand::ToggleHelp);
-
-    assert_eq!(app.help_viewport.scroll(), 0);
 }
 
 #[test]
@@ -523,7 +486,7 @@ fn xtask_detail_close_cancels_output_search_interaction() {
     assert!(!app.xtasks.detail_open);
     assert!(!app.xtasks.output.search.input_active);
     assert!(!app.xtasks.output.search.modal_open);
-    assert_eq!(app.xtasks.output.search.draft_query, "");
+    assert_eq!(app.xtasks.output.search.draft_query(), "");
     assert_eq!(
         app.command_context(),
         CommandContext {
@@ -688,6 +651,13 @@ fn activate_selected_opens_details_for_test_rows() {
     assert!(app.show_test_details);
     assert_eq!(app.status, "Details opened");
 
+    app.apply_command(AppCommand::OpenCustomRun);
+    assert!(app.custom_run.open);
+
+    app.apply_command(AppCommand::CloseCustomRun);
+    assert!(app.show_test_details);
+    assert!(!app.custom_run.open);
+
     app.apply_command(AppCommand::CloseTestDetails);
 
     assert!(!app.show_test_details);
@@ -782,10 +752,10 @@ fn capture_test_snapshot_requires_running_leaf_test() {
     assert_eq!(
         app.apply_command(AppCommand::CaptureTestSnapshot),
         AppEffect::CaptureTestSnapshot(TestSnapshotRequest {
-            title: "Running test snapshot: demo::tests::case_00".to_owned(),
+            title: "Running test stack sample: demo::tests::case_00".to_owned(),
         })
     );
-    assert_eq!(app.status, "Capturing running test snapshot...");
+    assert_eq!(app.status, "Sampling running test stacks...");
 }
 
 #[test]
@@ -1327,13 +1297,54 @@ fn output_snap_toggle_jumps_to_bottom_and_can_disable_following() {
 
     assert!(app.main_output.follow());
     assert_eq!(app.main_output.scroll(), bottom_scroll);
-    assert_eq!(app.status, "Output snap: on");
+    assert_eq!(app.status, "Output snap-bottom: on");
 
     app.apply_command(AppCommand::ToggleOutputSnap);
 
     assert!(!app.main_output.follow());
     assert_eq!(app.main_output.scroll(), bottom_scroll);
-    assert_eq!(app.status, "Output snap: off");
+    assert_eq!(app.status, "Output snap-bottom: off");
+}
+
+#[test]
+fn output_snap_follows_polled_chunks_until_the_user_scrolls() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    expand_all(&mut app.tree.root);
+    select_visible_path(&mut app, "demo::tests::case_00");
+    app.focus = FocusPane::Output;
+    let key = test_key(0);
+
+    app.apply_run_event(RunEvent::TestStarted { key: key.clone() });
+    app.apply_run_event(RunEvent::TestOutput {
+        key: key.clone(),
+        text: "one\ntwo\nthree\nfour\nfive".to_owned(),
+    });
+    prepare_test_viewports(&mut app, 4, 2);
+    let first_bottom = scroll::max_scroll(app.output_view().line_count(), 2);
+
+    assert!(app.main_output.follow());
+    assert_eq!(app.main_output.scroll() as usize, first_bottom);
+
+    app.apply_run_event(RunEvent::TestOutput {
+        key: key.clone(),
+        text: "six\nseven".to_owned(),
+    });
+    prepare_test_viewports(&mut app, 4, 2);
+    let second_bottom = scroll::max_scroll(app.output_view().line_count(), 2);
+
+    assert!(second_bottom > first_bottom);
+    assert_eq!(app.main_output.scroll() as usize, second_bottom);
+
+    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::PageUp));
+    let manual_scroll = app.main_output.scroll();
+    app.apply_run_event(RunEvent::TestOutput {
+        key,
+        text: "eight\nnine".to_owned(),
+    });
+    prepare_test_viewports(&mut app, 4, 2);
+
+    assert!(!app.main_output.follow());
+    assert_eq!(app.main_output.scroll(), manual_scroll);
 }
 
 #[test]
@@ -1343,7 +1354,7 @@ fn output_snap_toggle_routes_to_xtask_output_when_detail_is_open() {
     app.apply_command(AppCommand::OpenXtasks);
     app.apply_command(AppCommand::OpenSelectedXtask);
     app.xtasks.output.apply_viewport_page_size(2);
-    let request_id = app.xtasks.begin_run("cargo xtask check".to_owned());
+    let request_id = app.xtasks.begin_run("cargo xtask tui-check".to_owned());
     app.apply_xtask_event(crate::xtask::XtaskEvent::RunOutput {
         request_id,
         chunk: crate::xtask::XtaskRunChunk {
@@ -1367,7 +1378,7 @@ fn output_snap_toggle_routes_to_xtask_output_when_detail_is_open() {
     assert!(app.xtasks.output.follow());
     assert_eq!(app.xtasks.output.scroll(), bottom_scroll);
     assert!(app.main_output.follow());
-    assert_eq!(app.status, "Output snap: on");
+    assert_eq!(app.status, "Output snap-bottom: on");
 }
 
 #[test]
@@ -1549,11 +1560,8 @@ fn output_search_input_opens_modal_then_apply_finds_match() {
 
     app.main_output.set_follow(true);
     search_type(&mut app, "px");
-    app.apply_command(AppCommand::OutputSearchEdit(SearchEditorInput::new(
-        SearchEditorKey::Backspace,
-        false,
-        false,
-        false,
+    app.apply_command(AppCommand::OutputSearchEdit(InputFieldInput::new(
+        InputFieldKey::Backspace,
     )));
     search_type(&mut app, "anic");
     assert_eq!(app.main_output.search.query, "");
@@ -1563,7 +1571,6 @@ fn output_search_input_opens_modal_then_apply_finds_match() {
     assert!(!app.main_output.follow());
 
     app.main_output.set_follow(true);
-    app.main_output.search.modal_focus = SearchModalFocus::Apply;
     app.apply_command(AppCommand::SearchModalActivate);
 
     assert!(!app.main_output.search.input_active);
@@ -1582,18 +1589,35 @@ fn output_search_reopen_places_cursor_at_end_of_existing_query() {
     app.apply_command(AppCommand::ApplyOutputSearch);
     app.apply_command(AppCommand::StartOutputSearch);
 
-    app.apply_command(AppCommand::OutputSearchEdit(SearchEditorInput::new(
-        SearchEditorKey::Backspace,
-        false,
-        false,
-        false,
+    app.apply_command(AppCommand::OutputSearchEdit(InputFieldInput::new(
+        InputFieldKey::Backspace,
     )));
-    assert_eq!(app.main_output.search.draft_query, "std");
+    assert_eq!(app.main_output.search.draft_query(), "std");
 
     search_type(&mut app, "o");
     app.apply_command(AppCommand::ApplyOutputSearch);
 
     assert_eq!(app.main_output.search.query, "stdo");
+    assert_eq!(app.main_output.search.current_line, Some(1));
+}
+
+#[test]
+fn output_search_reopen_preserves_cursor_for_unchanged_query() {
+    let mut app = app_with_finished_output("zero\npanXic\nok");
+
+    app.apply_command(AppCommand::StartOutputSearch);
+    search_type(&mut app, "panic");
+    for _ in 0..2 {
+        app.apply_command(AppCommand::OutputSearchEdit(InputFieldInput::new(
+            InputFieldKey::Left,
+        )));
+    }
+    app.apply_command(AppCommand::ApplyOutputSearch);
+    app.apply_command(AppCommand::StartOutputSearch);
+    search_type(&mut app, "X");
+    app.apply_command(AppCommand::ApplyOutputSearch);
+
+    assert_eq!(app.main_output.search.query, "panXic");
     assert_eq!(app.main_output.search.current_line, Some(1));
 }
 
@@ -1646,10 +1670,14 @@ fn output_search_clear_keeps_input_active_and_resets_match() {
     app.apply_command(AppCommand::ClearOutputSearch);
 
     assert!(app.main_output.search.input_active);
-    assert_eq!(app.main_output.search.draft_query, "");
+    assert_eq!(app.main_output.search.draft_query(), "");
     assert_eq!(app.main_output.search.query, "pa");
     assert_eq!(app.main_output.search.current_line, Some(1));
     assert_eq!(app.status, "Output search draft cleared");
+
+    app.apply_command(AppCommand::OpenOutputSearchModal);
+
+    assert_eq!(app.main_output.search.draft_query(), "");
 }
 
 #[test]
@@ -1788,24 +1816,11 @@ fn output_search_editor_can_insert_at_cursor_and_apply() {
 
     app.apply_command(AppCommand::StartOutputSearch);
     search_type(&mut app, "pnic");
-    app.apply_command(AppCommand::OutputSearchEdit(SearchEditorInput::new(
-        SearchEditorKey::Left,
-        false,
-        false,
-        false,
-    )));
-    app.apply_command(AppCommand::OutputSearchEdit(SearchEditorInput::new(
-        SearchEditorKey::Left,
-        false,
-        false,
-        false,
-    )));
-    app.apply_command(AppCommand::OutputSearchEdit(SearchEditorInput::new(
-        SearchEditorKey::Left,
-        false,
-        false,
-        false,
-    )));
+    for _ in 0..3 {
+        app.apply_command(AppCommand::OutputSearchEdit(InputFieldInput::new(
+            InputFieldKey::Left,
+        )));
+    }
     search_type(&mut app, "a");
     app.apply_command(AppCommand::ApplyOutputSearch);
 
@@ -1878,7 +1893,7 @@ fn app_with_finished_output(output: &str) -> App {
 
 fn search_type(app: &mut App, text: &str) {
     for char in text.chars() {
-        app.apply_command(AppCommand::OutputSearchEdit(SearchEditorInput::char(char)));
+        app.apply_command(AppCommand::OutputSearchEdit(InputFieldInput::char(char)));
     }
 }
 

@@ -55,26 +55,28 @@ impl<'a> OutputSearchModal<'a> {
             chunks[0],
         );
 
-        let mut editor = self.search.editor.widget();
-        editor.set_style(theme.text());
-        editor.set_placeholder_text("Search output...");
-        editor.set_placeholder_style(theme.muted());
-        editor.set_cursor_line_style(if query_focused {
+        let editor_width = chunks[1].width.saturating_sub(2) as usize;
+        let empty = self.search.draft_query().is_empty();
+        let editor_text = if empty && !query_focused {
+            "Search output...".to_owned()
+        } else {
+            self.search.draft_view(editor_width, query_focused)
+        };
+        let editor_style = if query_focused {
             theme.selected()
+        } else if empty {
+            theme.muted()
         } else {
             theme.text()
-        });
-        editor.set_cursor_style(if query_focused {
-            theme.selected()
-        } else {
-            theme.text()
-        });
-        editor.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme.border(query_focused)),
+        };
+        frame.render_widget(
+            Paragraph::new(editor_text).style(editor_style).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme.border(query_focused)),
+            ),
+            chunks[1],
         );
-        frame.render_widget(&editor, chunks[1]);
 
         frame.render_widget(
             Paragraph::new(Line::from(vec![

@@ -95,7 +95,7 @@ fn editor_command_parts(command: &str) -> (String, Vec<String>) {
     let mut parts = split_command(command).into_iter();
     let program = parts.next().unwrap_or_else(|| "open".to_owned());
     let args = parts.collect();
-    (editor_alias(&program), args)
+    (program, args)
 }
 
 fn split_command(command: &str) -> Vec<String> {
@@ -120,14 +120,6 @@ fn split_command(command: &str) -> Vec<String> {
         parts.push(current);
     }
     parts
-}
-
-fn editor_alias(program: &str) -> String {
-    match editor_name(program).as_str() {
-        "intellij" | "intellij-idea" => "idea".to_owned(),
-        "vscode" | "visual-studio-code" => "code".to_owned(),
-        _ => program.to_owned(),
-    }
 }
 
 fn editor_name(program: &str) -> String {

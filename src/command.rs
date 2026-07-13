@@ -3,7 +3,6 @@ use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use crate::{
     input::InputEvent,
     input_field::{InputFieldInput, InputFieldKey},
-    output_pane::{SearchEditorInput, SearchEditorKey},
     scroll::ScrollAction,
     test_events::TestEventsFocus,
     xtask::XtaskDetailFocus,
@@ -15,8 +14,6 @@ pub enum AppCommand {
     Quit,
     Resize,
     StopRun,
-    ToggleHelp,
-    CloseHelp,
     ToggleFocus,
     MoveUp,
     MoveDown,
@@ -34,6 +31,7 @@ pub enum AppCommand {
     RefreshTests,
     RunSelected,
     OpenCustomRun,
+    CloseCustomRun,
     CustomRunNext,
     CustomRunPrevious,
     CustomRunAdjustLeft,
@@ -91,7 +89,7 @@ pub enum AppCommand {
     SelectPreviousFailed,
     StartOutputSearch,
     OpenOutputSearchModal,
-    OutputSearchEdit(SearchEditorInput),
+    OutputSearchEdit(InputFieldInput),
     ClearOutputSearch,
     ApplyOutputSearch,
     CancelOutputSearch,
@@ -116,24 +114,10 @@ pub enum CommandGroup {
     Global,
 }
 
-impl CommandGroup {
-    pub const fn title(self) -> &'static str {
-        match self {
-            Self::Navigation => "Navigation",
-            Self::Runs => "Runs",
-            Self::View => "View",
-            Self::Output => "Output",
-            Self::Global => "Global",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandKind {
     Quit,
     StopRun,
-    ToggleHelp,
-    CloseHelp,
     ToggleFocus,
     MoveUpDown,
     MoveLeftRight,
@@ -270,7 +254,7 @@ const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         kind: CommandKind::RefreshDiskUsage,
         group: CommandGroup::Global,
-        keys: "d",
+        keys: "r",
         label: "refresh disk usage",
         ticker: "disk refresh",
     },
@@ -284,14 +268,14 @@ const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         kind: CommandKind::OpenTestEvents,
         group: CommandGroup::Global,
-        keys: "e",
+        keys: "E",
         label: "open test events",
         ticker: "events",
     },
     CommandInfo {
         kind: CommandKind::OpenXtasks,
         group: CommandGroup::Global,
-        keys: "x",
+        keys: "X",
         label: "open xtasks",
         ticker: "xtasks",
     },
@@ -387,13 +371,6 @@ const COMMANDS: &[CommandInfo] = &[
         ticker: "settings",
     },
     CommandInfo {
-        kind: CommandKind::ToggleHelp,
-        group: CommandGroup::Global,
-        keys: "h/?/F1",
-        label: "open or close help",
-        ticker: "help",
-    },
-    CommandInfo {
         kind: CommandKind::StopRun,
         group: CommandGroup::Global,
         keys: "Ctrl+C",
@@ -403,23 +380,11 @@ const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         kind: CommandKind::Quit,
         group: CommandGroup::Global,
-        keys: "q",
+        keys: "Q",
         label: "quit",
         ticker: "quit",
     },
 ];
-
-const CLOSE_HELP_INFO: CommandInfo = CommandInfo {
-    kind: CommandKind::CloseHelp,
-    group: CommandGroup::Global,
-    keys: "h/?/F1",
-    label: "close help",
-    ticker: "close help",
-};
-
-pub const fn command_infos() -> &'static [CommandInfo] {
-    COMMANDS
-}
 
 impl AppCommand {
     pub fn kind(&self) -> Option<CommandKind> {
@@ -427,8 +392,6 @@ impl AppCommand {
             Self::Noop | Self::Resize | Self::ReportStatus(_) => None,
             Self::Quit => Some(CommandKind::Quit),
             Self::StopRun => Some(CommandKind::StopRun),
-            Self::ToggleHelp => Some(CommandKind::ToggleHelp),
-            Self::CloseHelp => Some(CommandKind::CloseHelp),
             Self::ToggleFocus => Some(CommandKind::ToggleFocus),
             Self::MoveUp | Self::MoveDown => Some(CommandKind::MoveUpDown),
             Self::MoveLeft | Self::MoveRight => Some(CommandKind::MoveLeftRight),
@@ -460,6 +423,7 @@ impl AppCommand {
             Self::ToggleOutputSnap => Some(CommandKind::ToggleOutputSnap),
             Self::OpenOutputSearchModal
             | Self::CaptureTestSnapshot
+            | Self::CloseCustomRun
             | Self::CustomRunNext
             | Self::CustomRunPrevious
             | Self::CustomRunAdjustLeft
@@ -517,10 +481,7 @@ impl AppCommand {
     }
 
     pub fn info(&self) -> Option<&'static CommandInfo> {
-        let kind = match self {
-            Self::CloseHelp => return Some(&CLOSE_HELP_INFO),
-            _ => self.kind()?,
-        };
+        let kind = self.kind()?;
         COMMANDS.iter().find(|info| info.kind == kind)
     }
 
@@ -546,13 +507,14 @@ impl AppCommand {
             Self::CancelOpenWithSetting => Some("settings cancel"),
             Self::RunCargoClean => Some("cargo clean"),
             Self::CustomRunNext | Self::CustomRunPrevious => Some("custom select"),
+            Self::CloseCustomRun => Some("custom back"),
             Self::CustomRunAdjustLeft | Self::CustomRunAdjustRight => Some("custom adjust"),
             Self::CustomRunActivate => Some("custom edit"),
             Self::CustomRunEdit(_) => Some("custom input"),
             Self::CommitCustomRunEdit => Some("custom save"),
             Self::CancelCustomRunEdit => Some("custom cancel"),
             Self::RunCustom => Some("custom run"),
-            Self::CaptureTestSnapshot => Some("snapshot"),
+            Self::CaptureTestSnapshot => Some("sample stacks"),
             Self::CloseTestEvents => Some("events close"),
             Self::ToggleTestEventsFocus => Some("events focus"),
             Self::TestEventsNextRun | Self::TestEventsPreviousRun => Some("events run"),
@@ -603,18 +565,25 @@ impl CommandContext {
         }
     }
 
+    pub const fn normal_focus(self) -> Option<CommandFocus> {
+        match (self.overlay, self.input) {
+            (None, InputMode::Normal(focus)) => Some(focus),
+            _ => None,
+        }
+    }
+
     pub const fn pane_focus_suppressed(self) -> bool {
-        self.overlay.is_some()
+        self.normal_focus().is_none()
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InputMode {
     Normal(CommandFocus),
-    Help,
     DiscoveryRunning,
     SettingsOpenWith,
     CustomRunInput,
+    CustomRunModal,
     SettingsModal,
     DiskCleanupModal,
     XtaskInput,
@@ -628,7 +597,6 @@ pub enum InputMode {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OverlayMode {
-    Help,
     Discovery,
     DiscoveryError,
     Settings,
@@ -661,6 +629,7 @@ fn command_for_input_mode(code: KeyCode, modifiers: KeyModifiers, input: InputMo
         InputMode::DiscoveryRunning => command_for_discovery_running(code),
         InputMode::SettingsOpenWith => command_for_settings_open_with_input(code, modifiers),
         InputMode::CustomRunInput => command_for_custom_run_input(code, modifiers),
+        InputMode::CustomRunModal => command_for_custom_run_modal(code),
         InputMode::SettingsModal => command_for_settings_modal(code),
         InputMode::DiskCleanupModal => command_for_disk_cleanup_modal(code),
         InputMode::XtaskInput => command_for_xtask_input(code, modifiers),
@@ -672,19 +641,7 @@ fn command_for_input_mode(code: KeyCode, modifiers: KeyModifiers, input: InputMo
         InputMode::TestDetailsModal => command_for_test_details_modal(code),
         InputMode::OutputSearchModal => command_for_output_search_modal(code, modifiers),
         InputMode::OutputSearchInline => command_for_output_search_input(code, modifiers),
-        InputMode::Help => command_for_help(code, modifiers),
         InputMode::Normal(focus) => command_for_key(code, modifiers, focus),
-    }
-}
-
-fn command_for_help(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
-    if let Some(command) = scroll_key(code, ScrollKeys::Page) {
-        return command;
-    }
-    match code {
-        KeyCode::Esc | KeyCode::Char('q') => AppCommand::CloseHelp,
-        code if is_help_key(code, modifiers) => AppCommand::CloseHelp,
-        _ => AppCommand::Noop,
     }
 }
 
@@ -699,7 +656,7 @@ fn command_for_output_search_input(code: KeyCode, modifiers: KeyModifiers) -> Ap
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
             AppCommand::ClearOutputSearch
         }
-        _ => search_editor_input_for_key(code, modifiers)
+        _ => input_field_input_for_key(code, modifiers)
             .map(AppCommand::OutputSearchEdit)
             .unwrap_or(AppCommand::Noop),
     }
@@ -711,7 +668,7 @@ fn is_advanced_search_modifier(modifiers: KeyModifiers) -> bool {
 
 fn command_for_discovery_running(code: KeyCode) -> AppCommand {
     match code {
-        KeyCode::Char('q') => AppCommand::Quit,
+        KeyCode::Char('Q') => AppCommand::Quit,
         _ => AppCommand::Noop,
     }
 }
@@ -739,12 +696,11 @@ fn command_for_custom_run_input(code: KeyCode, modifiers: KeyModifiers) -> AppCo
 fn command_for_settings_modal(code: KeyCode) -> AppCommand {
     match code {
         KeyCode::Esc => AppCommand::CloseSettings,
-        KeyCode::Up | KeyCode::BackTab => AppCommand::SettingsPrevious,
-        KeyCode::Down | KeyCode::Tab => AppCommand::SettingsNext,
+        KeyCode::Up => AppCommand::SettingsPrevious,
+        KeyCode::Down => AppCommand::SettingsNext,
         KeyCode::Left => AppCommand::SettingsAdjustLeft,
         KeyCode::Right => AppCommand::SettingsAdjustRight,
         KeyCode::Enter => AppCommand::SettingsActivate,
-        KeyCode::Char('e') => AppCommand::SettingsActivate,
         _ => AppCommand::Noop,
     }
 }
@@ -804,7 +760,7 @@ fn command_for_xtask_params(code: KeyCode) -> AppCommand {
         KeyCode::Down => AppCommand::XtaskNextArg,
         KeyCode::Left => AppCommand::XtaskAdjustLeft,
         KeyCode::Right => AppCommand::XtaskAdjustRight,
-        KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('e') => AppCommand::XtaskActivateArg,
+        KeyCode::Enter => AppCommand::XtaskActivateArg,
         _ => AppCommand::Noop,
     }
 }
@@ -884,14 +840,24 @@ fn command_for_test_details_modal(code: KeyCode) -> AppCommand {
     }
     match code {
         KeyCode::Esc => AppCommand::CloseTestDetails,
-        KeyCode::Up | KeyCode::BackTab => AppCommand::CustomRunPrevious,
-        KeyCode::Down | KeyCode::Tab => AppCommand::CustomRunNext,
+        KeyCode::Char('R') => AppCommand::OpenCustomRun,
+        KeyCode::Char('s') => AppCommand::CaptureTestSnapshot,
+        _ => AppCommand::Noop,
+    }
+}
+
+fn command_for_custom_run_modal(code: KeyCode) -> AppCommand {
+    if let Some(command) = scroll_key(code, ScrollKeys::Page) {
+        return command;
+    }
+    match code {
+        KeyCode::Esc => AppCommand::CloseCustomRun,
+        KeyCode::Up => AppCommand::CustomRunPrevious,
+        KeyCode::Down => AppCommand::CustomRunNext,
         KeyCode::Left => AppCommand::CustomRunAdjustLeft,
         KeyCode::Right => AppCommand::CustomRunAdjustRight,
-        KeyCode::Char('e') => AppCommand::CustomRunActivate,
+        KeyCode::Enter => AppCommand::CustomRunActivate,
         KeyCode::Char('r') => AppCommand::RunCustom,
-        KeyCode::Char('s') => AppCommand::CaptureTestSnapshot,
-        KeyCode::Char(' ') => AppCommand::CustomRunAdjustRight,
         _ => AppCommand::Noop,
     }
 }
@@ -912,7 +878,7 @@ fn command_for_output_search_modal(code: KeyCode, modifiers: KeyModifiers) -> Ap
         KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
             AppCommand::ToggleOutputRegex
         }
-        _ => search_editor_input_for_key(code, modifiers)
+        _ => input_field_input_for_key(code, modifiers)
             .map(AppCommand::OutputSearchEdit)
             .unwrap_or(AppCommand::Noop),
     }
@@ -925,32 +891,6 @@ fn is_output_search_apply_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
         KeyCode::Char('j' | 'm') => modifiers.contains(KeyModifiers::CONTROL),
         _ => false,
     }
-}
-
-fn search_editor_input_for_key(
-    code: KeyCode,
-    modifiers: KeyModifiers,
-) -> Option<SearchEditorInput> {
-    let ctrl = modifiers.contains(KeyModifiers::CONTROL);
-    let alt = modifiers.contains(KeyModifiers::ALT);
-    let shift = modifiers.contains(KeyModifiers::SHIFT);
-    let key = match code {
-        KeyCode::Char(char) => SearchEditorKey::Char(char),
-        KeyCode::Backspace => SearchEditorKey::Backspace,
-        KeyCode::Enter => SearchEditorKey::Enter,
-        KeyCode::Left => SearchEditorKey::Left,
-        KeyCode::Right => SearchEditorKey::Right,
-        KeyCode::Up => SearchEditorKey::Up,
-        KeyCode::Down => SearchEditorKey::Down,
-        KeyCode::Tab => SearchEditorKey::Tab,
-        KeyCode::Delete => SearchEditorKey::Delete,
-        KeyCode::Home => SearchEditorKey::Home,
-        KeyCode::End => SearchEditorKey::End,
-        KeyCode::PageUp => SearchEditorKey::PageUp,
-        KeyCode::PageDown => SearchEditorKey::PageDown,
-        _ => return None,
-    };
-    Some(SearchEditorInput::new(key, ctrl, alt, shift))
 }
 
 fn input_field_input_for_key(code: KeyCode, modifiers: KeyModifiers) -> Option<InputFieldInput> {
@@ -981,14 +921,12 @@ fn command_for_key(code: KeyCode, modifiers: KeyModifiers, focus: CommandFocus) 
     }
 
     match code {
-        KeyCode::Char('q') => AppCommand::Quit,
+        KeyCode::Char('Q') => AppCommand::Quit,
         code if is_stop_key(code, modifiers) => AppCommand::StopRun,
-        code if is_help_key(code, modifiers) => AppCommand::ToggleHelp,
         KeyCode::Char('u') if modifiers.is_empty() => AppCommand::RefreshTests,
         KeyCode::Char(',') => AppCommand::OpenSettings,
-        KeyCode::Char('x') => AppCommand::OpenXtasks,
-        KeyCode::Char('e') => AppCommand::OpenTestEvents,
-        KeyCode::Char('d') => AppCommand::RefreshDiskUsage,
+        KeyCode::Char('X') => AppCommand::OpenXtasks,
+        KeyCode::Char('E') => AppCommand::OpenTestEvents,
         KeyCode::Char('D') => AppCommand::OpenDiskCleanup,
         KeyCode::Tab => AppCommand::ToggleFocus,
         KeyCode::Up => AppCommand::MoveUp,
@@ -1038,7 +976,6 @@ fn command_for_tests_key(code: KeyCode) -> AppCommand {
         KeyCode::Char('i') => AppCommand::ToggleShowIgnored,
         KeyCode::Char('s') => AppCommand::ToggleShowSkipped,
         KeyCode::Char('r') => AppCommand::RunSelected,
-        KeyCode::Char('R') => AppCommand::OpenCustomRun,
         KeyCode::Char('o') => AppCommand::OpenSource,
         KeyCode::Char('j') => AppCommand::SelectNextFailed,
         KeyCode::Char('J') => AppCommand::SelectPreviousFailed,
@@ -1065,19 +1002,6 @@ fn command_for_output_key(code: KeyCode, modifiers: KeyModifiers) -> AppCommand 
 
 fn is_stop_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
     matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL)
-}
-
-fn is_help_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
-    is_question_mark(code, modifiers)
-        || matches!(
-            code,
-            KeyCode::Char('h') | KeyCode::Char('H') | KeyCode::F(1)
-        )
-}
-
-fn is_question_mark(code: KeyCode, modifiers: KeyModifiers) -> bool {
-    matches!(code, KeyCode::Char('?'))
-        || (matches!(code, KeyCode::Char('/')) && modifiers.contains(KeyModifiers::SHIFT))
 }
 
 #[cfg(test)]

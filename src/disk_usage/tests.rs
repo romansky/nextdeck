@@ -86,7 +86,20 @@ fn dir_size_counts_hard_links_once() {
     let root_bytes = disk_usage_bytes(&fs::symlink_metadata(&root).unwrap());
     let file_bytes = disk_usage_bytes(&fs::symlink_metadata(&file).unwrap());
 
-    assert_eq!(dir_size(&root).unwrap(), root_bytes + file_bytes);
+    assert_eq!(
+        dir_size(&root, &DiskScanCancellation::default()).unwrap(),
+        root_bytes + file_bytes
+    );
 
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cancelled_scan_stops_before_traversal() {
+    let cancellation = DiskScanCancellation::default();
+    cancellation.cancel();
+
+    let result = load_blocking(None, &cancellation).expect("cancellation is not an error");
+
+    assert_eq!(result, None);
 }

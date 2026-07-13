@@ -1,13 +1,6 @@
 use super::*;
 use crossterm::event::KeyEvent;
 
-const fn help_context() -> CommandContext {
-    CommandContext {
-        input: InputMode::Help,
-        overlay: Some(OverlayMode::Help),
-    }
-}
-
 const fn discovery_running_context() -> CommandContext {
     CommandContext {
         input: InputMode::DiscoveryRunning,
@@ -32,6 +25,13 @@ const fn settings_open_with_input_context() -> CommandContext {
 const fn custom_run_input_context() -> CommandContext {
     CommandContext {
         input: InputMode::CustomRunInput,
+        overlay: Some(OverlayMode::TestDetails),
+    }
+}
+
+const fn custom_run_modal_context() -> CommandContext {
+    CommandContext {
+        input: InputMode::CustomRunModal,
         overlay: Some(OverlayMode::TestDetails),
     }
 }
@@ -93,34 +93,6 @@ const fn output_search_inline_context() -> CommandContext {
 }
 
 #[test]
-fn maps_normalized_question_mark_to_help() {
-    assert_eq!(
-        command_for_key(KeyCode::Char('?'), KeyModifiers::NONE, CommandFocus::Tests),
-        AppCommand::ToggleHelp
-    );
-    assert_eq!(
-        command_for_key(KeyCode::Char('?'), KeyModifiers::SHIFT, CommandFocus::Tests),
-        AppCommand::ToggleHelp
-    );
-    assert_eq!(
-        command_for_key(KeyCode::Char('/'), KeyModifiers::SHIFT, CommandFocus::Tests),
-        AppCommand::ToggleHelp
-    );
-}
-
-#[test]
-fn maps_fallback_help_keys() {
-    assert_eq!(
-        command_for_key(KeyCode::Char('h'), KeyModifiers::NONE, CommandFocus::Tests),
-        AppCommand::ToggleHelp
-    );
-    assert_eq!(
-        command_for_key(KeyCode::F(1), KeyModifiers::NONE, CommandFocus::Tests),
-        AppCommand::ToggleHelp
-    );
-}
-
-#[test]
 fn plain_slash_searches_output_only_when_output_is_focused() {
     assert_eq!(
         command_for_key(KeyCode::Char('/'), KeyModifiers::NONE, CommandFocus::Tests),
@@ -165,7 +137,7 @@ fn maps_ctrl_c_to_stop_run() {
 }
 
 #[test]
-fn ctrl_c_stops_run_in_search_and_help_contexts() {
+fn ctrl_c_stops_run_in_inline_search_and_modal_contexts() {
     let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::CONTROL,
@@ -176,7 +148,7 @@ fn ctrl_c_stops_run_in_search_and_help_contexts() {
         AppCommand::StopRun
     );
     assert_eq!(
-        command_for_input(&event, help_context()),
+        command_for_input(&event, settings_modal_context()),
         AppCommand::StopRun
     );
 }
@@ -219,33 +191,33 @@ fn maps_refresh_and_view_filter_keys() {
         command_for_key(KeyCode::Char('o'), KeyModifiers::NONE, CommandFocus::Tests),
         AppCommand::OpenSource
     );
-    assert_eq!(
-        command_for_key(KeyCode::Char('R'), KeyModifiers::SHIFT, CommandFocus::Tests),
-        AppCommand::OpenCustomRun
-    );
 }
 
 #[test]
 fn maps_events_key_across_main_focus_modes() {
     assert_eq!(
-        command_for_key(KeyCode::Char('e'), KeyModifiers::NONE, CommandFocus::Tests),
+        command_for_key(KeyCode::Char('E'), KeyModifiers::SHIFT, CommandFocus::Tests),
         AppCommand::OpenTestEvents
     );
     assert_eq!(
-        command_for_key(KeyCode::Char('e'), KeyModifiers::NONE, CommandFocus::Output),
+        command_for_key(
+            KeyCode::Char('E'),
+            KeyModifiers::SHIFT,
+            CommandFocus::Output
+        ),
         AppCommand::OpenTestEvents
     );
 }
 
 #[test]
-fn test_details_modal_maps_snapshot_key() {
+fn test_details_modal_opens_custom_run_and_samples_stacks() {
     assert_eq!(
         command_for_test_details_modal(KeyCode::Char('s')),
         AppCommand::CaptureTestSnapshot
     );
     assert_eq!(
         command_for_test_details_modal(KeyCode::Down),
-        AppCommand::CustomRunNext
+        AppCommand::Noop
     );
     assert_eq!(
         command_for_test_details_modal(KeyCode::PageDown),
@@ -257,11 +229,7 @@ fn test_details_modal_maps_snapshot_key() {
     );
     assert_eq!(
         command_for_test_details_modal(KeyCode::Left),
-        AppCommand::CustomRunAdjustLeft
-    );
-    assert_eq!(
-        command_for_test_details_modal(KeyCode::Char('e')),
-        AppCommand::CustomRunActivate
+        AppCommand::Noop
     );
     assert_eq!(
         command_for_test_details_modal(KeyCode::Enter),
@@ -270,6 +238,10 @@ fn test_details_modal_maps_snapshot_key() {
     assert_eq!(
         command_for_test_details_modal(KeyCode::Esc),
         AppCommand::CloseTestDetails
+    );
+    assert_eq!(
+        command_for_test_details_modal(KeyCode::Char('R')),
+        AppCommand::OpenCustomRun
     );
 }
 
@@ -287,10 +259,6 @@ fn tests_focus_splits_enter_details_from_space_toggle() {
 
 #[test]
 fn maps_disk_usage_keys_across_focus_modes() {
-    assert_eq!(
-        command_for_key(KeyCode::Char('d'), KeyModifiers::NONE, CommandFocus::Tests),
-        AppCommand::RefreshDiskUsage
-    );
     assert_eq!(
         command_for_key(
             KeyCode::Char('D'),
@@ -316,12 +284,32 @@ fn maps_global_settings_key_across_focus_modes() {
 #[test]
 fn maps_global_xtasks_key_across_focus_modes() {
     assert_eq!(
-        command_for_key(KeyCode::Char('x'), KeyModifiers::NONE, CommandFocus::Tests),
+        command_for_key(KeyCode::Char('X'), KeyModifiers::SHIFT, CommandFocus::Tests),
         AppCommand::OpenXtasks
     );
     assert_eq!(
-        command_for_key(KeyCode::Char('x'), KeyModifiers::NONE, CommandFocus::Output),
+        command_for_key(
+            KeyCode::Char('X'),
+            KeyModifiers::SHIFT,
+            CommandFocus::Output
+        ),
         AppCommand::OpenXtasks
+    );
+}
+
+#[test]
+fn maps_uppercase_quit_across_main_focus_modes() {
+    assert_eq!(
+        command_for_key(KeyCode::Char('Q'), KeyModifiers::SHIFT, CommandFocus::Tests),
+        AppCommand::Quit
+    );
+    assert_eq!(
+        command_for_key(
+            KeyCode::Char('Q'),
+            KeyModifiers::SHIFT,
+            CommandFocus::Output
+        ),
+        AppCommand::Quit
     );
 }
 
@@ -345,18 +333,6 @@ fn settings_modal_uses_settings_commands() {
         command_for_input(&close, context),
         AppCommand::CloseSettings
     );
-
-    let q = InputEvent::Terminal(Event::Key(KeyEvent::new(
-        KeyCode::Char('q'),
-        KeyModifiers::NONE,
-    )));
-    assert_eq!(command_for_input(&q, context), AppCommand::Noop);
-
-    let old_clear = InputEvent::Terminal(Event::Key(KeyEvent::new(
-        KeyCode::Char('x'),
-        KeyModifiers::NONE,
-    )));
-    assert_eq!(command_for_input(&old_clear, context), AppCommand::Noop);
 }
 
 #[test]
@@ -379,12 +355,6 @@ fn settings_open_with_input_accepts_text_and_commit() {
         command_for_input(&enter, context),
         AppCommand::CommitOpenWithSetting
     );
-
-    let old_clear = InputEvent::Terminal(Event::Key(KeyEvent::new(
-        KeyCode::Char('u'),
-        KeyModifiers::CONTROL,
-    )));
-    assert_eq!(command_for_input(&old_clear, context), AppCommand::Noop);
 }
 
 #[test]
@@ -413,8 +383,8 @@ fn discovery_running_blocks_normal_tui_commands() {
     assert_eq!(command_for_input(&esc, context), AppCommand::Noop);
 
     let quit = InputEvent::Terminal(Event::Key(KeyEvent::new(
-        KeyCode::Char('q'),
-        KeyModifiers::NONE,
+        KeyCode::Char('Q'),
+        KeyModifiers::SHIFT,
     )));
     assert_eq!(command_for_input(&quit, context), AppCommand::Quit);
 }
@@ -445,17 +415,11 @@ fn disk_cleanup_modal_uses_cleanup_commands() {
         command_for_input(&close, context),
         AppCommand::CloseDiskCleanup
     );
-
-    let q = InputEvent::Terminal(Event::Key(KeyEvent::new(
-        KeyCode::Char('q'),
-        KeyModifiers::NONE,
-    )));
-    assert_eq!(command_for_input(&q, context), AppCommand::Noop);
 }
 
 #[test]
-fn test_details_modal_uses_custom_run_commands() {
-    let context = test_details_modal_context();
+fn custom_run_modal_uses_custom_run_commands() {
+    let context = custom_run_modal_context();
     assert_eq!(
         command_for_input(
             &InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))),
@@ -471,7 +435,7 @@ fn test_details_modal_uses_custom_run_commands() {
             ))),
             context
         ),
-        AppCommand::Noop
+        AppCommand::CustomRunActivate
     );
     assert_eq!(
         command_for_input(
@@ -485,20 +449,10 @@ fn test_details_modal_uses_custom_run_commands() {
     );
     assert_eq!(
         command_for_input(
-            &InputEvent::Terminal(Event::Key(KeyEvent::new(
-                KeyCode::Char('e'),
-                KeyModifiers::NONE,
-            ))),
-            context
-        ),
-        AppCommand::CustomRunActivate
-    );
-    assert_eq!(
-        command_for_input(
             &InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
             context
         ),
-        AppCommand::CloseTestDetails
+        AppCommand::CloseCustomRun
     );
 }
 
@@ -595,12 +549,12 @@ fn xtask_command_modal_uses_parameter_and_output_commands() {
         AppCommand::XtaskAdjustRight
     );
 
-    let edit = InputEvent::Terminal(Event::Key(KeyEvent::new(
-        KeyCode::Char('e'),
+    let activate = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
         KeyModifiers::NONE,
     )));
     assert_eq!(
-        command_for_input(&edit, context),
+        command_for_input(&activate, context),
         AppCommand::XtaskActivateArg
     );
 
@@ -727,7 +681,7 @@ fn xtask_input_accepts_text_and_commit() {
 }
 
 #[test]
-fn test_details_modal_routes_run_options_and_close_keys() {
+fn test_details_modal_routes_detail_commands() {
     let context = test_details_modal_context();
     let event = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
     assert_eq!(
@@ -735,10 +689,13 @@ fn test_details_modal_routes_run_options_and_close_keys() {
         AppCommand::CloseTestDetails
     );
 
-    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('R'),
+        KeyModifiers::SHIFT,
+    )));
     assert_eq!(
         command_for_input(&event, context),
-        AppCommand::CustomRunNext
+        AppCommand::OpenCustomRun
     );
 
     let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
@@ -748,16 +705,39 @@ fn test_details_modal_routes_run_options_and_close_keys() {
     assert_eq!(command_for_input(&event, context), AppCommand::Noop);
 
     let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
+        KeyCode::Char('s'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        command_for_input(&event, context),
+        AppCommand::CaptureTestSnapshot
+    );
+
+    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+    assert_eq!(command_for_input(&event, context), AppCommand::Noop);
+}
+
+#[test]
+fn custom_run_modal_routes_options_and_back() {
+    let context = custom_run_modal_context();
+
+    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+    assert_eq!(
+        command_for_input(&event, context),
+        AppCommand::CustomRunNext
+    );
+
+    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
         KeyCode::Char('r'),
         KeyModifiers::NONE,
     )));
     assert_eq!(command_for_input(&event, context), AppCommand::RunCustom);
 
-    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
-        KeyCode::Char('q'),
-        KeyModifiers::NONE,
-    )));
-    assert_eq!(command_for_input(&event, context), AppCommand::Noop);
+    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+    assert_eq!(
+        command_for_input(&event, context),
+        AppCommand::CloseCustomRun
+    );
 }
 
 #[test]
@@ -825,36 +805,30 @@ fn command_metadata_drives_ticker_labels() {
     assert_eq!(AppCommand::RunSelected.ticker_label(), Some("run"));
     assert_eq!(AppCommand::OpenCustomRun.ticker_label(), Some("run-custom"));
     assert_eq!(AppCommand::ToggleOutputRegex.ticker_label(), Some("regex"));
-    assert_eq!(AppCommand::CloseHelp.ticker_label(), Some("close help"));
 }
 
 #[test]
-fn command_metadata_contains_help_entries() {
-    assert!(command_infos().iter().any(|info| {
+fn command_metadata_contains_shortcut_entries() {
+    assert!(COMMANDS.iter().any(|info| {
         info.group == CommandGroup::Navigation
             && info.keys == "Tab"
             && info.label == "switch tree/output focus"
     }));
-    assert!(command_infos().iter().any(|info| {
-        info.group == CommandGroup::Global
-            && info.keys == "h/?/F1"
-            && info.label == "open or close help"
-    }));
-    assert!(command_infos().iter().any(|info| {
+    assert!(COMMANDS.iter().any(|info| {
         info.group == CommandGroup::Runs && info.keys == "r" && info.label == "run selected scope"
     }));
-    assert!(command_infos().iter().any(|info| {
+    assert!(COMMANDS.iter().any(|info| {
         info.group == CommandGroup::Global
             && info.keys == "Ctrl+C"
             && info.label == "stop running tests"
     }));
-    assert!(command_infos().iter().any(|info| {
-        info.group == CommandGroup::Global && info.keys == "x" && info.label == "open xtasks"
+    assert!(COMMANDS.iter().any(|info| {
+        info.group == CommandGroup::Global && info.keys == "X" && info.label == "open xtasks"
     }));
-    assert!(command_infos().iter().any(|info| {
+    assert!(COMMANDS.iter().any(|info| {
         info.group == CommandGroup::Output && info.keys == "/" && info.label == "search output"
     }));
-    assert!(command_infos().iter().any(|info| {
+    assert!(COMMANDS.iter().any(|info| {
         info.group == CommandGroup::View && info.keys == "f" && info.label == "toggle failed tests"
     }));
 }
@@ -868,7 +842,7 @@ fn output_search_input_accepts_text_and_controls() {
     )));
     assert_eq!(
         command_for_input(&text, context),
-        AppCommand::OutputSearchEdit(SearchEditorInput::char('p'))
+        AppCommand::OutputSearchEdit(InputFieldInput::char('p'))
     );
 
     let backspace = InputEvent::Terminal(Event::Key(KeyEvent::new(
@@ -877,23 +851,13 @@ fn output_search_input_accepts_text_and_controls() {
     )));
     assert_eq!(
         command_for_input(&backspace, context),
-        AppCommand::OutputSearchEdit(SearchEditorInput::new(
-            SearchEditorKey::Backspace,
-            false,
-            false,
-            false,
-        ))
+        AppCommand::OutputSearchEdit(InputFieldInput::new(InputFieldKey::Backspace))
     );
 
     let left = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)));
     assert_eq!(
         command_for_input(&left, context),
-        AppCommand::OutputSearchEdit(SearchEditorInput::new(
-            SearchEditorKey::Left,
-            false,
-            false,
-            false,
-        ))
+        AppCommand::OutputSearchEdit(InputFieldInput::new(InputFieldKey::Left))
     );
 
     let clear = InputEvent::Terminal(Event::Key(KeyEvent::new(
@@ -987,34 +951,6 @@ fn output_search_modal_accepts_navigation_and_apply_keys() {
         command_for_input(&control_j, context),
         AppCommand::ApplyOutputSearch
     );
-}
-
-#[test]
-fn help_context_closes_and_pages_help() {
-    let context = help_context();
-    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
-    assert_eq!(command_for_input(&event, context), AppCommand::Noop);
-
-    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
-        KeyCode::PageUp,
-        KeyModifiers::NONE,
-    )));
-    assert_eq!(
-        command_for_input(&event, context),
-        AppCommand::Scroll(ScrollAction::PageUp)
-    );
-
-    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(
-        KeyCode::PageDown,
-        KeyModifiers::NONE,
-    )));
-    assert_eq!(
-        command_for_input(&event, context),
-        AppCommand::Scroll(ScrollAction::PageDown)
-    );
-
-    let event = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-    assert_eq!(command_for_input(&event, context), AppCommand::CloseHelp);
 }
 
 #[test]

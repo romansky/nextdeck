@@ -20,10 +20,3 @@ fn command_splitter_preserves_quoted_arguments() {
     assert_eq!(program, "open");
     assert_eq!(args, vec!["-a", "IntelliJ IDEA"]);
 }
-
-#[test]
-fn editor_alias_maps_intellij_to_idea_cli() {
-    let (program, args) = editor_command_parts("intellij");
-    assert_eq!(program, "idea");
-    assert!(args.is_empty());
-}

@@ -30,10 +30,14 @@ fn defaults_tree_duration_mode_to_wall_time() {
         TreeDurationMode::Wall
     );
 
-    let settings = serde_json::from_str::<AppSettings>(r#"{"tree_duration_mode":"aggregate"}"#)
-        .expect("settings");
+    let expected = AppSettings {
+        tree_duration_mode: TreeDurationMode::Aggregate,
+        ..AppSettings::default()
+    };
+    let json = serde_json::to_string(&expected).expect("serialize settings");
+    let settings = serde_json::from_str::<AppSettings>(&json).expect("settings");
 
-    assert_eq!(settings.tree_duration_mode, TreeDurationMode::Aggregate);
+    assert_eq!(settings, expected);
 }
 
 #[test]
@@ -91,32 +95,10 @@ fn normalizes_test_output_poll_interval() {
 }
 
 #[test]
-fn loads_legacy_editor_command_as_open_with_command() {
-    let settings =
-        serde_json::from_str::<AppSettings>(r#"{"editor_command":"idea"}"#).expect("settings");
-
-    assert_eq!(settings.open_with_command.as_deref(), Some("idea"));
-}
-
-#[test]
 fn global_config_path_lives_under_home_nextdeck() {
     assert_eq!(
         global_config_path(Path::new("/home/demo")),
         PathBuf::from("/home/demo/.nextdeck/config.json")
-    );
-}
-
-#[test]
-fn config_read_paths_prefer_global_path_before_legacy_xdg_path() {
-    assert_eq!(
-        config_read_paths_for(
-            Some(PathBuf::from("/home/demo")),
-            Some(PathBuf::from("/xdg"))
-        ),
-        vec![
-            PathBuf::from("/home/demo/.nextdeck/config.json"),
-            PathBuf::from("/xdg/nextdeck/config.json"),
-        ]
     );
 }
 

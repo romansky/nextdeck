@@ -50,7 +50,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct XtaskManifest {
     pub schema_version: u32,
-    #[serde(default)]
     pub commands: Vec<XtaskCommand>,
 }
 

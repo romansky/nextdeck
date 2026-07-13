@@ -42,6 +42,43 @@ fn stream_interleaves_text_and_events_in_append_order() {
 }
 
 #[test]
+fn interleaved_entries_share_one_retention_budget() {
+    let mut output = TestOutput::default();
+    output.append_text(&format!(
+        "oldest\n{}",
+        "a".repeat(OUTPUT_TEXT_LIMIT_BYTES / 2)
+    ));
+    output.append_event(
+        nextdeck_test_events::Level::Info,
+        &format!(
+            "@ event info middle {}",
+            "b".repeat(OUTPUT_TEXT_LIMIT_BYTES / 2)
+        ),
+    );
+    output.append_text("newest");
+
+    let captured = output.captured_text();
+    assert!(captured.len() <= OUTPUT_TEXT_LIMIT_BYTES);
+    assert!(captured.starts_with(OUTPUT_TRUNCATED_MARKER));
+    assert!(!captured.contains("oldest"));
+    assert!(captured.contains("newest"));
+}
+
+#[test]
+fn interleaved_retention_trims_at_utf8_boundaries() {
+    let mut output = TestOutput::default();
+    output.append_event(
+        nextdeck_test_events::Level::Info,
+        &"β".repeat(OUTPUT_TEXT_LIMIT_BYTES),
+    );
+    output.append_text("tail");
+
+    let captured = output.captured_text();
+    assert!(captured.len() <= OUTPUT_TEXT_LIMIT_BYTES);
+    assert!(captured.contains("tail"));
+}
+
+#[test]
 fn adjacent_text_chunks_render_as_one_plain_stream() {
     let mut output = TestOutput::default();
 

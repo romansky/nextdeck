@@ -524,6 +524,31 @@ fn appended_test_output_is_bounded() {
 }
 
 #[test]
+fn parent_output_is_bounded_across_descendants() {
+    let mut tree = Tree::from_tests(vec![
+        discovered_test("demo::demo", "demo", "tests", "first"),
+        discovered_test("demo::demo", "demo", "tests", "second"),
+    ]);
+    for name in ["tests::first", "tests::second"] {
+        tree.append_test_output(
+            &TestKey {
+                binary_id: Some("demo::demo".to_owned()),
+                event_prefix: Some("demo::demo".to_owned()),
+                name: name.to_owned(),
+            },
+            format!(
+                "{name}\n{}",
+                "x".repeat(crate::output::OUTPUT_TEXT_LIMIT_BYTES)
+            ),
+        );
+    }
+
+    let output = tree.selected_output();
+    assert!(output.len() <= crate::output::OUTPUT_TEXT_LIMIT_BYTES);
+    assert!(output.contains("tests::second"));
+}
+
+#[test]
 fn pending_module_output_stays_scoped_and_short() {
     let mut tree = Tree::from_tests(vec![discovered_test(
         "demo::demo",

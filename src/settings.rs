@@ -178,7 +178,7 @@ mod tests {
     fn settings_fields_describe_their_value_domains() {
         assert_eq!(
             SettingsField::OpenWith.details().render(),
-            "# string: env/default, idea, code, cursor, zed, open (default: env/default; [e] custom)"
+            "# string: env/default, idea, code, cursor, zed, open (default: env/default; custom)"
         );
         assert_eq!(
             SettingsField::TreeWidth.details().render(),

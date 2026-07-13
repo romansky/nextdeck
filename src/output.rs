@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 use nextdeck_test_events::Level;
 
@@ -7,12 +7,14 @@ const OUTPUT_TRUNCATED_MARKER: &str = "[... output truncated; showing tail ...]\
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TestOutput {
-    pub entries: Vec<TestOutputEntry>,
+    entries: VecDeque<TestOutputEntry>,
+    retained_bytes: usize,
+    truncated: bool,
     pub duration: Option<Duration>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TestOutputEntry {
+enum TestOutputEntry {
     Text(String),
     Event { level: Level, text: String },
 }
@@ -22,22 +24,29 @@ impl TestOutput {
         if text.is_empty() {
             return;
         }
-        if let Some(TestOutputEntry::Text(existing)) = self.entries.last_mut() {
-            append_output_text(existing, text);
+        let added = if let Some(TestOutputEntry::Text(existing)) = self.entries.back_mut() {
+            let before = existing.len();
+            append_stream_chunk(existing, text);
+            existing.len() - before
         } else {
-            self.entries
-                .push(TestOutputEntry::Text(bounded_text(text.to_owned())));
-        }
+            let text = stream_chunk(text);
+            let added = text.len();
+            self.entries.push_back(TestOutputEntry::Text(text));
+            added
+        };
+        self.retained_bytes += added;
+        self.enforce_retention();
     }
 
     pub fn append_event(&mut self, level: Level, text: &str) {
         if text.is_empty() {
             return;
         }
-        self.entries.push(TestOutputEntry::Event {
-            level,
-            text: bounded_text(text.to_owned()),
-        });
+        let text = stream_chunk(text);
+        self.retained_bytes += text.len();
+        self.entries
+            .push_back(TestOutputEntry::Event { level, text });
+        self.enforce_retention();
     }
 
     pub fn has_entries(&self) -> bool {
@@ -95,14 +104,39 @@ impl TestOutput {
     }
 
     fn stream_text(&self) -> String {
-        let mut text = String::new();
-        for entry in &self.entries {
-            append_output_text(&mut text, entry.rendered_text());
+        let marker_len = if self.truncated {
+            OUTPUT_TRUNCATED_MARKER.len()
+        } else {
+            0
+        };
+        let mut text = String::with_capacity(marker_len + self.retained_bytes);
+        if self.truncated {
+            text.push_str(OUTPUT_TRUNCATED_MARKER);
         }
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
+        for entry in &self.entries {
+            text.push_str(entry.rendered_text());
         }
         text
+    }
+
+    fn enforce_retention(&mut self) {
+        if !self.truncated && self.retained_bytes <= OUTPUT_TEXT_LIMIT_BYTES {
+            return;
+        }
+        self.truncated = true;
+        let budget = OUTPUT_TEXT_LIMIT_BYTES.saturating_sub(OUTPUT_TRUNCATED_MARKER.len());
+        while self.retained_bytes > budget {
+            let excess = self.retained_bytes - budget;
+            let Some(entry) = self.entries.front_mut() else {
+                self.retained_bytes = 0;
+                break;
+            };
+            let removed = entry.trim_front(excess);
+            self.retained_bytes -= removed;
+            if entry.rendered_text().is_empty() {
+                self.entries.pop_front();
+            }
+        }
     }
 }
 
@@ -118,6 +152,31 @@ impl TestOutputEntry {
         match self {
             Self::Text(text) | Self::Event { text, .. } => text,
         }
+    }
+
+    fn trim_front(&mut self, minimum_bytes: usize) -> usize {
+        let text = match self {
+            Self::Text(text) | Self::Event { text, .. } => text,
+        };
+        let mut end = minimum_bytes.min(text.len());
+        while end < text.len() && !text.is_char_boundary(end) {
+            end += 1;
+        }
+        text.drain(..end);
+        end
+    }
+}
+
+fn stream_chunk(text: &str) -> String {
+    let mut chunk = String::with_capacity(text.len() + 1);
+    append_stream_chunk(&mut chunk, text);
+    chunk
+}
+
+fn append_stream_chunk(target: &mut String, text: &str) {
+    target.push_str(text);
+    if !target.ends_with('\n') {
+        target.push('\n');
     }
 }
 
@@ -139,6 +198,23 @@ pub(crate) fn append_bounded_text(target: &mut String, text: &str) {
 pub(crate) fn bounded_text(mut text: String) -> String {
     limit_text(&mut text, OUTPUT_TEXT_LIMIT_BYTES);
     text
+}
+
+pub(crate) fn bounded_text_with_limit(mut text: String, limit: usize) -> String {
+    limit_text(&mut text, limit);
+    text
+}
+
+pub(crate) fn bounded_output_section(prefix: &str, mut body: String) -> String {
+    let section_limit = OUTPUT_TEXT_LIMIT_BYTES.saturating_sub(OUTPUT_TRUNCATED_MARKER.len());
+    let mut prefix = prefix.to_owned();
+    limit_text(&mut prefix, section_limit);
+    let body_limit = section_limit.saturating_sub(prefix.len());
+    limit_text(&mut body, body_limit);
+    let mut section = String::with_capacity(prefix.len() + body.len());
+    section.push_str(&prefix);
+    section.push_str(&body);
+    section
 }
 
 #[cfg(test)]

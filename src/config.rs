@@ -88,11 +88,9 @@ impl ThemePreference {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(default)]
 pub struct AppSettings {
     pub tree_width_percent: u16,
     pub tree_duration_mode: TreeDurationMode,
-    #[serde(alias = "editor_command")]
     pub open_with_command: Option<String>,
     pub theme_mode: ThemePreference,
     pub color_blind_mode: bool,
@@ -141,9 +139,8 @@ impl AppSettings {
 }
 
 pub fn load() -> AppSettings {
-    config_read_paths()
-        .into_iter()
-        .find_map(|path| fs::read_to_string(path).ok())
+    config_path()
+        .and_then(|path| fs::read_to_string(path).ok())
         .and_then(|text| serde_json::from_str::<AppSettings>(&text).ok())
         .map(AppSettings::normalized)
         .unwrap_or_default()
@@ -193,7 +190,7 @@ pub fn resize_test_output_poll_interval(interval_ms: u16, delta: i16) -> u16 {
 }
 
 fn config_path() -> Option<PathBuf> {
-    app_dir().map(|dir| dir.join("config.json"))
+    home_dir().map(|home| global_config_path(&home))
 }
 
 pub fn debug_log_path() -> Option<PathBuf> {
@@ -210,34 +207,6 @@ fn global_config_dir(home: &Path) -> PathBuf {
 
 fn global_config_path(home: &Path) -> PathBuf {
     global_config_dir(home).join("config.json")
-}
-
-fn config_read_paths() -> Vec<PathBuf> {
-    config_read_paths_for(home_dir(), xdg_config_dir())
-}
-
-fn config_read_paths_for(home: Option<PathBuf>, xdg_config_home: Option<PathBuf>) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(home) = home.as_ref() {
-        paths.push(global_config_path(home));
-    }
-    paths.extend(legacy_config_path_for(xdg_config_home, home));
-    paths
-}
-
-fn legacy_config_path_for(
-    xdg_config_home: Option<PathBuf>,
-    home: Option<PathBuf>,
-) -> Option<PathBuf> {
-    xdg_config_home
-        .or_else(|| home.map(|home| home.join(".config")))
-        .map(|dir| dir.join("nextdeck").join("config.json"))
-}
-
-fn xdg_config_dir() -> Option<PathBuf> {
-    env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
 }
 
 fn home_dir() -> Option<PathBuf> {

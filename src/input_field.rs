@@ -40,6 +40,15 @@ impl InputField {
         self.text.clone()
     }
 
+    pub fn value(&self) -> &str {
+        &self.text
+    }
+
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
+    }
+
     pub fn input(&mut self, input: InputFieldInput) -> bool {
         match input.key {
             InputFieldKey::Char(char) => self.insert_char(char),

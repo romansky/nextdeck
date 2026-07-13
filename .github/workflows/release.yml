@@ -15,12 +15,28 @@ on:
         default: false
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
+  verify:
+    name: Verify workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@nextest
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+
   build:
     name: Build ${{ matrix.target }}
+    needs: verify
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -48,7 +64,7 @@ jobs:
             echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           fi
       - name: Build release artifact
-        run: cargo xtask release --version "${{ steps.version.outputs.value }}" --target "${{ matrix.target }}"
+        run: cargo xtask tui-release --version "${{ steps.version.outputs.value }}" --target "${{ matrix.target }}"
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
@@ -62,6 +78,8 @@ jobs:
     name: GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     if: github.event_name == 'push' || inputs.publish
     steps:
       - uses: actions/download-artifact@v4
@@ -90,6 +108,8 @@ jobs:
     name: Homebrew Tap
     needs: github-release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     if: (github.event_name == 'push' || inputs.publish) && vars.HOMEBREW_TAP != ''
     steps:
       - uses: actions/checkout@v4
@@ -116,7 +136,7 @@ jobs:
       - name: Generate formula
         working-directory: nextdeck
         run: |
-          cargo xtask homebrew-formula \
+          cargo xtask tui-homebrew-formula \
             --version "${{ steps.version.outputs.value }}" \
             --github-repo "${{ github.repository }}" \
             --dist-dir target/dist \
