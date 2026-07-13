@@ -63,9 +63,9 @@ impl<'a> TestDetailsModal<'a> {
             .selected_node()
             .is_some_and(|node| matches!(node.kind, NodeKind::Test(_)))
         {
-            "[R]custom-run [s]sample-stacks [esc]close"
+            "[R]un-custom [s]sample-stacks [esc]close"
         } else {
-            "[R]custom-run [esc]close"
+            "[R]un-custom [esc]close"
         }
     }
 
@@ -83,7 +83,7 @@ impl<'a> TestDetailsModal<'a> {
             return Line::styled(format!(" {} ", Self::actions(app)), active);
         }
 
-        let mut spans = vec![Span::styled(" [R]custom-run", active)];
+        let mut spans = vec![Span::styled(" [R]un-custom", active)];
         if app
             .tree
             .selected_node()

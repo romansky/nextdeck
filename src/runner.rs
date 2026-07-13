@@ -63,9 +63,6 @@ pub async fn run(
         handle_effect(app, &mut context, effect, &mut run_control);
     }
     let result = run_loop(terminal, app, run_on_start, context, queue_rx, run_control).await;
-    if let Err(error) = test_events::cleanup_process_files() {
-        tracing::warn!(%error, "failed to clean test event files");
-    }
     git_status.abort();
     ticker.abort();
     drop(input);
@@ -694,16 +691,8 @@ fn start_run(
     context.refresh_disk_usage(disk_usage_request_id);
     let client = context.client.clone();
     let tx = context.queue_tx.clone();
-    let test_event_run = match test_events::create_run_file() {
-        Ok(run) => {
-            app.begin_test_event_run(run.clone());
-            Some(run)
-        }
-        Err(error) => {
-            app.status = format!("Running without test events: {error:#}");
-            None
-        }
-    };
+    let test_event_run = test_events::create_run();
+    app.begin_test_event_run(test_event_run);
 
     let (run_tx, run_rx) = mpsc::channel::<RunEvent>(queue::APP_EVENT_QUEUE_CAPACITY);
     let (stop_tx, stop_rx) = mpsc::unbounded_channel();
@@ -711,16 +700,12 @@ fn start_run(
     let run_process_tracker = process_tracker.clone();
     let info_output_poll_interval = app.settings.test_output_poll_interval();
     let producer = tokio::spawn(async move {
-        let tailer = test_event_run
-            .as_ref()
-            .map(|run| test_events::start_tailer(run.id.clone(), run.dir.clone(), run_tx.clone()));
-        let test_events_dir = test_event_run.as_ref().map(|run| run.dir.clone());
         if let Err(error) = client
             .run(
                 request,
                 run_tx.clone(),
                 stop_rx,
-                test_events_dir,
+                true,
                 run_process_tracker,
                 info_output_poll_interval,
             )
@@ -734,9 +719,6 @@ fn start_run(
             let _ = run_tx
                 .send(RunEvent::RunnerFinished { exit_code: None })
                 .await;
-        }
-        if let Some(tailer) = tailer {
-            tailer.stop().await;
         }
     });
 

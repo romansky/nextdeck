@@ -1,8 +1,7 @@
 use std::{
     collections::BTreeMap,
-    fs::{self, OpenOptions},
     io::{self, Write},
-    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -12,7 +11,11 @@ use serde_json::Value;
 pub mod xtask;
 
 pub const ENV_VAR: &str = "NEXTDECK_TEST_EVENTS";
+pub const ENV_VALUE: &str = "stdio-v1";
+pub const FRAME_PREFIX: &str = "NEXTDECK_EVENT_V1 ";
 pub const SCHEMA_VERSION: u32 = 1;
+
+static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -34,6 +37,7 @@ pub struct SourceLocation {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TestEvent {
     pub schema_version: u32,
+    pub sequence: u64,
     pub time: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
@@ -54,6 +58,7 @@ impl TestEvent {
     pub fn new(level: Level, message: impl Into<String>) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
+            sequence: EVENT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
             time: now_millis(),
             pid: Some(std::process::id()),
             thread: current_thread_name(),
@@ -95,28 +100,19 @@ impl TestEvent {
 
 #[must_use]
 pub fn enabled() -> bool {
-    event_file_path().is_some()
-}
-
-#[must_use]
-pub fn event_file_path() -> Option<PathBuf> {
-    std::env::var_os(ENV_VAR)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .map(|dir| pid_event_file_path(&dir))
+    std::env::var(ENV_VAR).is_ok_and(|value| value == ENV_VALUE)
 }
 
 pub fn emit(event: &TestEvent) -> io::Result<()> {
-    let Some(path) = event_file_path() else {
+    if !enabled() {
         return Ok(());
-    };
-    let mut line = serde_json::to_vec(event).map_err(io::Error::other)?;
-    line.push(b'\n');
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
     }
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    file.write_all(&line)
+    let json = serde_json::to_vec(event).map_err(io::Error::other)?;
+    let mut frame = Vec::with_capacity(FRAME_PREFIX.len() + json.len() + 1);
+    frame.extend_from_slice(FRAME_PREFIX.as_bytes());
+    frame.extend_from_slice(&json);
+    frame.push(b'\n');
+    io::stdout().lock().write_all(&frame)
 }
 
 pub fn emit_with_fields(
@@ -149,10 +145,6 @@ pub fn field_value(value: impl Serialize) -> Value {
     serde_json::to_value(value).unwrap_or_else(|error| {
         Value::String(format!("<event field serialization failed: {error}>"))
     })
-}
-
-fn pid_event_file_path(dir: &Path) -> PathBuf {
-    dir.join(format!("{}.jsonl", std::process::id()))
 }
 
 fn current_thread_name() -> Option<String> {
@@ -251,6 +243,7 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
 
         assert!(json.contains("\"schema_version\":1"));
+        assert!(json.contains("\"sequence\":"));
         assert!(json.contains("\"pid\":"));
         assert!(json.contains("\"level\":\"info\""));
         assert!(json.contains("\"target\":\"artifact-cache\""));
@@ -259,13 +252,13 @@ mod tests {
     }
 
     #[test]
-    fn event_target_directory_resolves_to_pid_file() {
-        let dir = std::env::temp_dir().join(format!("nextdeck-test-events-{}", std::process::id()));
+    fn event_frame_is_versioned_json() {
+        let event = TestEvent::new(Level::Warn, "slow test");
+        let json = serde_json::to_string(&event).unwrap();
+        let frame = format!("{FRAME_PREFIX}{json}\n");
 
-        assert_eq!(
-            pid_event_file_path(&dir),
-            dir.join(format!("{}.jsonl", std::process::id()))
-        );
+        assert!(frame.starts_with(FRAME_PREFIX));
+        assert!(frame.ends_with("\n"));
     }
 
     #[test]

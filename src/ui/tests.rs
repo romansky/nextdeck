@@ -422,7 +422,7 @@ fn action_bar_uses_complete_compact_labels_at_narrow_widths() {
 fn panel_actions_describe_local_commands() {
     assert_eq!(
         TestsPanel::actions(),
-        "[r]un [j/J]failure [o]pen-editor [u]update"
+        "[r]un [j/J]failure [o]pen-editor [u]pdate"
     );
     assert_eq!(
         DiskCleanupModal::actions(),
@@ -625,12 +625,13 @@ fn tree_leading_fields_have_no_status_gap() {
 
 #[test]
 fn tree_labels_show_bubbling_event_marker_on_the_right() {
+    let key = TestKey {
+        binary_id: Some("demo::demo".to_owned()),
+        event_prefix: Some("demo::demo".to_owned()),
+        name: "tests::case".to_owned(),
+    };
     let mut tree = Tree::from_tests(vec![DiscoveredTest {
-        key: TestKey {
-            binary_id: Some("demo::demo".to_owned()),
-            event_prefix: Some("demo::demo".to_owned()),
-            name: "tests::case".to_owned(),
-        },
+        key: key.clone(),
         package: "demo".to_owned(),
         binary: "demo".to_owned(),
         binary_kind: "lib".to_owned(),
@@ -643,10 +644,9 @@ fn tree_labels_show_bubbling_event_marker_on_the_right() {
         ignored: false,
         ignore_reason: None,
     }]);
-    let mut event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Info, "hit");
-    event.thread = Some("tests::case".to_owned());
+    let event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Info, "hit");
 
-    assert!(tree.append_test_event(&event, "@ event info cache: hit"));
+    assert!(tree.append_test_event(&key, &event, "@ event info cache: hit"));
 
     let package = &tree.root.children[0];
     let module = &package.children[0];
@@ -847,13 +847,13 @@ fn test_details_actions_mute_stack_sampling_until_test_is_running() {
 
     let theme = Theme::dark();
     app.tree.select_next();
-    assert_eq!(TestDetailsModal::actions(&app), "[R]custom-run [esc]close");
+    assert_eq!(TestDetailsModal::actions(&app), "[R]un-custom [esc]close");
 
     app.tree.select_next();
     app.tree.select_next();
     assert_eq!(
         TestDetailsModal::actions(&app),
-        "[R]custom-run [s]sample-stacks [esc]close"
+        "[R]un-custom [s]sample-stacks [esc]close"
     );
 
     let sample_style = |app: &App| {

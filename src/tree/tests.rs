@@ -422,10 +422,9 @@ fn inline_event_survives_finished_event_with_stdout() {
         event_prefix: Some("demo::demo".to_owned()),
         name: "tests::works".to_owned(),
     };
-    let mut event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Info, "hit");
-    event.thread = Some("tests::works".to_owned());
+    let event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Info, "hit");
 
-    assert!(tree.append_test_event(&event, "@ event info cache: hit"));
+    assert!(tree.append_test_event(&key, &event, "@ event info cache: hit"));
     tree.finish_test(
         &key,
         TestStatus::Failed,
@@ -453,11 +452,15 @@ fn appended_event_bubbles_to_target_ancestors() {
         discovered_test("demo::demo", "demo", "alpha", "one"),
         discovered_test("demo::demo", "demo", "beta", "two"),
     ]);
-    let mut event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Warn, "slow");
-    event.thread = Some("alpha::one".to_owned());
+    let event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Warn, "slow");
+    let key = TestKey {
+        binary_id: Some("demo::demo".to_owned()),
+        event_prefix: Some("demo::demo".to_owned()),
+        name: "alpha::one".to_owned(),
+    };
 
     assert!(!tree.root.has_events);
-    assert!(tree.append_test_event(&event, "@ event warn alpha: slow"));
+    assert!(tree.append_test_event(&key, &event, "@ event warn alpha: slow"));
 
     let package = &tree.root.children[0];
     let alpha = &package.children[0];
@@ -481,10 +484,14 @@ fn prepare_for_run_clears_event_bubbles() {
         "tests",
         "works",
     )]);
-    let mut event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Info, "hit");
-    event.thread = Some("tests::works".to_owned());
+    let event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Info, "hit");
+    let key = TestKey {
+        binary_id: Some("demo::demo".to_owned()),
+        event_prefix: Some("demo::demo".to_owned()),
+        name: "tests::works".to_owned(),
+    };
 
-    assert!(tree.append_test_event(&event, "@ event info cache: hit"));
+    assert!(tree.append_test_event(&key, &event, "@ event info cache: hit"));
     assert!(tree.root.has_events);
 
     tree.prepare_for_run(&crate::nextest::RunScope::Workspace);

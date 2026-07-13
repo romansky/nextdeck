@@ -2,7 +2,7 @@
 name = "nextdeck-test-events"
 version = "0.1.0"
 edition = "2024"
-description = "Tiny JSONL side-channel events for tests launched by nextdeck"
+description = "Structured events for tests launched by nextdeck"
 license = "Apache-2.0"
 readme = "README.md"
 documentation = "https://docs.rs/nextdeck-test-events"

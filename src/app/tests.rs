@@ -14,6 +14,10 @@ fn app_with_tree(tree: Tree) -> App {
     App::with_settings(tree, AppSettings::default())
 }
 
+fn output_chunks(text: impl Into<String>) -> Vec<TestOutputChunk> {
+    vec![TestOutputChunk::Text(text.into())]
+}
+
 #[derive(Clone, Copy, Debug)]
 struct TestViewportSizes {
     tree_page_size: usize,
@@ -358,11 +362,12 @@ fn test_events_modal_opens_from_tests_focus_and_uses_dedicated_output_search() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
     app.begin_test_event_run(TestEventRun {
         id: "run-1".to_owned(),
-        dir: std::path::PathBuf::from("/tmp/run-1"),
     });
-    app.apply_run_event(RunEvent::TestEvent {
-        run_id: "run-1".to_owned(),
-        event: TestEvent::new(Level::Info, "cache hit").with_target("artifact-cache"),
+    app.apply_run_event(RunEvent::TestOutput {
+        key: test_key(0),
+        output: vec![TestOutputChunk::Event(
+            TestEvent::new(Level::Info, "cache hit").with_target("artifact-cache"),
+        )],
     });
 
     assert_eq!(
@@ -404,12 +409,11 @@ fn test_event_run_events_are_inlined_into_matching_test_output() {
     );
 
     let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
-    let mut event = TestEvent::new(Level::Info, "cache hit").with_target("artifact-cache");
-    event.thread = Some("tests::case_00".to_owned());
+    let event = TestEvent::new(Level::Info, "cache hit").with_target("artifact-cache");
 
-    app.apply_run_event(RunEvent::TestEvent {
-        run_id: "run-1".to_owned(),
-        event,
+    app.apply_run_event(RunEvent::TestOutput {
+        key: test_key(0),
+        output: vec![TestOutputChunk::Event(event)],
     });
     app.tree.select_next();
     app.tree.select_next();
@@ -426,18 +430,18 @@ fn live_output_chunks_interleave_with_inline_events() {
     app.apply_run_event(RunEvent::TestStarted { key: key.clone() });
     app.apply_run_event(RunEvent::TestOutput {
         key: key.clone(),
-        text: "DOGFOOD_OUTPUT stdout before event".to_owned(),
-    });
-    let mut event =
-        TestEvent::new(Level::Info, "between output chunks").with_target("dogfood-output");
-    event.thread = Some("tests::case_00".to_owned());
-    app.apply_run_event(RunEvent::TestEvent {
-        run_id: "run-1".to_owned(),
-        event,
+        output: vec![
+            TestOutputChunk::Text("DOGFOOD_OUTPUT stdout before event".to_owned()),
+            TestOutputChunk::Event(
+                TestEvent::new(Level::Info, "between output chunks").with_target("dogfood-output"),
+            ),
+        ],
     });
     app.apply_run_event(RunEvent::TestOutput {
         key,
-        text: "DOGFOOD_OUTPUT stdout after event\nDOGFOOD_OUTPUT stderr after event".to_owned(),
+        output: output_chunks(
+            "DOGFOOD_OUTPUT stdout after event\nDOGFOOD_OUTPUT stderr after event",
+        ),
     });
 
     let output = app.tree.selected_output();
@@ -461,7 +465,6 @@ fn test_events_run_finishes_with_run_result_label() {
     assert!(app.begin_run(&RunRequest::default()).is_some());
     app.begin_test_event_run(TestEventRun {
         id: "run-1".to_owned(),
-        dir: std::path::PathBuf::from("/tmp/run-1"),
     });
 
     app.apply_run_event(RunEvent::RunnerFinished { exit_code: Some(0) });
@@ -1065,7 +1068,7 @@ fn failing_test_run_reports_failed_result() {
     app.apply_run_event(RunEvent::TestFinished {
         key,
         status: TestStatus::Failed,
-        output: "boom".to_owned(),
+        output: output_chunks("boom"),
         duration: Some(Duration::from_millis(7)),
     });
     app.apply_run_event(RunEvent::RunnerFinished {
@@ -1090,7 +1093,7 @@ fn scoped_run_summary_counts_only_the_scope() {
     app.apply_run_event(RunEvent::TestFinished {
         key,
         status: TestStatus::Passed,
-        output: String::new(),
+        output: Vec::new(),
         duration: Some(Duration::from_millis(3)),
     });
     app.apply_run_event(RunEvent::RunnerFinished { exit_code: Some(0) });
@@ -1186,13 +1189,13 @@ fn new_run_resets_previous_run_metadata_and_result() {
     app.apply_run_event(RunEvent::TestFinished {
         key: test_key(0),
         status: TestStatus::Passed,
-        output: "stale stdout".to_owned(),
+        output: output_chunks("stale stdout"),
         duration: Some(Duration::from_millis(9)),
     });
     app.apply_run_event(RunEvent::TestFinished {
         key: test_key(1),
         status: TestStatus::Failed,
-        output: "stale stderr".to_owned(),
+        output: output_chunks("stale stderr"),
         duration: Some(Duration::from_millis(11)),
     });
     app.apply_run_event(RunEvent::RunnerFinished {
@@ -1229,7 +1232,7 @@ fn filter_toggle_during_run_preserves_visible_selection_and_output_state() {
     app.apply_run_event(RunEvent::TestFinished {
         key: test_key(0),
         status: TestStatus::Passed,
-        output: String::new(),
+        output: Vec::new(),
         duration: Some(Duration::from_millis(5)),
     });
     app.apply_run_event(RunEvent::TestStarted { key: test_key(1) });
@@ -1317,7 +1320,7 @@ fn output_snap_follows_polled_chunks_until_the_user_scrolls() {
     app.apply_run_event(RunEvent::TestStarted { key: key.clone() });
     app.apply_run_event(RunEvent::TestOutput {
         key: key.clone(),
-        text: "one\ntwo\nthree\nfour\nfive".to_owned(),
+        output: output_chunks("one\ntwo\nthree\nfour\nfive"),
     });
     prepare_test_viewports(&mut app, 4, 2);
     let first_bottom = scroll::max_scroll(app.output_view().line_count(), 2);
@@ -1327,7 +1330,7 @@ fn output_snap_follows_polled_chunks_until_the_user_scrolls() {
 
     app.apply_run_event(RunEvent::TestOutput {
         key: key.clone(),
-        text: "six\nseven".to_owned(),
+        output: output_chunks("six\nseven"),
     });
     prepare_test_viewports(&mut app, 4, 2);
     let second_bottom = scroll::max_scroll(app.output_view().line_count(), 2);
@@ -1339,7 +1342,7 @@ fn output_snap_follows_polled_chunks_until_the_user_scrolls() {
     let manual_scroll = app.main_output.scroll();
     app.apply_run_event(RunEvent::TestOutput {
         key,
-        text: "eight\nnine".to_owned(),
+        output: output_chunks("eight\nnine"),
     });
     prepare_test_viewports(&mut app, 4, 2);
 

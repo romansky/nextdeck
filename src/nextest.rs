@@ -453,6 +453,12 @@ fn shell_quote(arg: &str) -> String {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum TestOutputChunk {
+    Text(String),
+    Event(TestEvent),
+}
+
 #[derive(Debug, Clone)]
 pub enum RunEvent {
     RunMetadata {
@@ -468,16 +474,12 @@ pub enum RunEvent {
     TestFinished {
         key: TestKey,
         status: TestStatus,
-        output: String,
+        output: Vec<TestOutputChunk>,
         duration: Option<Duration>,
     },
     TestOutput {
         key: TestKey,
-        text: String,
-    },
-    TestEvent {
-        run_id: String,
-        event: TestEvent,
+        output: Vec<TestOutputChunk>,
     },
     RunnerOutput(String),
     RunnerFinished {
@@ -555,7 +557,7 @@ impl NextestClient {
         request: RunRequest,
         tx: mpsc::Sender<RunEvent>,
         mut stop_rx: mpsc::UnboundedReceiver<()>,
-        test_events_dir: Option<PathBuf>,
+        capture_test_events: bool,
         process_tracker: ProcessTracker,
         info_output_poll_interval: Duration,
     ) -> Result<()> {
@@ -580,7 +582,7 @@ impl NextestClient {
                     RunOnceContext {
                         tx: &tx,
                         stop_rx: &mut stop_rx,
-                        test_events_dir: test_events_dir.as_deref(),
+                        capture_test_events,
                         process_tracker: &process_tracker,
                         info_output_poll_interval,
                     },
@@ -609,7 +611,7 @@ impl NextestClient {
         options: &RunOptions,
         context: RunOnceContext<'_>,
     ) -> Result<RunProcessOutcome> {
-        let mut command = self.run_command(scope_args, options, context.test_events_dir);
+        let mut command = self.run_command(scope_args, options, context.capture_test_events);
         configure_run_command(&mut command);
         let mut child = command
             .kill_on_drop(true)
@@ -773,7 +775,7 @@ impl NextestClient {
         &self,
         scope_args: Vec<String>,
         options: &RunOptions,
-        test_events_dir: Option<&Path>,
+        capture_test_events: bool,
     ) -> Command {
         let mut command = Command::new("cargo-nextest");
         if let Some(path) = &self.current_dir {
@@ -802,8 +804,11 @@ impl NextestClient {
         command.args(options.nextest_args());
         command.args(scope_args);
         command.env("NEXTEST_EXPERIMENTAL_LIBTEST_JSON", "1");
-        if let Some(dir) = test_events_dir {
-            command.env(nextdeck_test_events::ENV_VAR, dir);
+        if capture_test_events {
+            command.env(
+                nextdeck_test_events::ENV_VAR,
+                nextdeck_test_events::ENV_VALUE,
+            );
         }
         command
     }
@@ -832,7 +837,7 @@ enum RunProcessOutcome {
 struct RunOnceContext<'a> {
     tx: &'a mpsc::Sender<RunEvent>,
     stop_rx: &'a mut mpsc::UnboundedReceiver<()>,
-    test_events_dir: Option<&'a Path>,
+    capture_test_events: bool,
     process_tracker: &'a ProcessTracker,
     info_output_poll_interval: Duration,
 }
@@ -1224,25 +1229,25 @@ fn parse_test_record(value: Value, mut record: LibtestRecord) -> Option<RunEvent
         "ok" => Some(RunEvent::TestFinished {
             key,
             status: TestStatus::Passed,
-            output: record.output(),
+            output: vec![TestOutputChunk::Text(record.output())],
             duration: seconds_to_duration(record.exec_time),
         }),
         "failed" => Some(RunEvent::TestFinished {
             key,
             status: TestStatus::Failed,
-            output: record.output(),
+            output: vec![TestOutputChunk::Text(record.output())],
             duration: seconds_to_duration(record.exec_time),
         }),
         "ignored" => Some(RunEvent::TestFinished {
             key,
             status: TestStatus::Ignored,
-            output: record.output(),
+            output: vec![TestOutputChunk::Text(record.output())],
             duration: seconds_to_duration(record.exec_time),
         }),
         "skipped" => Some(RunEvent::TestFinished {
             key,
             status: TestStatus::Skipped,
-            output: record.output(),
+            output: vec![TestOutputChunk::Text(record.output())],
             duration: seconds_to_duration(record.exec_time),
         }),
         _ => None,
@@ -1287,7 +1292,7 @@ impl SuccessfulOutputCollector {
                 status: TestStatus::Passed,
                 output,
                 ..
-            } if output.is_empty() => {
+            } if output_is_empty(output) => {
                 if self.has_emitted_output(key) {
                     self.output_candidates.forget(key);
                 } else {
@@ -1348,7 +1353,10 @@ impl SuccessfulOutputCollector {
         let text = clean_success_output_block(&key.name, &self.lines);
         self.lines.clear();
         self.mark_output_emitted(&key);
-        (!text.is_empty()).then_some(RunEvent::TestOutput { key, text })
+        (!text.is_empty()).then_some(RunEvent::TestOutput {
+            key,
+            output: vec![TestOutputChunk::Text(text)],
+        })
     }
 
     fn resolve_output_key(&self, fallback: TestKey) -> TestKey {
@@ -1421,55 +1429,142 @@ impl OutputCandidates {
 #[derive(Default)]
 struct OutputSnapshotTracker {
     by_key: BTreeMap<String, String>,
+    decoders: BTreeMap<String, TestOutputDecoder>,
+    seen_events: BTreeSet<(Option<u32>, u64)>,
 }
 
 impl OutputSnapshotTracker {
     fn preview_event(&mut self, key: TestKey, output: String) -> Option<RunEvent> {
-        self.delta_for(key.clone(), output)
-            .map(|text| RunEvent::TestOutput { key, text })
+        let output = self.output_chunks(&key, output, false);
+        (!output.is_empty()).then_some(RunEvent::TestOutput { key, output })
     }
 
-    fn dedupe_output(&mut self, key: &TestKey, output: &mut String) {
-        if output.is_empty() {
-            return;
-        }
-
-        let normalized = normalize_output_snapshot(std::mem::take(output));
-        if normalized.is_empty() {
-            output.clear();
-            return;
-        }
-
-        let snapshot_key = snapshot_key(key);
-        match self.by_key.entry(snapshot_key) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(normalized.clone());
-                *output = normalized;
-            }
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
-                match output_delta(entry.get(), &normalized) {
-                    Some(delta) => *output = delta,
-                    None => output.clear(),
-                }
-                entry.insert(normalized);
-            }
-        }
+    fn finish_output(&mut self, key: &TestKey, output: &mut Vec<TestOutputChunk>) {
+        let raw = take_raw_output(output);
+        *output = self.output_chunks(key, raw, true);
     }
 
-    fn delta_for(&mut self, key: TestKey, output: String) -> Option<String> {
+    fn output_chunks(
+        &mut self,
+        key: &TestKey,
+        output: String,
+        final_read: bool,
+    ) -> Vec<TestOutputChunk> {
         let output = normalize_output_snapshot(output);
-        if output.is_empty() {
-            return None;
-        }
-        let snapshot_key = snapshot_key(&key);
+        let snapshot_key = snapshot_key(key);
 
         let delta = match self.by_key.get(&snapshot_key) {
             Some(previous) => output_delta(previous, &output),
             None => Some(output.clone()),
         };
-        self.by_key.insert(snapshot_key, output);
-        delta.filter(|text| !text.trim().is_empty())
+        self.by_key.insert(snapshot_key.clone(), output);
+        let mut chunks = self
+            .decoders
+            .entry(snapshot_key)
+            .or_default()
+            .push(delta.as_deref().unwrap_or_default(), final_read);
+        chunks.retain(|chunk| match chunk {
+            TestOutputChunk::Text(text) => !text.trim().is_empty(),
+            TestOutputChunk::Event(event) => self.seen_events.insert((event.pid, event.sequence)),
+        });
+        chunks
     }
+}
+
+#[derive(Default)]
+struct TestOutputDecoder {
+    pending: String,
+}
+
+impl TestOutputDecoder {
+    fn push(&mut self, chunk: &str, final_read: bool) -> Vec<TestOutputChunk> {
+        self.pending.push_str(chunk);
+        let mut chunks = Vec::new();
+        loop {
+            let Some(marker_index) = self.pending.find(nextdeck_test_events::FRAME_PREFIX) else {
+                let keep = partial_frame_prefix_len(&self.pending);
+                let emit_len = if final_read {
+                    self.pending.len()
+                } else {
+                    self.pending.len().saturating_sub(keep)
+                };
+                if emit_len > 0 {
+                    push_text_chunk(&mut chunks, self.pending.drain(..emit_len).collect());
+                }
+                break;
+            };
+
+            if marker_index > 0 {
+                push_text_chunk(&mut chunks, self.pending.drain(..marker_index).collect());
+                continue;
+            }
+
+            let payload_start = nextdeck_test_events::FRAME_PREFIX.len();
+            let payload = &self.pending[payload_start..];
+            if let Some(line_end) = payload.find('\n') {
+                let event_json = payload[..line_end].trim_end_matches('\r').to_owned();
+                self.pending.drain(..payload_start + line_end + 1);
+                push_event_chunk(&mut chunks, &event_json);
+                continue;
+            }
+
+            if let Ok(event) = crate::test_events::parse_event_line(payload) {
+                self.pending.clear();
+                chunks.push(TestOutputChunk::Event(event));
+            } else if final_read {
+                let invalid = self.pending.drain(..).collect::<String>();
+                push_text_chunk(&mut chunks, invalid);
+            }
+            break;
+        }
+        chunks
+    }
+}
+
+fn take_raw_output(output: &mut Vec<TestOutputChunk>) -> String {
+    let mut raw = String::new();
+    for chunk in std::mem::take(output) {
+        match chunk {
+            TestOutputChunk::Text(text) => raw.push_str(&text),
+            TestOutputChunk::Event(_) => {}
+        }
+    }
+    raw
+}
+
+fn partial_frame_prefix_len(text: &str) -> usize {
+    (1..nextdeck_test_events::FRAME_PREFIX.len())
+        .rev()
+        .find(|length| text.ends_with(&nextdeck_test_events::FRAME_PREFIX[..*length]))
+        .unwrap_or_default()
+}
+
+fn push_text_chunk(chunks: &mut Vec<TestOutputChunk>, text: String) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(TestOutputChunk::Text(previous)) = chunks.last_mut() {
+        previous.push_str(&text);
+    } else {
+        chunks.push(TestOutputChunk::Text(text));
+    }
+}
+
+fn push_event_chunk(chunks: &mut Vec<TestOutputChunk>, json: &str) {
+    match crate::test_events::parse_event_line(json) {
+        Ok(event) => chunks.push(TestOutputChunk::Event(event)),
+        Err(_) => push_text_chunk(
+            chunks,
+            format!("{}{json}\n", nextdeck_test_events::FRAME_PREFIX),
+        ),
+    }
+}
+
+fn output_is_empty(output: &[TestOutputChunk]) -> bool {
+    output.iter().all(|chunk| match chunk {
+        TestOutputChunk::Text(text) => text.is_empty(),
+        TestOutputChunk::Event(_) => false,
+    })
 }
 
 #[derive(Default)]
@@ -1611,17 +1706,17 @@ fn dedupe_final_output_event(event: &mut RunEvent, snapshots: &Arc<Mutex<OutputS
     };
 
     if let Ok(mut snapshots) = snapshots.lock() {
-        snapshots.dedupe_output(key, output);
+        snapshots.finish_output(key, output);
     }
 }
 
 fn dedupe_test_output_event(event: &mut RunEvent, snapshots: &Arc<Mutex<OutputSnapshotTracker>>) {
-    let RunEvent::TestOutput { key, text } = event else {
+    let RunEvent::TestOutput { key, output } = event else {
         return;
     };
 
     if let Ok(mut snapshots) = snapshots.lock() {
-        snapshots.dedupe_output(key, text);
+        snapshots.finish_output(key, output);
     }
 }
 

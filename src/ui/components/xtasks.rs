@@ -384,7 +384,7 @@ impl<'a> XtasksModal<'a> {
                 XtaskDetailFocus::Output => "[esc]back [tab]params [/]search [n/N]match [r]run",
             }
         } else {
-            "[u]refresh [esc]close"
+            "[u]pdate [esc]close"
         }
     }
 }

@@ -14,7 +14,7 @@ use crate::{
     input_field::InputFieldInput,
     nextest::{
         DiscoveryEvent, DiscoveryOutput, RunEvent, RunIgnored, RunRequest, RunScope,
-        TargetSelector, TestSelector, manual_run_request_command,
+        TargetSelector, TestOutputChunk, TestSelector, manual_run_request_command,
     },
     output_pane::{
         OutputPaneState, OutputSearchState, OutputView, SearchDirection, SearchModalFocus,
@@ -1417,19 +1417,12 @@ impl App {
                 duration,
             } => {
                 self.mark_tests_running();
-                self.tree.finish_test(&key, status, output, duration);
+                self.append_test_output_chunks(&key, output);
+                self.tree.finish_test(&key, status, String::new(), duration);
                 None
             }
-            RunEvent::TestOutput { key, text } => {
-                self.tree.append_test_output(&key, text);
-                None
-            }
-            RunEvent::TestEvent { run_id, event } => {
-                let inline = crate::test_events::inline_event_line(&event);
-                if !self.tree.append_test_event(&event, &inline) {
-                    self.tree.append_runner_output(inline);
-                }
-                self.test_events.append_event(&run_id, event);
+            RunEvent::TestOutput { key, output } => {
+                self.append_test_output_chunks(&key, output);
                 None
             }
             RunEvent::RunnerOutput(line) => {
@@ -1457,6 +1450,25 @@ impl App {
             };
             self.test_events.finish_active_run(self.run_result_label());
             self.status = run_summary_status(self.run.outcome, counts, exit_code);
+        }
+    }
+
+    fn append_test_output_chunks(
+        &mut self,
+        key: &crate::tree::TestKey,
+        chunks: Vec<TestOutputChunk>,
+    ) {
+        for chunk in chunks {
+            match chunk {
+                TestOutputChunk::Text(text) => self.tree.append_test_output(key, text),
+                TestOutputChunk::Event(event) => {
+                    let inline = crate::test_events::inline_event_line(&event);
+                    if !self.tree.append_test_event(key, &event, &inline) {
+                        self.tree.append_runner_output(inline);
+                    }
+                    self.test_events.append_active_event(event);
+                }
+            }
         }
     }
 

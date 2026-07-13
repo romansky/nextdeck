@@ -5,8 +5,8 @@ add small, searchable records for the decisions that explain a test: which
 fixture was selected, whether a cache hit, or which external service handled a
 request.
 
-Events are optional. The macro is a no-op unless `NEXTDECK_TEST_EVENTS` is set;
-Nextdeck sets it for tests that it launches.
+Events are optional. The macro is a no-op unless `NEXTDECK_TEST_EVENTS` is set
+to Nextdeck's current transport; Nextdeck sets it for tests that it launches.
 
 ## Add Events to a Test
 
@@ -47,8 +47,10 @@ Field values can be any type that implements `serde::Serialize`.
 
 ## View Events
 
-Run the test from Nextdeck. Nextdeck sets `NEXTDECK_TEST_EVENTS` for the test
-process and tails the resulting event files while nextest is running.
+Run the test from Nextdeck. Nextdeck sets
+`NEXTDECK_TEST_EVENTS=stdio-v1` for the test process. Events travel in the same
+captured stream as stdout and stderr, so their position is preserved in the
+live snapshots reported by nextest.
 
 Running this repository produces four events. This shortened capture shows the
 run they belong to, their fields, and the source line that emitted them:
@@ -73,13 +75,13 @@ run they belong to, their fields, and the source line that emitted them:
 └ [esc]close [tab]events ────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Events appear inline with captured output when their thread name can be
-  matched to a test.
+- Events appear inline with the captured output of the test that emitted them.
 - Press `E` for the event view, which keeps a searchable stream for each run.
 - The event view records the run scope and final status as well as the events.
 
-Nextdeck creates a separate JSONL file per process. This avoids coordinating
-writes between the test binaries that nextest runs in parallel.
+Nextdeck removes the protocol frames before rendering output. A failed test
+gets a separate `nextest:` summary after its captured output; passing tests do
+not get an additional runner footer.
 
 ## What Gets Recorded
 
@@ -91,6 +93,7 @@ optional source, thread, target, and fields.
 ```json
 {
   "schema_version": 1,
+  "sequence": 7,
   "time": 1783420000000,
   "pid": 12345,
   "thread": "tests::reuses_the_cached_artifact",
@@ -116,9 +119,9 @@ test. Code that needs error handling can build a `TestEvent` and call
 ## Scope
 
 Test events are not a general logging framework and do not replace `tracing` or
-`log`. They are a narrow side channel for data that is most useful while
-examining a test run. The environment-variable gate means normal `cargo test`
-and `cargo nextest run` invocations do not create event files.
+`log`. They are a narrow test-output protocol for data that is most useful
+while examining a test run. The environment-variable gate means normal
+`cargo test` and `cargo nextest run` invocations do not emit event frames.
 
 The same helper crate also provides the optional
 [Clap xtask integration](../xtask-integration/README.md).

@@ -325,14 +325,6 @@ fn repro_nextdeck_run(workspace: &Path, tree_path: &str) -> Result<()> {
     if tree_path.is_empty() {
         bail!("--path must not be empty");
     }
-    let capture_dir = workspace
-        .join("target")
-        .join("nextdeck-repro")
-        .join(std::process::id().to_string());
-    let events_dir = capture_dir.join("events");
-    fs::create_dir_all(&events_dir)
-        .with_context(|| format!("creating {}", events_dir.display()))?;
-
     let mut args = vec![
         "nextest".to_owned(),
         "run".to_owned(),
@@ -358,7 +350,10 @@ fn repro_nextdeck_run(workspace: &Path, tree_path: &str) -> Result<()> {
         .args(&args)
         .current_dir(workspace)
         .env("NEXTEST_EXPERIMENTAL_LIBTEST_JSON", "1")
-        .env(nextdeck_test_events::ENV_VAR, &events_dir)
+        .env(
+            nextdeck_test_events::ENV_VAR,
+            nextdeck_test_events::ENV_VALUE,
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -368,19 +363,13 @@ fn repro_nextdeck_run(workspace: &Path, tree_path: &str) -> Result<()> {
         "cwd": workspace.display().to_string(),
         "tree_path": tree_path,
         "command": command_line,
-        "events_dir": events_dir.display().to_string(),
     }))?;
 
     let output = command
         .output()
         .with_context(|| format!("running {command_line}"))?;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        print_jsonl(json!({ "kind": "stream", "stream": "stdout", "text": line }))?;
-    }
-    for line in String::from_utf8_lossy(&output.stderr).lines() {
-        print_jsonl(json!({ "kind": "stream", "stream": "stderr", "text": line }))?;
-    }
-    print_event_logs_as_jsonl(&events_dir)?;
+    print_stream_as_jsonl("stdout", &String::from_utf8_lossy(&output.stdout))?;
+    print_stream_as_jsonl("stderr", &String::from_utf8_lossy(&output.stderr))?;
     print_jsonl(json!({
         "kind": "run",
         "event": "finished",
@@ -433,19 +422,13 @@ enum Command {
 
 #[test]
 fn emits_events_and_xtask_metadata() {
-    let dir = std::env::temp_dir().join(format!(
-        "nextdeck-test-events-smoke-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::env::set_var(nextdeck_test_events::ENV_VAR, &dir);
-    let path = nextdeck_test_events::event_file_path().expect("event path");
+    std::env::set_var(
+        nextdeck_test_events::ENV_VAR,
+        nextdeck_test_events::ENV_VALUE,
+    );
+    assert!(nextdeck_test_events::enabled());
     nextdeck_test_events::event!("smoke"; "kind" => "local");
     std::env::remove_var(nextdeck_test_events::ENV_VAR);
-
-    let events = std::fs::read_to_string(&path).expect("event file");
-    assert!(events.contains("\"message\":\"smoke\""));
-    let _ = std::fs::remove_dir_all(dir);
 
     let mut metadata = Vec::new();
     let handled = nextdeck_test_events::xtask::handle_nextdeck_info_from::<Cli, _, _, _>(
@@ -960,37 +943,21 @@ fn workspace_package_names(workspace: &Path) -> Result<BTreeSet<String>> {
     Ok(packages)
 }
 
-fn print_event_logs_as_jsonl(events_dir: &Path) -> Result<()> {
-    if !events_dir.exists() {
-        return Ok(());
-    }
-    let mut files = fs::read_dir(events_dir)
-        .with_context(|| format!("reading {}", events_dir.display()))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()
-        .with_context(|| format!("reading {}", events_dir.display()))?;
-    files.sort();
-    files.retain(|path| path.is_file());
-    for path in files {
-        let text =
-            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        for (index, line) in text.lines().enumerate() {
-            let parsed = serde_json::from_str::<Value>(line);
-            print_jsonl(match parsed {
-                Ok(event) => json!({
-                    "kind": "event",
-                    "file": path.display().to_string(),
-                    "line": index + 1,
-                    "event": event,
-                }),
+fn print_stream_as_jsonl(stream: &str, text: &str) -> Result<()> {
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(json) = trimmed.strip_prefix(nextdeck_test_events::FRAME_PREFIX) {
+            print_jsonl(match serde_json::from_str::<Value>(json) {
+                Ok(event) => json!({ "kind": "event", "stream": stream, "event": event }),
                 Err(error) => json!({
                     "kind": "event",
-                    "file": path.display().to_string(),
-                    "line": index + 1,
+                    "stream": stream,
                     "text": line,
                     "parse_error": error.to_string(),
                 }),
             })?;
+        } else {
+            print_jsonl(json!({ "kind": "stream", "stream": stream, "text": line }))?;
         }
     }
     Ok(())

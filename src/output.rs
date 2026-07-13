@@ -17,6 +17,7 @@ pub struct TestOutput {
 enum TestOutputEntry {
     Text(String),
     Event { level: Level, text: String },
+    NextestSummary(String),
 }
 
 impl TestOutput {
@@ -24,14 +25,18 @@ impl TestOutput {
         if text.is_empty() {
             return;
         }
-        let added = if let Some(TestOutputEntry::Text(existing)) = self.entries.back_mut() {
+        let insert_at = self.stream_insert_index();
+        let added = if let Some(TestOutputEntry::Text(existing)) = insert_at
+            .checked_sub(1)
+            .and_then(|index| self.entries.get_mut(index))
+        {
             let before = existing.len();
             append_stream_chunk(existing, text);
             existing.len() - before
         } else {
             let text = stream_chunk(text);
             let added = text.len();
-            self.entries.push_back(TestOutputEntry::Text(text));
+            self.entries.insert(insert_at, TestOutputEntry::Text(text));
             added
         };
         self.retained_bytes += added;
@@ -44,8 +49,9 @@ impl TestOutput {
         }
         let text = stream_chunk(text);
         self.retained_bytes += text.len();
+        let insert_at = self.stream_insert_index();
         self.entries
-            .push_back(TestOutputEntry::Event { level, text });
+            .insert(insert_at, TestOutputEntry::Event { level, text });
         self.enforce_retention();
     }
 
@@ -57,6 +63,22 @@ impl TestOutput {
         self.entries
             .iter()
             .any(|entry| matches!(entry, TestOutputEntry::Event { .. }))
+    }
+
+    pub fn append_nextest_failure(&mut self, duration: Option<Duration>) {
+        let mut text = String::new();
+        if self.has_entries() {
+            text.push('\n');
+        }
+        text.push_str("nextest: failed");
+        if let Some(duration) = duration {
+            text.push_str(&format!(" after {duration:.2?}"));
+        }
+        text.push('\n');
+        self.retained_bytes += text.len();
+        self.entries
+            .push_back(TestOutputEntry::NextestSummary(text));
+        self.enforce_retention();
     }
 
     pub fn summary_label(&self) -> String {
@@ -71,13 +93,25 @@ impl TestOutput {
             .iter()
             .filter(|entry| matches!(entry, TestOutputEntry::Event { .. }))
             .count();
-        match (text_len, event_count) {
-            (0, 0) => "none captured".to_owned(),
-            (_, 0) => format!("text {text_len} chars"),
-            (0, 1) => "1 event".to_owned(),
-            (0, _) => format!("{event_count} events"),
-            (_, 1) => format!("text {text_len} chars, 1 event"),
-            (_, _) => format!("text {text_len} chars, {event_count} events"),
+        let has_nextest_summary = self
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, TestOutputEntry::NextestSummary(_)));
+        let mut parts = Vec::new();
+        if text_len > 0 {
+            parts.push(format!("text {text_len} chars"));
+        }
+        if event_count == 1 {
+            parts.push("1 event".to_owned());
+        } else if event_count > 1 {
+            parts.push(format!("{event_count} events"));
+        }
+        if has_nextest_summary {
+            parts.push("nextest failure".to_owned());
+        }
+        match parts.as_slice() {
+            [] => "none captured".to_owned(),
+            _ => parts.join(", "),
         }
     }
 
@@ -91,11 +125,7 @@ impl TestOutput {
     }
 
     pub fn display_text(&self) -> String {
-        let mut text = String::new();
-        if let Some(duration) = self.duration {
-            text.push_str(&format!("duration: {:.2?}\n\n", duration));
-        }
-        append_output_text(&mut text, &self.stream_text());
+        let text = self.stream_text();
         if text.trim().is_empty() {
             "No output captured".to_owned()
         } else {
@@ -117,6 +147,18 @@ impl TestOutput {
             text.push_str(entry.rendered_text());
         }
         text
+    }
+
+    fn stream_insert_index(&mut self) -> usize {
+        let len = self.entries.len();
+        let Some(TestOutputEntry::NextestSummary(summary)) = self.entries.back_mut() else {
+            return len;
+        };
+        if len == 1 && !summary.starts_with('\n') {
+            summary.insert(0, '\n');
+            self.retained_bytes += 1;
+        }
+        len.saturating_sub(1)
     }
 
     fn enforce_retention(&mut self) {
@@ -144,19 +186,19 @@ impl TestOutputEntry {
     fn text(&self) -> Option<&str> {
         match self {
             Self::Text(text) => Some(text),
-            Self::Event { .. } => None,
+            Self::Event { .. } | Self::NextestSummary(_) => None,
         }
     }
 
     fn rendered_text(&self) -> &str {
         match self {
-            Self::Text(text) | Self::Event { text, .. } => text,
+            Self::Text(text) | Self::Event { text, .. } | Self::NextestSummary(text) => text,
         }
     }
 
     fn trim_front(&mut self, minimum_bytes: usize) -> usize {
         let text = match self {
-            Self::Text(text) | Self::Event { text, .. } => text,
+            Self::Text(text) | Self::Event { text, .. } | Self::NextestSummary(text) => text,
         };
         let mut end = minimum_bytes.min(text.len());
         while end < text.len() && !text.is_char_boundary(end) {
@@ -178,16 +220,6 @@ fn append_stream_chunk(target: &mut String, text: &str) {
     if !target.ends_with('\n') {
         target.push('\n');
     }
-}
-
-fn append_output_text(target: &mut String, text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    if !target.is_empty() && !target.ends_with('\n') {
-        append_bounded_text(target, "\n");
-    }
-    append_bounded_text(target, text);
 }
 
 pub(crate) fn append_bounded_text(target: &mut String, text: &str) {

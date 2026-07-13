@@ -1,4 +1,14 @@
 use super::*;
+
+fn output_chunks_text(output: &[TestOutputChunk]) -> String {
+    output
+        .iter()
+        .filter_map(|chunk| match chunk {
+            TestOutputChunk::Text(text) => Some(text.as_str()),
+            TestOutputChunk::Event(_) => None,
+        })
+        .collect()
+}
 use crate::diagnostics::ProcessTracker;
 
 #[test]
@@ -118,13 +128,20 @@ async fn fixture_run_captures_nextdeck_test_events() {
     let events =
         run_output_fixture_with_events("pass_emits_nextdeck_event", Vec::new(), true).await;
 
-    assert!(events.iter().any(|event| matches!(
-        event,
-        RunEvent::TestEvent { event, .. }
-            if event.message == "event from fixture"
-                && event.target.as_deref() == Some("fixture")
-                && event.pid.is_some()
-    )));
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            RunEvent::TestOutput { output, .. }
+                if output.iter().any(|chunk| matches!(
+                    chunk,
+                    TestOutputChunk::Event(event)
+                        if event.message == "event from fixture"
+                            && event.target.as_deref() == Some("fixture")
+                            && event.pid.is_some()
+                ))
+        )),
+        "events: {events:#?}"
+    );
 }
 
 #[tokio::test]
@@ -213,7 +230,7 @@ fn parses_libtest_json_plus_finished_event() {
             assert_eq!(key.event_prefix, None);
             assert_eq!(key.name, "tests::bad");
             assert_eq!(status, TestStatus::Failed);
-            assert_eq!(output, "out\nerr");
+            assert_eq!(output_chunks_text(&output), "out\nerr");
             assert_eq!(duration, Some(Duration::from_millis(250)));
         }
         other => panic!("unexpected event: {other:?}"),
@@ -231,7 +248,7 @@ fn successful_output_collector_attaches_nextest_output_block_to_last_success() {
     collector.observe_event(&RunEvent::TestFinished {
         key: key.clone(),
         status: TestStatus::Passed,
-        output: String::new(),
+        output: Vec::new(),
         duration: Some(Duration::from_millis(5)),
     });
 
@@ -251,10 +268,13 @@ fn successful_output_collector_attaches_nextest_output_block_to_last_success() {
     match collector.finish_event().expect("output event") {
         RunEvent::TestOutput {
             key: output_key,
-            text,
+            output,
         } => {
             assert_eq!(output_key, key);
-            assert_eq!(text, "stdout from passing test\nstderr from passing test");
+            assert_eq!(
+                output_chunks_text(&output),
+                "stdout from passing test\nstderr from passing test"
+            );
         }
         other => panic!("unexpected event: {other:?}"),
     }
@@ -271,7 +291,7 @@ fn successful_output_collector_handles_suite_event_before_output_block() {
     collector.observe_event(&RunEvent::TestFinished {
         key: key.clone(),
         status: TestStatus::Passed,
-        output: String::new(),
+        output: Vec::new(),
         duration: Some(Duration::from_secs(28)),
     });
 
@@ -294,11 +314,11 @@ fn successful_output_collector_handles_suite_event_before_output_block() {
     match collector.finish_event().expect("output event") {
         RunEvent::TestOutput {
             key: output_key,
-            text,
+            output,
         } => {
             assert_eq!(output_key, key);
             assert_eq!(
-                text,
+                output_chunks_text(&output),
                 "capakit-e2e xtask-action=apple-vm:prepare-e2e status=start command=stage-e2e"
             );
         }
@@ -333,9 +353,12 @@ fn successful_output_collector_uses_block_test_name_when_starts_race() {
     );
 
     match collector.finish_event().expect("output event") {
-        RunEvent::TestOutput { key, text } => {
+        RunEvent::TestOutput { key, output } => {
             assert_eq!(key, output_key);
-            assert_eq!(text, "DOGFOOD_OUTPUT stdout before info event");
+            assert_eq!(
+                output_chunks_text(&output),
+                "DOGFOOD_OUTPUT stdout before info event"
+            );
         }
         other => panic!("unexpected event: {other:?}"),
     }
@@ -368,7 +391,7 @@ fn successful_output_collector_does_not_reuse_key_after_output_was_emitted() {
     collector.observe_event(&RunEvent::TestFinished {
         key: first_key,
         status: TestStatus::Passed,
-        output: String::new(),
+        output: Vec::new(),
         duration: Some(Duration::from_millis(5)),
     });
     collector.observe_event(&RunEvent::TestStarted {
@@ -378,9 +401,9 @@ fn successful_output_collector_does_not_reuse_key_after_output_was_emitted() {
     collector.push_line("    later stdout".to_owned());
 
     match collector.finish_event().expect("second output event") {
-        RunEvent::TestOutput { key, text } => {
+        RunEvent::TestOutput { key, output } => {
             assert_eq!(key, next_key);
-            assert_eq!(text, "later stdout");
+            assert_eq!(output_chunks_text(&output), "later stdout");
         }
         other => panic!("unexpected event: {other:?}"),
     }
@@ -481,10 +504,97 @@ fn output_snapshot_tracker_dedupes_final_output_after_preview() {
         "stdout before\nstderr before"
     );
 
-    let mut output = "stdout before\nstderr before\nstdout after".to_owned();
-    snapshots.dedupe_output(&key, &mut output);
+    let mut output = vec![TestOutputChunk::Text(
+        "stdout before\nstderr before\nstdout after".to_owned(),
+    )];
+    snapshots.finish_output(&key, &mut output);
 
-    assert_eq!(output, "stdout after");
+    assert_eq!(output_chunks_text(&output), "stdout after");
+}
+
+#[test]
+fn output_decoder_preserves_text_event_text_order() {
+    let event =
+        TestEvent::new(nextdeck_test_events::Level::Warn, "cache miss").with_target("cache");
+    let json = serde_json::to_string(&event).expect("serialize event");
+    let capture = format!(
+        "before\n{}{json}\nafter",
+        nextdeck_test_events::FRAME_PREFIX
+    );
+    let chunks = TestOutputDecoder::default().push(&capture, true);
+
+    assert_eq!(
+        chunks,
+        vec![
+            TestOutputChunk::Text("before\n".to_owned()),
+            TestOutputChunk::Event(event),
+            TestOutputChunk::Text("after".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn output_decoder_retains_a_frame_split_across_polls() {
+    let event = TestEvent::new(nextdeck_test_events::Level::Info, "checkpoint");
+    let json = serde_json::to_string(&event).expect("serialize event");
+    let frame = format!("{}{json}", nextdeck_test_events::FRAME_PREFIX);
+    let split = frame.len() - 8;
+    let mut decoder = TestOutputDecoder::default();
+
+    assert!(decoder.push(&frame[..split], false).is_empty());
+    assert_eq!(
+        decoder.push(&frame[split..], false),
+        vec![TestOutputChunk::Event(event)]
+    );
+}
+
+#[test]
+fn output_decoder_preserves_plain_text_that_only_looks_like_a_frame() {
+    let capture = format!("{}not-json\nafter", nextdeck_test_events::FRAME_PREFIX);
+
+    assert_eq!(
+        TestOutputDecoder::default().push(&capture, true),
+        vec![TestOutputChunk::Text(capture)]
+    );
+}
+
+#[test]
+fn output_snapshot_tracker_emits_each_framed_event_once() {
+    let key = TestKey {
+        binary_id: Some("demo::demo".to_owned()),
+        event_prefix: Some("demo::demo".to_owned()),
+        name: "tests::passes".to_owned(),
+    };
+    let event = TestEvent::new(nextdeck_test_events::Level::Info, "checkpoint");
+    let json = serde_json::to_string(&event).expect("serialize event");
+    let first_capture = format!("before\n{}{json}", nextdeck_test_events::FRAME_PREFIX);
+    let mut snapshots = OutputSnapshotTracker::default();
+
+    let first = snapshots
+        .preview_event(key.clone(), first_capture.clone())
+        .expect("first preview");
+    let RunEvent::TestOutput { output, .. } = first else {
+        panic!("expected test output");
+    };
+    assert_eq!(
+        output,
+        vec![
+            TestOutputChunk::Text("before\n".to_owned()),
+            TestOutputChunk::Event(event),
+        ]
+    );
+
+    let second = snapshots
+        .preview_event(key.clone(), format!("{first_capture}\nafter"))
+        .expect("second preview");
+    let RunEvent::TestOutput { output, .. } = second else {
+        panic!("expected test output");
+    };
+    assert_eq!(output, vec![TestOutputChunk::Text("after".to_owned())]);
+
+    let mut final_output = vec![TestOutputChunk::Text(format!("{first_capture}\nafter"))];
+    snapshots.finish_output(&key, &mut final_output);
+    assert!(final_output.is_empty());
 }
 
 #[cfg(unix)]
@@ -739,15 +849,6 @@ async fn run_output_fixture_with_events(
     } else {
         ("nextdeck_output_fixture", "lib")
     };
-    let test_event_run = if capture_events {
-        Some(crate::test_events::create_run_file().expect("create test event run"))
-    } else {
-        None
-    };
-    let tailer = test_event_run
-        .as_ref()
-        .map(|run| crate::test_events::start_tailer(run.id.clone(), run.dir.clone(), tx.clone()));
-
     client
         .run(
             RunRequest {
@@ -761,15 +862,12 @@ async fn run_output_fixture_with_events(
             },
             tx,
             stop_rx,
-            test_event_run.as_ref().map(|run| run.dir.clone()),
+            capture_events,
             ProcessTracker::default(),
             crate::config::AppSettings::default().test_output_poll_interval(),
         )
         .await
         .expect("run output fixture");
-    if let Some(tailer) = tailer {
-        tailer.stop().await;
-    }
 
     let mut events = Vec::new();
     while let Ok(event) = rx.try_recv() {
@@ -843,8 +941,10 @@ fn test_output_event(events: &[RunEvent], name: &str) -> CapturedTestOutput {
     events
         .iter()
         .find_map(|event| match event {
-            RunEvent::TestOutput { key, text } if key.name.contains(name) => {
-                Some(CapturedTestOutput { text: text.clone() })
+            RunEvent::TestOutput { key, output } if key.name.contains(name) => {
+                Some(CapturedTestOutput {
+                    text: output_chunks_text(output),
+                })
             }
             _ => None,
         })
@@ -855,8 +955,10 @@ fn test_output_events(events: &[RunEvent], name: &str) -> Vec<CapturedTestOutput
     events
         .iter()
         .filter_map(|event| match event {
-            RunEvent::TestOutput { key, text } if key.name.contains(name) => {
-                Some(CapturedTestOutput { text: text.clone() })
+            RunEvent::TestOutput { key, output } if key.name.contains(name) => {
+                Some(CapturedTestOutput {
+                    text: output_chunks_text(output),
+                })
             }
             _ => None,
         })
@@ -882,7 +984,9 @@ fn test_output_text(events: &[RunEvent], name: &str) -> String {
     events
         .iter()
         .find_map(|event| match event {
-            RunEvent::TestOutput { key, text } if key.name.contains(name) => Some(text.clone()),
+            RunEvent::TestOutput { key, output } if key.name.contains(name) => {
+                Some(output_chunks_text(output))
+            }
             _ => None,
         })
         .unwrap_or_else(|| panic!("missing TestOutput event for {name}; events: {events:#?}"))
@@ -899,7 +1003,7 @@ fn finished_test_event(events: &[RunEvent], name: &str) -> FinishedTestOutput {
                 ..
             } if key.name.contains(name) => Some(FinishedTestOutput {
                 status: *status,
-                output: output.clone(),
+                output: output_chunks_text(output),
             }),
             _ => None,
         })

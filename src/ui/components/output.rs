@@ -168,7 +168,10 @@ fn highlighted_output_line(
 fn output_line_style(theme: &Theme, line: &str) -> Style {
     if line.starts_with("Run passed:") {
         theme.success()
-    } else if line.starts_with("Run failed:") || line.starts_with("Run command failed:") {
+    } else if line.starts_with("Run failed:")
+        || line.starts_with("Run command failed:")
+        || line.starts_with("nextest: failed")
+    {
         theme.danger()
     } else if line.starts_with("Run stopped:") {
         theme.warning()

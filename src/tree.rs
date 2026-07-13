@@ -468,6 +468,9 @@ impl Tree {
                 node.finished_at = Some(Instant::now());
                 node.output.append_text(&output);
                 node.output.duration = duration;
+                if status == TestStatus::Failed {
+                    node.output.append_nextest_failure(duration);
+                }
             }
         });
         self.recompute_statuses();
@@ -483,17 +486,21 @@ impl Tree {
 
     pub fn append_test_event(
         &mut self,
+        key: &TestKey,
         event: &nextdeck_test_events::TestEvent,
         line: &str,
     ) -> bool {
-        let Some(target) = self.event_target_node_id(event) else {
-            return false;
-        };
-        self.with_id_mut(&target, |node| {
-            node.output.append_event(event.level, line);
+        let mut appended = false;
+        visit_mut(&mut self.root, &mut |node| {
+            if node_matches(node, key) {
+                node.output.append_event(event.level, line);
+                appended = true;
+            }
         });
-        self.recompute_statuses();
-        true
+        if appended {
+            self.recompute_statuses();
+        }
+        appended
     }
 
     pub fn stop_running_tests(&mut self) {
@@ -741,18 +748,6 @@ impl Tree {
         node(&self.root, id)
     }
 
-    fn event_target_node_id(&self, event: &nextdeck_test_events::TestEvent) -> Option<NodeId> {
-        event_thread_name(event)
-            .and_then(|name| {
-                unique_test_node_id(&self.root, |node, test| {
-                    event_thread_matches_test(name, node, test)
-                })
-            })
-            .or_else(|| {
-                unique_test_node_id(&self.root, |node, _| node.status == TestStatus::Running)
-            })
-    }
-
     fn is_selected_visible(&self) -> bool {
         self.visible_rows()
             .iter()
@@ -776,49 +771,6 @@ fn child_position(parent: &TestNode, label: &str) -> Option<usize> {
         .children
         .iter()
         .position(|child| child.label == label)
-}
-
-fn event_thread_name(event: &nextdeck_test_events::TestEvent) -> Option<&str> {
-    event
-        .thread
-        .as_deref()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .filter(|name| !matches!(*name, "main" | "tokio-runtime-worker"))
-}
-
-fn unique_test_node_id(
-    root: &TestNode,
-    mut predicate: impl FnMut(&TestNode, &DiscoveredTest) -> bool,
-) -> Option<NodeId> {
-    let mut matches = Vec::new();
-    visit(root, &mut |node| {
-        if let NodeKind::Test(test) = &node.kind
-            && predicate(node, test)
-        {
-            matches.push(node.id.clone());
-        }
-    });
-    if matches.len() == 1 {
-        matches.pop()
-    } else {
-        None
-    }
-}
-
-fn event_thread_matches_test(name: &str, node: &TestNode, test: &DiscoveredTest) -> bool {
-    node_matches(
-        node,
-        &TestKey {
-            binary_id: None,
-            event_prefix: None,
-            name: name.to_owned(),
-        },
-    ) || test.full_name == name
-        || test
-            .full_name
-            .strip_suffix(test.name.as_str())
-            .is_some_and(|prefix| prefix.ends_with("::") && test.name == name)
 }
 
 fn collect_visible<'a>(

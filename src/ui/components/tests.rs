@@ -73,7 +73,7 @@ impl<'a> TestsPanel<'a> {
     }
 
     pub(in crate::ui) fn actions() -> &'static str {
-        "[r]un [j/J]failure [o]pen-editor [u]update"
+        "[r]un [j/J]failure [o]pen-editor [u]pdate"
     }
 
     pub(in crate::ui) fn leading_fields(
