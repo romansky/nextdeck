@@ -21,6 +21,7 @@ use super::super::{
         parameter_list_styles, parameter_value_width, status_label,
     },
 };
+use super::output::OutputPanel;
 
 const CUSTOM_RUN_FIELD_LABEL_WIDTH: usize = 15;
 const DETAIL_MODAL_LABEL_WIDTH: usize = 8;
@@ -46,12 +47,25 @@ impl<'a> TestDetailsModal<'a> {
         let inner = block.inner(area);
         frame.render_widget(Clear, area);
         frame.render_widget(block, area);
+        if self.app.test_stack_sample.open {
+            OutputPanel::new(
+                &self.app.test_stack_sample.output,
+                self.app.test_stack_sample.text.clone(),
+                Self::sampling_output_label(self.app),
+                true,
+            )
+            .render(frame, theme, inner);
+            return;
+        }
         let lines = Self::lines_with_width(self.app, theme, inner.width as usize);
         let paragraph = scrollable_paragraph(lines, theme, &self.app.custom_run.viewport);
         frame.render_widget(paragraph, inner);
     }
 
     pub(in crate::ui) fn actions(app: &App) -> &'static str {
+        if app.test_stack_sample.open {
+            return "[esc]back";
+        }
         if app.custom_run.editing.is_some() {
             return "[esc]cancel";
         }
@@ -70,7 +84,9 @@ impl<'a> TestDetailsModal<'a> {
     }
 
     pub(in crate::ui) fn title(app: &App) -> &'static str {
-        if app.custom_run.open {
+        if app.test_stack_sample.open {
+            "Test Details > sampling"
+        } else if app.custom_run.open {
             "Test Details > Custom Run"
         } else {
             "Test Details"
@@ -79,7 +95,7 @@ impl<'a> TestDetailsModal<'a> {
 
     pub(in crate::ui) fn action_line(app: &App, theme: &Theme) -> Line<'static> {
         let active = theme.title(true);
-        if app.custom_run.open || app.custom_run.editing.is_some() {
+        if app.test_stack_sample.open || app.custom_run.open || app.custom_run.editing.is_some() {
             return Line::styled(format!(" {} ", Self::actions(app)), active);
         }
 
@@ -103,11 +119,25 @@ impl<'a> TestDetailsModal<'a> {
     }
 
     pub(in crate::ui) fn stack_sample_available(app: &App) -> bool {
+        if app.test_stack_sample.running {
+            return app.test_stack_sample.title
+                == format!("Test stack sample: {}", app.tree.selected_path());
+        }
         app.running
             && app.tree.selected_node().is_some_and(|node| {
                 matches!(node.kind, NodeKind::Test(_))
                     && node.status == crate::tree::TestStatus::Running
             })
+    }
+
+    pub(in crate::ui) fn sampling_output_label(app: &App) -> String {
+        if app.test_stack_sample.running {
+            format!("Output: {}", app.running_test_spinner())
+        } else if app.test_stack_sample.failed {
+            "Output: ✗".to_owned()
+        } else {
+            "Output: ✓".to_owned()
+        }
     }
 
     #[cfg(test)]

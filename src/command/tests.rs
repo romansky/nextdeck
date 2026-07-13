@@ -78,6 +78,13 @@ const fn test_details_modal_context() -> CommandContext {
     }
 }
 
+const fn test_stack_sample_modal_context() -> CommandContext {
+    CommandContext {
+        input: InputMode::TestStackSampleModal,
+        overlay: Some(OverlayMode::TestDetails),
+    }
+}
+
 const fn output_search_modal_context() -> CommandContext {
     CommandContext {
         input: InputMode::OutputSearchModal,
@@ -213,7 +220,7 @@ fn maps_events_key_across_main_focus_modes() {
 fn test_details_modal_opens_custom_run_and_samples_stacks() {
     assert_eq!(
         command_for_test_details_modal(KeyCode::Char('s')),
-        AppCommand::CaptureTestSnapshot
+        AppCommand::SampleTestStacks
     );
     assert_eq!(
         command_for_test_details_modal(KeyCode::Down),
@@ -710,11 +717,31 @@ fn test_details_modal_routes_detail_commands() {
     )));
     assert_eq!(
         command_for_input(&event, context),
-        AppCommand::CaptureTestSnapshot
+        AppCommand::SampleTestStacks
     );
 
     let event = InputEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
     assert_eq!(command_for_input(&event, context), AppCommand::Noop);
+}
+
+#[test]
+fn stack_sample_panel_uses_output_commands_and_escape_returns_to_details() {
+    let context = test_stack_sample_modal_context();
+    let command = |code| {
+        command_for_input(
+            &InputEvent::Terminal(Event::Key(KeyEvent::new(code, KeyModifiers::NONE))),
+            context,
+        )
+    };
+
+    assert_eq!(command(KeyCode::Esc), AppCommand::CloseTestStackSample);
+    assert_eq!(
+        command(KeyCode::Down),
+        AppCommand::Scroll(ScrollAction::LineDown)
+    );
+    assert_eq!(command(KeyCode::Char('/')), AppCommand::StartOutputSearch);
+    assert_eq!(command(KeyCode::Char('s')), AppCommand::ToggleOutputSnap);
+    assert_eq!(command(KeyCode::Char('o')), AppCommand::OpenOutput);
 }
 
 #[test]

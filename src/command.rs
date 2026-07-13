@@ -41,7 +41,8 @@ pub enum AppCommand {
     CommitCustomRunEdit,
     CancelCustomRunEdit,
     RunCustom,
-    CaptureTestSnapshot,
+    SampleTestStacks,
+    CloseTestStackSample,
     OpenSource,
     OpenOutput,
     CloseTestDetails,
@@ -422,7 +423,8 @@ impl AppCommand {
             Self::StartOutputSearch => Some(CommandKind::StartOutputSearch),
             Self::ToggleOutputSnap => Some(CommandKind::ToggleOutputSnap),
             Self::OpenOutputSearchModal
-            | Self::CaptureTestSnapshot
+            | Self::SampleTestStacks
+            | Self::CloseTestStackSample
             | Self::CloseCustomRun
             | Self::CustomRunNext
             | Self::CustomRunPrevious
@@ -514,7 +516,8 @@ impl AppCommand {
             Self::CommitCustomRunEdit => Some("custom save"),
             Self::CancelCustomRunEdit => Some("custom cancel"),
             Self::RunCustom => Some("custom run"),
-            Self::CaptureTestSnapshot => Some("sample stacks"),
+            Self::SampleTestStacks => Some("sample stacks"),
+            Self::CloseTestStackSample => Some("sampling back"),
             Self::CloseTestEvents => Some("events close"),
             Self::ToggleTestEventsFocus => Some("events focus"),
             Self::TestEventsNextRun | Self::TestEventsPreviousRun => Some("events run"),
@@ -591,6 +594,7 @@ pub enum InputMode {
     XtaskCommandModal(XtaskDetailFocus),
     TestEventsModal(TestEventsFocus),
     TestDetailsModal,
+    TestStackSampleModal,
     OutputSearchModal,
     OutputSearchInline,
 }
@@ -639,6 +643,7 @@ fn command_for_input_mode(code: KeyCode, modifiers: KeyModifiers, input: InputMo
         }
         InputMode::TestEventsModal(focus) => command_for_test_events_modal(code, modifiers, focus),
         InputMode::TestDetailsModal => command_for_test_details_modal(code),
+        InputMode::TestStackSampleModal => command_for_test_stack_sample_modal(code, modifiers),
         InputMode::OutputSearchModal => command_for_output_search_modal(code, modifiers),
         InputMode::OutputSearchInline => command_for_output_search_input(code, modifiers),
         InputMode::Normal(focus) => command_for_key(code, modifiers, focus),
@@ -841,9 +846,16 @@ fn command_for_test_details_modal(code: KeyCode) -> AppCommand {
     match code {
         KeyCode::Esc => AppCommand::CloseTestDetails,
         KeyCode::Char('R') => AppCommand::OpenCustomRun,
-        KeyCode::Char('s') => AppCommand::CaptureTestSnapshot,
+        KeyCode::Char('s') => AppCommand::SampleTestStacks,
         _ => AppCommand::Noop,
     }
+}
+
+fn command_for_test_stack_sample_modal(code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+    if code == KeyCode::Esc {
+        return AppCommand::CloseTestStackSample;
+    }
+    command_for_xtask_output(code, modifiers)
 }
 
 fn command_for_custom_run_modal(code: KeyCode) -> AppCommand {

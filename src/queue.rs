@@ -3,7 +3,6 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::{
-    app::OutputOpenRequest,
     disk_usage::DiskUsageSnapshot,
     git_status::GitStatus,
     input::InputEvent,
@@ -20,7 +19,7 @@ pub enum QueueEvent {
     DiskUsage(RequestId, Result<DiskUsageSnapshot, String>),
     GitStatus(GitStatus),
     Run(RunEvent),
-    TestSnapshot(OutputOpenRequest),
+    TestStackSample(Result<String, String>),
     Xtask(XtaskEvent),
     Tick,
 }

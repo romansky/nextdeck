@@ -607,6 +607,7 @@ fn tree_leading_fields_have_no_status_gap() {
         package: "demo".to_owned(),
         binary: "demo".to_owned(),
         binary_kind: "lib".to_owned(),
+        binary_path: PathBuf::from("target/debug/deps/demo"),
         cwd: PathBuf::from("."),
         source_path: None,
         module: Some("tests".to_owned()),
@@ -635,6 +636,7 @@ fn tree_labels_show_bubbling_event_marker_on_the_right() {
         package: "demo".to_owned(),
         binary: "demo".to_owned(),
         binary_kind: "lib".to_owned(),
+        binary_path: PathBuf::from("target/debug/deps/demo"),
         cwd: PathBuf::from("."),
         source_path: None,
         module: Some("tests".to_owned()),
@@ -685,6 +687,7 @@ fn running_duration_field_rolls_up_to_parent_rows() {
         package: "demo".to_owned(),
         binary: "demo".to_owned(),
         binary_kind: "lib".to_owned(),
+        binary_path: PathBuf::from("target/debug/deps/demo"),
         cwd: PathBuf::from("."),
         source_path: None,
         module: Some("tests".to_owned()),
@@ -728,6 +731,7 @@ fn test_details_modal_separates_details_from_custom_run() {
         package: "demo".to_owned(),
         binary: "demo".to_owned(),
         binary_kind: "lib".to_owned(),
+        binary_path: PathBuf::from("target/debug/deps/demo"),
         cwd: PathBuf::from("."),
         source_path: Some(PathBuf::from("src/lib.rs")),
         module: Some("tests".to_owned()),
@@ -792,6 +796,7 @@ fn test_details_modal_for_parent_keeps_run_options_in_custom_view() {
         package: "demo".to_owned(),
         binary: "demo".to_owned(),
         binary_kind: "lib".to_owned(),
+        binary_path: PathBuf::from("target/debug/deps/demo"),
         cwd: PathBuf::from("."),
         source_path: None,
         module: Some("tests".to_owned()),
@@ -834,6 +839,7 @@ fn test_details_actions_mute_stack_sampling_until_test_is_running() {
         package: "demo".to_owned(),
         binary: "demo".to_owned(),
         binary_kind: "lib".to_owned(),
+        binary_path: PathBuf::from("target/debug/deps/demo"),
         cwd: PathBuf::from("."),
         source_path: None,
         module: Some("tests".to_owned()),
@@ -877,7 +883,22 @@ fn test_details_actions_mute_stack_sampling_until_test_is_running() {
     assert!(TestDetailsModal::stack_sample_available(&app));
     assert_eq!(sample_style(&app), theme.title(true));
 
+    app.test_stack_sample.title = format!("Test stack sample: {}", app.tree.selected_path());
+    app.test_stack_sample.running = true;
+    assert!(TestDetailsModal::stack_sample_available(&app));
+    assert_eq!(sample_style(&app), theme.title(true));
+
+    app.test_stack_sample.open = true;
+    assert_eq!(TestDetailsModal::title(&app), "Test Details > sampling");
+    assert_eq!(TestDetailsModal::actions(&app), "[esc]back");
+    assert!(TestDetailsModal::sampling_output_label(&app).starts_with("Output: "));
+
+    app.test_stack_sample.running = false;
+    app.test_stack_sample.failed = true;
+    assert_eq!(TestDetailsModal::sampling_output_label(&app), "Output: ✗");
+
     app.running = false;
+    app.test_stack_sample.open = false;
     app.apply_command(AppCommand::OpenCustomRun);
     assert_eq!(TestDetailsModal::title(&app), "Test Details > Custom Run");
     assert_eq!(TestDetailsModal::actions(&app), "[r]run [esc]back");
@@ -901,6 +922,7 @@ fn running_row_label_shows_spinner_after_name() {
         package: "demo".to_owned(),
         binary: "demo".to_owned(),
         binary_kind: "lib".to_owned(),
+        binary_path: PathBuf::from("target/debug/deps/demo"),
         cwd: PathBuf::from("."),
         source_path: None,
         module: Some("tests".to_owned()),

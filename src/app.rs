@@ -7,6 +7,7 @@ use crate::{
         TREE_WIDTH_STEP_PERCENT,
     },
     custom_run::{CustomRunScope, CustomRunState},
+    diagnostics::TestProcessSelector,
     dirty::UiDirty,
     disk_usage::{DiskCleanupState, DiskUsageSnapshot, DiskUsageState},
     editor::SourceLocation,
@@ -43,6 +44,7 @@ enum OutputPaneId {
     Main,
     Xtask,
     TestEvents,
+    TestStackSample,
 }
 
 pub struct App {
@@ -56,6 +58,7 @@ pub struct App {
     pub main_output: OutputPaneState,
     pub focus: FocusPane,
     pub show_test_details: bool,
+    pub test_stack_sample: TestStackSampleState,
     pub discovery: DiscoveryState,
     pub git_status: GitStatus,
     pub disk_usage: DiskUsageState,
@@ -75,6 +78,7 @@ pub enum ViewportId {
     XtaskParameters,
     XtaskOutput,
     TestEventsOutput,
+    TestStackSampleOutput,
     TestDetails,
 }
 
@@ -111,6 +115,7 @@ impl ViewportId {
             Self::MainOutput => Some(OutputPaneId::Main),
             Self::XtaskOutput => Some(OutputPaneId::Xtask),
             Self::TestEventsOutput => Some(OutputPaneId::TestEvents),
+            Self::TestStackSampleOutput => Some(OutputPaneId::TestStackSample),
             Self::Tree | Self::XtaskParameters | Self::TestDetails => None,
         }
     }
@@ -208,7 +213,7 @@ pub enum AppEffect {
     StartDiscovery(RequestId),
     StartRun(Box<RunRequest>),
     StopRun,
-    CaptureTestSnapshot(TestSnapshotRequest),
+    SampleTestStacks(TestStackSampleRequest),
     OpenSource(SourceLocation),
     OpenOutput(OutputOpenRequest),
     RefreshDiskUsage(RequestId),
@@ -224,8 +229,50 @@ pub struct OutputOpenRequest {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct TestSnapshotRequest {
+pub struct TestStackSampleRequest {
     pub title: String,
+    pub selector: TestProcessSelector,
+}
+
+#[derive(Debug, Default)]
+pub struct TestStackSampleState {
+    pub open: bool,
+    pub running: bool,
+    pub failed: bool,
+    pub title: String,
+    pub text: String,
+    pub output: OutputPaneState,
+}
+
+impl TestStackSampleState {
+    fn start(&mut self, title: String) {
+        self.open = true;
+        self.running = true;
+        self.failed = false;
+        self.title = title;
+        self.text = "Sampling running test stacks...".to_owned();
+        self.output.reset_for_modal();
+    }
+
+    fn finish(&mut self, result: Result<String, String>) {
+        self.running = false;
+        match result {
+            Ok(text) => {
+                self.failed = false;
+                self.text = text;
+            }
+            Err(error) => {
+                self.failed = true;
+                self.text = format!("Stack sampling failed: {error}");
+            }
+        }
+        self.output.reset_for_source_change();
+    }
+
+    fn close(&mut self) {
+        self.open = false;
+        self.output.search.close_interaction();
+    }
 }
 
 impl App {
@@ -241,6 +288,7 @@ impl App {
             main_output: OutputPaneState::default(),
             focus: FocusPane::Tree,
             show_test_details: false,
+            test_stack_sample: TestStackSampleState::default(),
             discovery: DiscoveryState::default(),
             git_status: GitStatus::unknown(),
             disk_usage: DiskUsageState::default(),
@@ -288,7 +336,10 @@ impl App {
                 self.tree_viewport.set_page_size(viewport.metrics.page_size);
                 self.ensure_tree_selection_visible();
             }
-            ViewportId::MainOutput | ViewportId::XtaskOutput | ViewportId::TestEventsOutput => {
+            ViewportId::MainOutput
+            | ViewportId::XtaskOutput
+            | ViewportId::TestEventsOutput
+            | ViewportId::TestStackSampleOutput => {
                 let output = viewport
                     .id
                     .output_pane()
@@ -338,6 +389,7 @@ impl App {
             OutputPaneId::Main => true,
             OutputPaneId::Xtask => self.xtasks.detail_open,
             OutputPaneId::TestEvents => self.test_events.modal_open,
+            OutputPaneId::TestStackSample => self.show_test_details && self.test_stack_sample.open,
         }
     }
 
@@ -401,6 +453,15 @@ impl App {
             }
             Some(OverlayMode::TestEvents) => InputMode::TestEventsModal(self.test_events.focus),
             Some(OverlayMode::OutputSearch) => InputMode::OutputSearchModal,
+            Some(OverlayMode::TestDetails) if self.test_stack_sample.output.search.modal_open => {
+                InputMode::OutputSearchModal
+            }
+            Some(OverlayMode::TestDetails) if self.test_stack_sample.output.search.input_active => {
+                InputMode::OutputSearchInline
+            }
+            Some(OverlayMode::TestDetails) if self.test_stack_sample.open => {
+                InputMode::TestStackSampleModal
+            }
             Some(OverlayMode::TestDetails) if self.custom_run.editing.is_some() => {
                 InputMode::CustomRunInput
             }
@@ -907,7 +968,11 @@ impl App {
                 AppEffect::None
             }
             AppCommand::RunCustom => self.run_custom_effect(),
-            AppCommand::CaptureTestSnapshot => self.capture_test_snapshot_effect(),
+            AppCommand::SampleTestStacks => self.sample_test_stacks_effect(),
+            AppCommand::CloseTestStackSample => {
+                self.close_test_stack_sample();
+                AppEffect::None
+            }
             AppCommand::OpenSource => self.open_source_effect(),
             AppCommand::OpenOutput => self.open_output_effect(),
             AppCommand::OpenSettings => {
@@ -1234,6 +1299,7 @@ impl App {
     pub fn close_test_details(&mut self) {
         self.show_test_details = false;
         self.custom_run.close();
+        self.test_stack_sample.close();
         self.status = "Test details closed".to_owned();
     }
 
@@ -1623,13 +1689,24 @@ impl App {
         AppEffect::OpenSource(location)
     }
 
-    fn capture_test_snapshot_effect(&mut self) -> AppEffect {
+    fn sample_test_stacks_effect(&mut self) -> AppEffect {
         let Some(node) = self.tree.selected_node() else {
             self.status = "No selection".to_owned();
             return AppEffect::None;
         };
-        if !matches!(node.kind, NodeKind::Test(_)) {
+        let NodeKind::Test(test) = &node.kind else {
             self.status = "Stack sampling is available for a single test".to_owned();
+            return AppEffect::None;
+        };
+        let title = format!("Test stack sample: {}", self.tree.selected_path());
+        if self.test_stack_sample.running {
+            if self.test_stack_sample.title == title {
+                self.test_stack_sample.open = true;
+                self.show_test_details = true;
+                self.status = "Sampling running test stacks...".to_owned();
+            } else {
+                self.status = "Another stack sample is already in progress".to_owned();
+            }
             return AppEffect::None;
         }
         if !self.running {
@@ -1640,10 +1717,28 @@ impl App {
             self.status = "Selected test is not currently running".to_owned();
             return AppEffect::None;
         }
-
-        let title = format!("Running test stack sample: {}", self.tree.selected_path());
+        let selector = TestProcessSelector {
+            binary_path: test.binary_path.clone(),
+            full_name: test.full_name.clone(),
+        };
+        self.test_stack_sample.start(title.clone());
         self.status = "Sampling running test stacks...".to_owned();
-        AppEffect::CaptureTestSnapshot(TestSnapshotRequest { title })
+        AppEffect::SampleTestStacks(TestStackSampleRequest { title, selector })
+    }
+
+    fn close_test_stack_sample(&mut self) {
+        self.test_stack_sample.close();
+        self.status = "Test details".to_owned();
+    }
+
+    pub(crate) fn finish_test_stack_sample(&mut self, result: Result<String, String>) {
+        let failed = result.is_err();
+        self.test_stack_sample.finish(result);
+        self.status = if failed {
+            "Stack sampling failed".to_owned()
+        } else {
+            "Stack sampling complete".to_owned()
+        };
     }
 
     fn open_output_effect(&mut self) -> AppEffect {
@@ -1727,11 +1822,17 @@ impl App {
         self.test_events.modal_open
     }
 
+    fn test_stack_sample_output_active(&self) -> bool {
+        self.show_test_details && self.test_stack_sample.open
+    }
+
     fn active_output_pane(&self) -> OutputPaneId {
         if self.xtask_output_active() {
             OutputPaneId::Xtask
         } else if self.test_events_output_active() {
             OutputPaneId::TestEvents
+        } else if self.test_stack_sample_output_active() {
+            OutputPaneId::TestStackSample
         } else {
             OutputPaneId::Main
         }
@@ -1742,6 +1843,7 @@ impl App {
             OutputPaneId::Main => &self.main_output,
             OutputPaneId::Xtask => &self.xtasks.output,
             OutputPaneId::TestEvents => &self.test_events.output,
+            OutputPaneId::TestStackSample => &self.test_stack_sample.output,
         }
     }
 
@@ -1750,6 +1852,7 @@ impl App {
             OutputPaneId::Main => &mut self.main_output,
             OutputPaneId::Xtask => &mut self.xtasks.output,
             OutputPaneId::TestEvents => &mut self.test_events.output,
+            OutputPaneId::TestStackSample => &mut self.test_stack_sample.output,
         }
     }
 
@@ -1762,6 +1865,9 @@ impl App {
         }
         if self.test_events.modal_open && self.test_events.focus == TestEventsFocus::Events {
             return Some(ViewportId::TestEventsOutput);
+        }
+        if self.show_test_details && self.test_stack_sample.open {
+            return Some(ViewportId::TestStackSampleOutput);
         }
         if self.show_test_details {
             return Some(ViewportId::TestDetails);
@@ -1777,7 +1883,10 @@ impl App {
             return;
         };
         match target {
-            ViewportId::MainOutput | ViewportId::XtaskOutput | ViewportId::TestEventsOutput => {
+            ViewportId::MainOutput
+            | ViewportId::XtaskOutput
+            | ViewportId::TestEventsOutput
+            | ViewportId::TestStackSampleOutput => {
                 let output = target
                     .output_pane()
                     .expect("output viewport id maps to an output pane");
@@ -1824,6 +1933,7 @@ impl App {
             OutputPaneId::Main => self.output_source_text(),
             OutputPaneId::Xtask => self.xtasks.output_text(),
             OutputPaneId::TestEvents => self.test_events.output_text(),
+            OutputPaneId::TestStackSample => self.test_stack_sample.text.clone(),
         }
     }
 
@@ -1852,6 +1962,7 @@ impl App {
                 .selected_run()
                 .map(|run| format!("Test events: {}", run.id))
                 .unwrap_or_else(|| "Test events".to_owned()),
+            OutputPaneId::TestStackSample => self.test_stack_sample.title.clone(),
         }
     }
 
@@ -1999,7 +2110,7 @@ impl App {
             self.focus = FocusPane::Output;
         } else if output == OutputPaneId::Xtask {
             self.xtasks.focus_output();
-        } else {
+        } else if output == OutputPaneId::TestEvents {
             self.test_events.focus_events();
         }
         self.disable_output_snap(output);

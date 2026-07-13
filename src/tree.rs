@@ -24,6 +24,7 @@ pub struct DiscoveredTest {
     pub package: String,
     pub binary: String,
     pub binary_kind: String,
+    pub binary_path: PathBuf,
     pub cwd: PathBuf,
     pub source_path: Option<PathBuf>,
     pub module: Option<String>,

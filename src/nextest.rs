@@ -1179,6 +1179,7 @@ fn summary_to_tests(summary: TestListSummary) -> Vec<DiscoveredTest> {
                 package: suite.package_name.clone(),
                 binary: suite.binary.binary_name.clone(),
                 binary_kind: suite.binary.kind.as_str().to_owned(),
+                binary_path: suite.binary.binary_path.as_std_path().to_path_buf(),
                 cwd: cwd.clone(),
                 source_path: source_locator.path_for_test(&full_name),
                 module: module.map(ToOwned::to_owned),

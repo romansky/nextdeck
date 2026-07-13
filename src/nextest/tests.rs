@@ -909,6 +909,7 @@ fn discovered_test(package: &str, binary: &str, kind: &str, full_name: &str) -> 
         package: package.to_owned(),
         binary: binary.to_owned(),
         binary_kind: kind.to_owned(),
+        binary_path: PathBuf::from(format!("target/debug/deps/{binary}")),
         cwd: PathBuf::from("."),
         source_path: None,
         module: full_name

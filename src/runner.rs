@@ -6,7 +6,7 @@ use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
 use crate::{
-    app::{App, AppEffect, OutputOpenRequest, TestSnapshotRequest},
+    app::{App, AppEffect, TestStackSampleRequest},
     command::{AppCommand, CommandContext, InputMode, command_for_input},
     config,
     config::AppSettings,
@@ -263,7 +263,7 @@ fn latest_only_event(event: &QueueEvent, context: CommandContext) -> Option<Late
         | QueueEvent::DiskUsage(_, _)
         | QueueEvent::GitStatus(_)
         | QueueEvent::Run(_)
-        | QueueEvent::TestSnapshot(_)
+        | QueueEvent::TestStackSample(_)
         | QueueEvent::Xtask(_)
         | QueueEvent::Tick => None,
     }
@@ -342,16 +342,9 @@ fn handle_queue_event(
             app.apply_run_event(event);
             UiDirty::TREE | UiDirty::DETAILS | UiDirty::OUTPUT | UiDirty::STATUS | UiDirty::MODAL
         }
-        QueueEvent::TestSnapshot(request) => {
-            match context.editor.open_text(&request.title, &request.text) {
-                Ok(path) => {
-                    app.status = format!("Opened test stack sample {}", path.display());
-                }
-                Err(error) => {
-                    app.status = format!("Failed to open test stack sample: {error}");
-                }
-            }
-            UiDirty::STATUS
+        QueueEvent::TestStackSample(result) => {
+            app.finish_test_stack_sample(result);
+            UiDirty::MODAL | UiDirty::STATUS
         }
         QueueEvent::Xtask(event) => {
             app.apply_xtask_event(event);
@@ -399,11 +392,11 @@ fn handle_effect(
                 app.status = "No run in progress".to_owned();
             }
         }
-        AppEffect::CaptureTestSnapshot(request) => {
+        AppEffect::SampleTestStacks(request) => {
             let tracker = run_control
                 .as_ref()
                 .map(|control| control.process_tracker.clone());
-            start_test_snapshot(request, tracker, context.queue_tx.clone());
+            start_test_stack_sample(request, tracker, context.queue_tx.clone());
         }
         AppEffect::OpenSource(location) => match context.editor.open_source(&location) {
             Ok(()) => {
@@ -608,20 +601,20 @@ fn start_cargo_clean(
     })
 }
 
-fn start_test_snapshot(
-    request: TestSnapshotRequest,
+fn start_test_stack_sample(
+    request: TestStackSampleRequest,
     process_tracker: Option<ProcessTracker>,
     tx: QueueSender,
 ) -> tokio::task::JoinHandle<()> {
+    let root_pid = process_tracker.as_ref().and_then(ProcessTracker::root_pid);
     tokio::spawn(async move {
-        let root_pid = process_tracker.as_ref().and_then(ProcessTracker::root_pid);
-        let text = diagnostics::capture_running_test_snapshot(root_pid);
-        let _ = tx
-            .send(QueueEvent::TestSnapshot(OutputOpenRequest {
-                title: request.title,
-                text,
-            }))
-            .await;
+        let TestStackSampleRequest { selector, .. } = request;
+        let result = tokio::task::spawn_blocking(move || {
+            diagnostics::sample_running_test_stacks(root_pid, &selector)
+        })
+        .await
+        .unwrap_or_else(|error| Err(format!("Stack sampling task failed: {error}")));
+        let _ = tx.send(QueueEvent::TestStackSample(result)).await;
     })
 }
 

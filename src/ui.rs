@@ -76,6 +76,7 @@ pub fn viewport_metrics(area: Rect, app: &App) -> FrameViewportMetrics {
     let app_layout = layout(area, app.settings.tree_width_percent);
     let xtask_inner = modal_inner_area(88, 82, area);
     let test_events_inner = modal_inner_area(88, 82, area);
+    let test_details_inner = modal_inner_area(86, 88, area);
 
     FrameViewportMetrics::new(vec![
         ViewportSpec::new(
@@ -103,6 +104,10 @@ pub fn viewport_metrics(area: Rect, app: &App) -> FrameViewportMetrics {
             ViewportMetrics::new(panel_body_page_size(TestEventsModal::output_area(
                 test_events_inner,
             ))),
+        ),
+        ViewportSpec::new(
+            ViewportId::TestStackSampleOutput,
+            ViewportMetrics::new(panel_body_page_size(test_details_inner)),
         ),
         ViewportSpec::new(
             ViewportId::TestDetails,
@@ -136,6 +141,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
         OutputSearchModal::new(app.active_output_search()).render(frame, theme);
     }
     if app.test_events.modal_open && app.test_events.output.search.modal_open {
+        OutputSearchModal::new(app.active_output_search()).render(frame, theme);
+    }
+    if app.show_test_details && app.test_stack_sample.output.search.modal_open {
         OutputSearchModal::new(app.active_output_search()).render(frame, theme);
     }
 }

@@ -25,6 +25,7 @@ struct TestViewportSizes {
     xtask_parameters_page_size: usize,
     xtask_output_page_size: usize,
     test_events_output_page_size: usize,
+    test_stack_sample_output_page_size: usize,
     test_details_page_size: usize,
 }
 
@@ -36,6 +37,7 @@ impl Default for TestViewportSizes {
             xtask_parameters_page_size: 1,
             xtask_output_page_size: 1,
             test_events_output_page_size: 1,
+            test_stack_sample_output_page_size: 1,
             test_details_page_size: 1,
         }
     }
@@ -59,6 +61,10 @@ fn test_viewport_metrics(sizes: TestViewportSizes) -> FrameViewportMetrics {
         ViewportSpec::new(
             ViewportId::TestEventsOutput,
             ViewportMetrics::new(sizes.test_events_output_page_size),
+        ),
+        ViewportSpec::new(
+            ViewportId::TestStackSampleOutput,
+            ViewportMetrics::new(sizes.test_stack_sample_output_page_size),
         ),
         ViewportSpec::new(
             ViewportId::TestDetails,
@@ -159,6 +165,31 @@ fn command_context_uses_test_details_modal_when_open() {
         app.command_context(),
         CommandContext {
             input: InputMode::TestDetailsModal,
+            overlay: Some(OverlayMode::TestDetails),
+        }
+    );
+}
+
+#[test]
+fn command_context_uses_output_modes_inside_stack_sampling_panel() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    app.show_test_details = true;
+    app.test_stack_sample
+        .start("Test stack sample: case".to_owned());
+
+    assert_eq!(
+        app.command_context(),
+        CommandContext {
+            input: InputMode::TestStackSampleModal,
+            overlay: Some(OverlayMode::TestDetails),
+        }
+    );
+
+    app.apply_command(AppCommand::StartOutputSearch);
+    assert_eq!(
+        app.command_context(),
+        CommandContext {
+            input: InputMode::OutputSearchInline,
             overlay: Some(OverlayMode::TestDetails),
         }
     );
@@ -731,7 +762,7 @@ fn activate_selected_opens_details_for_non_test_rows() {
 }
 
 #[test]
-fn capture_test_snapshot_requires_running_leaf_test() {
+fn sample_test_stacks_requires_running_leaf_test() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
     expand_all(&mut app.tree.root);
     app.tree.select_next();
@@ -739,26 +770,96 @@ fn capture_test_snapshot_requires_running_leaf_test() {
     app.tree.select_next();
 
     assert_eq!(
-        app.apply_command(AppCommand::CaptureTestSnapshot),
+        app.apply_command(AppCommand::SampleTestStacks),
         AppEffect::None
     );
     assert_eq!(app.status, "No test run in progress");
 
     app.running = true;
     assert_eq!(
-        app.apply_command(AppCommand::CaptureTestSnapshot),
+        app.apply_command(AppCommand::SampleTestStacks),
         AppEffect::None
     );
     assert_eq!(app.status, "Selected test is not currently running");
 
     app.tree.start_test(&test_key(0));
     assert_eq!(
-        app.apply_command(AppCommand::CaptureTestSnapshot),
-        AppEffect::CaptureTestSnapshot(TestSnapshotRequest {
-            title: "Running test stack sample: demo::tests::case_00".to_owned(),
+        app.apply_command(AppCommand::SampleTestStacks),
+        AppEffect::SampleTestStacks(TestStackSampleRequest {
+            title: "Test stack sample: demo::tests::case_00".to_owned(),
+            selector: crate::diagnostics::TestProcessSelector {
+                binary_path: std::path::PathBuf::from("target/debug/deps/demo"),
+                full_name: "tests::case_00".to_owned(),
+            },
         })
     );
     assert_eq!(app.status, "Sampling running test stacks...");
+    assert!(app.test_stack_sample.running);
+    assert!(app.test_stack_sample.open);
+    assert_eq!(
+        app.test_stack_sample.text,
+        "Sampling running test stacks..."
+    );
+
+    assert_eq!(
+        app.apply_command(AppCommand::SampleTestStacks),
+        AppEffect::None
+    );
+    assert_eq!(app.status, "Sampling running test stacks...");
+
+    app.finish_test_stack_sample(Ok("sample output".to_owned()));
+    assert!(!app.test_stack_sample.running);
+    assert!(!app.test_stack_sample.failed);
+    assert_eq!(app.test_stack_sample.text, "sample output");
+}
+
+#[test]
+fn failed_stack_sample_stays_in_the_sampling_output_panel() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    app.show_test_details = true;
+    app.test_stack_sample
+        .start("Test stack sample: case".to_owned());
+
+    app.finish_test_stack_sample(Err("selected process exited".to_owned()));
+
+    assert!(app.test_stack_sample.open);
+    assert!(!app.test_stack_sample.running);
+    assert!(app.test_stack_sample.failed);
+    assert_eq!(
+        app.test_stack_sample.text,
+        "Stack sampling failed: selected process exited"
+    );
+    assert_eq!(app.status, "Stack sampling failed");
+
+    app.apply_command(AppCommand::CloseTestStackSample);
+    assert!(app.show_test_details);
+    assert!(!app.test_stack_sample.open);
+}
+
+#[test]
+fn stack_sample_panel_routes_search_scroll_and_open_to_its_output() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    app.show_test_details = true;
+    app.test_stack_sample
+        .start("Test stack sample: case".to_owned());
+    app.finish_test_stack_sample(Ok("alpha\nbeta\nalpha two\n".to_owned()));
+    app.test_stack_sample.output.apply_viewport_page_size(1);
+
+    app.apply_command(AppCommand::Scroll(scroll::ScrollAction::LineUp));
+    assert_eq!(app.test_stack_sample.output.scroll(), 1);
+    assert_eq!(app.main_output.scroll(), 0);
+
+    app.apply_command(AppCommand::StartOutputSearch);
+    search_type(&mut app, "alpha");
+    app.apply_command(AppCommand::ApplyOutputSearch);
+    app.apply_command(AppCommand::ToggleOutputFilter);
+
+    let AppEffect::OpenOutput(request) = app.apply_command(AppCommand::OpenOutput) else {
+        panic!("expected sampling output open effect");
+    };
+    assert_eq!(request.title, "Test stack sample: case");
+    assert_eq!(request.text, "alpha\nalpha two");
+    assert_eq!(app.main_output.search.query, "");
 }
 
 #[test]
@@ -1852,6 +1953,7 @@ fn test_rows(count: usize) -> Vec<DiscoveredTest> {
             package: "demo".to_owned(),
             binary: "demo".to_owned(),
             binary_kind: "lib".to_owned(),
+            binary_path: std::path::PathBuf::from("target/debug/deps/demo"),
             cwd: std::path::PathBuf::from("."),
             source_path: None,
             module: Some("tests".to_owned()),

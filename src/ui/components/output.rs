@@ -171,6 +171,7 @@ fn output_line_style(theme: &Theme, line: &str) -> Style {
     } else if line.starts_with("Run failed:")
         || line.starts_with("Run command failed:")
         || line.starts_with("nextest: failed")
+        || line.starts_with("Stack sampling failed:")
     {
         theme.danger()
     } else if line.starts_with("Run stopped:") {
