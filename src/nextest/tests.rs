@@ -11,8 +11,6 @@ fn output_chunks_text(output: &[TestOutputChunk]) -> String {
 }
 use crate::{app::App, config::AppSettings, diagnostics::ProcessTracker, tree::Tree};
 
-static OUTPUT_FIXTURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 #[tokio::test]
 async fn working_dir_resolves_workspace_root_from_nested_package() {
     let root = env::temp_dir().join(format!(
@@ -760,6 +758,25 @@ fn manual_run_request_command_includes_run_options() {
 }
 
 #[test]
+fn run_command_disables_color_for_machine_output() {
+    let command = NextestClient::for_project_dir(PathBuf::from(".")).run_command(
+        Vec::new(),
+        &RunOptions::default(),
+        false,
+    );
+    let args = command
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>();
+
+    assert!(
+        args.windows(2)
+            .any(|args| args[0] == "--color" && args[1] == "never")
+    );
+}
+
+#[test]
 fn parses_profiles_and_default_filter_presets_from_nextest_config() {
     let profiles = parse_nextest_profiles(
         r#"
@@ -882,8 +899,6 @@ async fn run_output_fixture_with_options(
     options: RunOptions,
     capture_events: bool,
 ) -> Vec<RunEvent> {
-    // Concurrent nextest processes share the fixture's target and nextest run state.
-    let _fixture_guard = OUTPUT_FIXTURE_LOCK.lock().await;
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/output-workspace");
     let client = NextestClient::for_project_dir(fixture);
     let (tx, mut rx) = tokio::sync::mpsc::channel(crate::queue::APP_EVENT_QUEUE_CAPACITY);

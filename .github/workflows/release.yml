@@ -29,7 +29,8 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --all-features
+      - run: cargo nextest run --workspace --all-features
+      - run: cargo test --doc --workspace --all-features
 
   build:
     name: Build ${{ matrix.target }}

@@ -794,6 +794,8 @@ impl NextestClient {
         command.current_dir(&self.project_dir);
         command.args(["nextest", "run"]);
         command.args([
+            "--color",
+            "never",
             "--message-format",
             "libtest-json-plus",
             "--message-format-version",
