@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use nextdeck_test_events::{SCHEMA_VERSION, TestEvent};
+use nextdeck_helper::{SCHEMA_VERSION, TestEvent};
 
 use crate::{
     output::{OUTPUT_TEXT_LIMIT_BYTES, append_bounded_text, bounded_text_with_limit},
@@ -185,7 +185,7 @@ impl TestEventsState {
 
     pub fn output_text(&self) -> String {
         let Some(run) = self.selected_run() else {
-            return "No test event runs yet.\nRun tests from NextDeck to create an event stream."
+            return "No test event runs yet.\nRun tests from Nextdeck to create an event stream."
                 .to_owned();
         };
         if run.events.is_empty() {
@@ -339,20 +339,20 @@ fn run_id() -> String {
     format!("{}-{}-{}", millis, std::process::id(), counter)
 }
 
-pub fn level_label(level: nextdeck_test_events::Level) -> &'static str {
+pub fn level_label(level: nextdeck_helper::Level) -> &'static str {
     match level {
-        nextdeck_test_events::Level::Trace => "trace",
-        nextdeck_test_events::Level::Debug => "debug",
-        nextdeck_test_events::Level::Info => "info",
-        nextdeck_test_events::Level::Warn => "warn",
-        nextdeck_test_events::Level::Error => "error",
+        nextdeck_helper::Level::Trace => "trace",
+        nextdeck_helper::Level::Debug => "debug",
+        nextdeck_helper::Level::Info => "info",
+        nextdeck_helper::Level::Warn => "warn",
+        nextdeck_helper::Level::Error => "error",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nextdeck_test_events::Level;
+    use nextdeck_helper::Level;
     use serde_json::json;
 
     #[test]

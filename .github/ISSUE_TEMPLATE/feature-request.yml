@@ -1,0 +1,35 @@
+name: Feature request
+description: Propose an improvement to an existing Nextdeck workflow
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow is difficult or unavailable today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest change that would solve the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include current workarounds or related tools when relevant.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add examples, captures, or links that clarify the request.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I checked for an existing request covering this use case.
+          required: true

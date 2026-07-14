@@ -45,7 +45,7 @@ fn late_captured_output_stays_before_the_nextest_summary() {
     output.append_text("before failure");
     output.append_nextest_failure(None);
     output.append_event(
-        nextdeck_test_events::Level::Error,
+        nextdeck_helper::Level::Error,
         "@ event error late checkpoint",
     );
     output.append_text("late stderr");
@@ -75,7 +75,7 @@ fn stream_interleaves_text_and_events_in_append_order() {
     let mut output = TestOutput::default();
 
     output.append_text("before");
-    output.append_event(nextdeck_test_events::Level::Info, "@ event info cache hit");
+    output.append_event(nextdeck_helper::Level::Info, "@ event info cache hit");
     output.append_text("after");
 
     assert_eq!(
@@ -93,7 +93,7 @@ fn interleaved_entries_share_one_retention_budget() {
         "a".repeat(OUTPUT_TEXT_LIMIT_BYTES / 2)
     ));
     output.append_event(
-        nextdeck_test_events::Level::Info,
+        nextdeck_helper::Level::Info,
         &format!(
             "@ event info middle {}",
             "b".repeat(OUTPUT_TEXT_LIMIT_BYTES / 2)
@@ -112,7 +112,7 @@ fn interleaved_entries_share_one_retention_budget() {
 fn interleaved_retention_trims_at_utf8_boundaries() {
     let mut output = TestOutput::default();
     output.append_event(
-        nextdeck_test_events::Level::Info,
+        nextdeck_helper::Level::Info,
         &"β".repeat(OUTPUT_TEXT_LIMIT_BYTES),
     );
     output.append_text("tail");
@@ -138,8 +138,8 @@ fn dogfood_output_captures_stdout_stderr_and_events() {
     // When Nextdeck launches this test, these frames exercise ordering through
     // nextest's combined stdout/stderr capture.
     println!("DOGFOOD_OUTPUT stdout before info event");
-    nextdeck_test_events::event!(
-        level: nextdeck_test_events::Level::Info,
+    nextdeck_helper::event!(
+        level: nextdeck_helper::Level::Info,
         target: "dogfood-output",
         "stdout reached info event";
         "stream" => "stdout",
@@ -147,8 +147,8 @@ fn dogfood_output_captures_stdout_stderr_and_events() {
     );
     println!("DOGFOOD_OUTPUT stdout after info event");
     eprintln!("DOGFOOD_OUTPUT stderr before warn event");
-    nextdeck_test_events::event!(
-        level: nextdeck_test_events::Level::Warn,
+    nextdeck_helper::event!(
+        level: nextdeck_helper::Level::Warn,
         target: "dogfood-output",
         "stderr reached warn event";
         "stream" => "stderr",

@@ -17,7 +17,7 @@ use tar::Builder as TarBuilder;
 
 const TUI_PACKAGE: &str = "nextdeck";
 const TUI_BINARY: &str = "nextdeck";
-const LIB_PACKAGE: &str = "nextdeck-test-events";
+const HELPER_PACKAGE: &str = "nextdeck-helper";
 const DIST_DIR: &str = "target/dist";
 const LOCAL_PUBLISH_DIR: &str = "target/local-publish";
 
@@ -74,25 +74,23 @@ enum XtaskCommand {
         #[arg(long, help = "Output formula path")]
         output: PathBuf,
     },
-    #[command(about = "Run local checks for the nextdeck-test-events crate")]
-    LibCheck {
+    #[command(about = "Run local checks for the nextdeck-helper crate")]
+    HelperCheck {
         #[arg(long, help = "Allow cargo package to run with a dirty worktree")]
         allow_dirty: bool,
     },
-    #[command(about = "Create a verified nextdeck-test-events package")]
-    LibPackage {
+    #[command(about = "Create a verified nextdeck-helper package")]
+    HelperPackage {
         #[arg(long, help = "Allow packaging with a dirty worktree")]
         allow_dirty: bool,
     },
-    #[command(
-        about = "Publish nextdeck-test-events locally and smoke-test it from another project"
-    )]
-    LibPublishLocal {
+    #[command(about = "Publish nextdeck-helper locally and smoke-test it from another project")]
+    HelperPublishLocal {
         #[arg(long, help = "Allow packaging with a dirty worktree")]
         allow_dirty: bool,
     },
-    #[command(about = "Run crates.io publish wiring for nextdeck-test-events")]
-    LibPush {
+    #[command(about = "Run crates.io publish wiring for nextdeck-helper")]
+    HelperPush {
         #[arg(long, help = "Allow publishing with a dirty worktree")]
         allow_dirty: bool,
         #[arg(
@@ -101,7 +99,7 @@ enum XtaskCommand {
         )]
         execute: bool,
     },
-    #[command(about = "Run a tests-tree path and print NextDeck-style output as JSONL")]
+    #[command(about = "Run a tests-tree path and print Nextdeck-style output as JSONL")]
     ReproNextdeckRun {
         #[arg(
             long,
@@ -112,7 +110,7 @@ enum XtaskCommand {
 }
 
 fn main() -> Result<()> {
-    nextdeck_test_events::xtask_clap_info!(Cli);
+    nextdeck_helper::xtask_clap_info!(Cli);
 
     let cli = Cli::parse();
     let workspace = workspace_root()?;
@@ -140,17 +138,19 @@ fn main() -> Result<()> {
             dist_dir,
             output,
         } => tui_homebrew_formula(&workspace, version, &github_repo, &dist_dir, &output),
-        XtaskCommand::LibCheck { allow_dirty } => lib_check(&workspace, allow_dirty),
-        XtaskCommand::LibPackage { allow_dirty } => {
-            let artifact = package_crate(&workspace, LIB_PACKAGE, allow_dirty)?;
+        XtaskCommand::HelperCheck { allow_dirty } => helper_check(&workspace, allow_dirty),
+        XtaskCommand::HelperPackage { allow_dirty } => {
+            let artifact = package_crate(&workspace, HELPER_PACKAGE, allow_dirty)?;
             println!("Packaged {}", artifact.crate_path.display());
             Ok(())
         }
-        XtaskCommand::LibPublishLocal { allow_dirty } => lib_publish_local(&workspace, allow_dirty),
-        XtaskCommand::LibPush {
+        XtaskCommand::HelperPublishLocal { allow_dirty } => {
+            helper_publish_local(&workspace, allow_dirty)
+        }
+        XtaskCommand::HelperPush {
             allow_dirty,
             execute,
-        } => lib_push(&workspace, allow_dirty, execute),
+        } => helper_push(&workspace, allow_dirty, execute),
         XtaskCommand::ReproNextdeckRun { path } => repro_nextdeck_run(&workspace, &path),
     }
 }
@@ -179,7 +179,7 @@ fn tui_check(workspace: &Path, allow_dirty: bool) -> Result<()> {
     Ok(())
 }
 
-fn lib_check(workspace: &Path, allow_dirty: bool) -> Result<()> {
+fn helper_check(workspace: &Path, allow_dirty: bool) -> Result<()> {
     run(workspace, "cargo", ["fmt", "--all", "--check"])?;
     run(
         workspace,
@@ -187,7 +187,7 @@ fn lib_check(workspace: &Path, allow_dirty: bool) -> Result<()> {
         [
             "clippy",
             "-p",
-            LIB_PACKAGE,
+            HELPER_PACKAGE,
             "--all-targets",
             "--features",
             "xtask-clap",
@@ -199,9 +199,9 @@ fn lib_check(workspace: &Path, allow_dirty: bool) -> Result<()> {
     run(
         workspace,
         "cargo",
-        ["test", "-p", LIB_PACKAGE, "--features", "xtask-clap"],
+        ["test", "-p", HELPER_PACKAGE, "--features", "xtask-clap"],
     )?;
-    package_crate(workspace, LIB_PACKAGE, allow_dirty)?;
+    package_crate(workspace, HELPER_PACKAGE, allow_dirty)?;
     Ok(())
 }
 
@@ -269,7 +269,7 @@ fn check_package_contents(workspace: &Path, package: &str, allow_dirty: bool) ->
 
 fn install_tui_workspace(workspace: &Path) -> Result<()> {
     println!(
-        "Installing {TUI_PACKAGE} from workspace path because {LIB_PACKAGE} is not published yet."
+        "Installing {TUI_PACKAGE} from workspace path because {HELPER_PACKAGE} is not published yet."
     );
     run(
         workspace,
@@ -279,8 +279,8 @@ fn install_tui_workspace(workspace: &Path) -> Result<()> {
     verify_local_install()
 }
 
-fn lib_publish_local(workspace: &Path, allow_dirty: bool) -> Result<()> {
-    let artifact = package_crate(workspace, LIB_PACKAGE, allow_dirty)?;
+fn helper_publish_local(workspace: &Path, allow_dirty: bool) -> Result<()> {
+    let artifact = package_crate(workspace, HELPER_PACKAGE, allow_dirty)?;
     let local_dir = workspace
         .join(LOCAL_PUBLISH_DIR)
         .join(format!("{}-{}", artifact.package, artifact.version));
@@ -294,13 +294,13 @@ fn lib_publish_local(workspace: &Path, allow_dirty: bool) -> Result<()> {
     println!("Local package {}", local_dir.display());
     println!(
         "Use from another project with: {} = {{ path = \"{}\" }}",
-        LIB_PACKAGE,
+        HELPER_PACKAGE,
         toml_escape_path(&local_dir)
     );
     Ok(())
 }
 
-fn lib_push(workspace: &Path, allow_dirty: bool, execute: bool) -> Result<()> {
+fn helper_push(workspace: &Path, allow_dirty: bool, execute: bool) -> Result<()> {
     if !execute {
         println!("Dry-running crates.io publish; pass --execute to publish for real.");
     }
@@ -308,7 +308,7 @@ fn lib_push(workspace: &Path, allow_dirty: bool, execute: bool) -> Result<()> {
     let mut args = vec![
         "publish".to_owned(),
         "-p".to_owned(),
-        LIB_PACKAGE.to_owned(),
+        HELPER_PACKAGE.to_owned(),
         "--locked".to_owned(),
     ];
     if allow_dirty {
@@ -350,10 +350,7 @@ fn repro_nextdeck_run(workspace: &Path, tree_path: &str) -> Result<()> {
         .args(&args)
         .current_dir(workspace)
         .env("NEXTEST_EXPERIMENTAL_LIBTEST_JSON", "1")
-        .env(
-            nextdeck_test_events::ENV_VAR,
-            nextdeck_test_events::ENV_VALUE,
-        )
+        .env(nextdeck_helper::ENV_VAR, nextdeck_helper::ENV_VALUE)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -384,7 +381,7 @@ fn repro_nextdeck_run(workspace: &Path, tree_path: &str) -> Result<()> {
 fn smoke_test_local_lib(workspace: &Path, local_crate: &Path) -> Result<()> {
     let project_dir = workspace
         .join(LOCAL_PUBLISH_DIR)
-        .join(format!("{LIB_PACKAGE}-smoke"));
+        .join(format!("{HELPER_PACKAGE}-smoke"));
     if project_dir.exists() {
         fs::remove_dir_all(&project_dir)
             .with_context(|| format!("removing old smoke project {}", project_dir.display()))?;
@@ -395,8 +392,8 @@ fn smoke_test_local_lib(workspace: &Path, local_crate: &Path) -> Result<()> {
     fs::write(
         project_dir.join("Cargo.toml"),
         format!(
-            "[workspace]\n\n[package]\nname = \"nextdeck-test-events-smoke\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{} = {{ path = \"{}\", features = [\"xtask-clap\"] }}\nclap = {{ version = \"4.5\", features = [\"derive\"] }}\nserde_json = \"1.0\"\n",
-            LIB_PACKAGE,
+            "[workspace]\n\n[package]\nname = \"nextdeck-helper-smoke\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{} = {{ path = \"{}\", features = [\"xtask-clap\"] }}\nclap = {{ version = \"4.5\", features = [\"derive\"] }}\nserde_json = \"1.0\"\n",
+            HELPER_PACKAGE,
             toml_escape_path(local_crate)
         ),
     )
@@ -423,19 +420,19 @@ enum Command {
 #[test]
 fn emits_events_and_xtask_metadata() {
     std::env::set_var(
-        nextdeck_test_events::ENV_VAR,
-        nextdeck_test_events::ENV_VALUE,
+        nextdeck_helper::ENV_VAR,
+        nextdeck_helper::ENV_VALUE,
     );
-    assert!(nextdeck_test_events::enabled());
-    nextdeck_test_events::event!("smoke"; "kind" => "local");
-    std::env::remove_var(nextdeck_test_events::ENV_VAR);
+    assert!(nextdeck_helper::enabled());
+    nextdeck_helper::event!("smoke"; "kind" => "local");
+    std::env::remove_var(nextdeck_helper::ENV_VAR);
 
     let mut metadata = Vec::new();
-    let handled = nextdeck_test_events::xtask::handle_nextdeck_info_from::<Cli, _, _, _>(
+    let handled = nextdeck_helper::xtask::handle_nextdeck_info_from::<Cli, _, _, _>(
         ["xtask", "nextdeck-info", "--format", "json"],
         &mut metadata,
     )
-    .expect("nextdeck metadata");
+    .expect("Nextdeck metadata");
     assert!(handled);
     let metadata = String::from_utf8(metadata).expect("utf8");
     assert!(metadata.contains("\"name\": \"check\""));
@@ -946,7 +943,7 @@ fn workspace_package_names(workspace: &Path) -> Result<BTreeSet<String>> {
 fn print_stream_as_jsonl(stream: &str, text: &str) -> Result<()> {
     for line in text.lines() {
         let trimmed = line.trim_start();
-        if let Some(json) = trimmed.strip_prefix(nextdeck_test_events::FRAME_PREFIX) {
+        if let Some(json) = trimmed.strip_prefix(nextdeck_helper::FRAME_PREFIX) {
             print_jsonl(match serde_json::from_str::<Value>(json) {
                 Ok(event) => json!({ "kind": "event", "stream": stream, "event": event }),
                 Err(error) => json!({
@@ -1034,7 +1031,7 @@ fn package_version(workspace: &Path, package: &str) -> Result<String> {
 fn package_manifest(workspace: &Path, package: &str) -> Result<PathBuf> {
     match package {
         TUI_PACKAGE => Ok(workspace.join("Cargo.toml")),
-        LIB_PACKAGE => Ok(workspace.join(LIB_PACKAGE).join("Cargo.toml")),
+        HELPER_PACKAGE => Ok(workspace.join(HELPER_PACKAGE).join("Cargo.toml")),
         _ => bail!("unknown package {package}"),
     }
 }

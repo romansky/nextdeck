@@ -1,19 +1,23 @@
 # Xtask Integration
 
-Nextdeck can discover repository automation built with the Rust
-[`xtask`](https://github.com/matklad/cargo-xtask) convention. Press `X` to pick
-a command, edit its arguments, run it, and read its output without leaving
-the test UI.
+Nextdeck can help expose project automation commands built with [`xtask`](https://github.com/matklad/cargo-xtask)
+convention in the TUI accessible via "X" global command.
 
-Integration is opt-in. A project exposes a JSON description at:
+If you are using Clap CLI its recommended to use the `nextdeck-helper` create for fast and simple integration,
+alternatively you can use the provided schema and manually generate the manifest to drive the integration.
+
+Nextdeck integration happens by reading the output produced by running:
 
 ```sh
 cargo xtask nextdeck-info --format json
 ```
 
-## Add It to a Clap Xtask
+The command should print the generated manifest and exit successfully.
 
-Most xtask repositories define this Cargo alias:
+## Prerequisites
+
+`cargo xtask` must work from the Cargo workspace root. Most projects provide
+it with an alias:
 
 ```toml
 # .cargo/config.toml
@@ -21,159 +25,90 @@ Most xtask repositories define this Cargo alias:
 xtask = "run --package xtask --"
 ```
 
-Enable the helper in the xtask crate:
+## Integration Via `nextdeck-helper` Crate
+
+### Clap Setup
+
+Add the helper to the xtask crate:
 
 ```toml
-# xtask/Cargo.toml
 [dependencies]
-nextdeck-test-events = { version = "0.1", features = ["xtask-clap"] }
+nextdeck-helper = { version = "0.1", features = ["xtask-clap"] }
 ```
 
-Call `xtask_clap_info!` before `Cli::parse()`. The macro handles the synthetic
-`nextdeck-info` command before Clap sees it.
+Call `xtask_clap_info!` before parsing the command line:
 
 ```rust
-use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::Parser;
 
-#[derive(Debug, Parser)]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    nextdeck_helper::xtask_clap_info!(Cli);
 
-#[derive(Clone, Debug, ValueEnum)]
-enum Profile {
-    Dev,
-    Release,
-}
-
-#[derive(Debug, Subcommand)]
-enum Command {
-    #[command(about = "Build release artifacts")]
-    Release {
-        #[arg(long)]
-        allow_dirty: bool,
-
-        #[arg(long, value_enum, default_value = "release")]
-        profile: Profile,
-    },
-}
-
-fn main() -> Result<()> {
-    nextdeck_test_events::xtask_clap_info!(Cli);
-
-    match Cli::parse().command {
-        Command::Release {
-            allow_dirty,
-            profile,
-        } => {
-            // Run the existing task.
-            let _ = (allow_dirty, profile);
-            Ok(())
-        }
-    }
+    let cli = Cli::parse();
+    // Dispatch the existing command.
+    Ok(())
 }
 ```
 
-Check the endpoint without opening Nextdeck:
+The helper reads visible top-level subcommands and their visible, named arguments. Command descriptions, argument help,
+defaults, and possible values come from the Clap definitions.
 
-```sh
-cargo xtask nextdeck-info --format json
+Supported argument shapes are:
+
+| Clap shape                           | Nextdeck value |
+|--------------------------------------|----------------|
+| `SetTrue` or `SetFalse` flag         | Boolean        |
+| Single value with possible values    | Enum           |
+| Single value with an integer default | Number         |
+| Other single value                   | Text           |
+
+Give each integrated argument a long name such as `--allow-dirty`. Positional, repeated, variadic, count, hidden, and
+nested-subcommand arguments are not exposed in Nextdeck; they continue to work when the xtask is run directly.
+
+## Manual Integration
+
+Projects that do not use Clap can implement the same endpoint directly. It must write only JSON to stdout; diagnostics
+may be written to stderr.
+
+Write JSON string based on XtaskManifestV1 from the TypeScript scehma below to stdout:
+
+```ts
+type XtaskManifestV1 = {
+    schema_version: 1;
+    commands: XtaskCommand[];
+};
+
+type XtaskCommand = {
+    name: string; // ASCII letters, digits, "_", and "-"
+    about?: string;
+    args?: XtaskArgument[]; // Defaults to an empty list
+};
+
+type XtaskArgument = {
+    name: string; // ASCII letters, digits, "_", and "-"
+    long?: string; // Preferred flag name, without "--"
+    short?: string; // Single character; descriptive metadata only
+    help?: string;
+    required?: boolean; // Defaults to false
+    value: XtaskValue;
+};
+
+type XtaskValue =
+    | { type: "bool"; default?: boolean } // Defaults to false
+    | { type: "string"; default?: string }
+    | { type: "number"; default?: number } // Signed 64-bit integer
+    | {
+    type: "enum";
+    values: string[]; // Must contain at least one value
+    default?: string; // Must be present in values
+};
 ```
 
-## Supported Clap Arguments
+Nextdeck invokes an argument by its `long` name, falling back to `name`. A boolean that differs from its default is
+passed as a flag. Other values are passed as `--name value`, except optional values at their declared defaults, which
+are omitted. Argument values are remembered per Cargo workspace.
 
-The helper reads top-level Clap subcommands and exposes visible, named
-arguments that Nextdeck can render:
+## Source References
 
-| Clap shape | Nextdeck control |
-| --- | --- |
-| `bool` flag | on/off toggle |
-| single value | text input |
-| numeric default | numeric input |
-| `ValueEnum` or possible values | finite choice |
-
-Give integrated arguments long names such as `--allow-dirty`; these become the
-flags used when Nextdeck runs the command. Help text and defaults come from the
-Clap definition.
-
-Positional, repeated, variadic, hidden, and other unsupported arguments are
-left out of the generated metadata. They still work when the xtask is invoked
-normally from the command line.
-
-## Using It in Nextdeck
-
-Press `X` to open the command picker and `Enter` to configure a command. The
-left side contains its arguments and the right side contains live stdout and
-stderr. Press `r` to run:
-
-Here is a shortened capture of Nextdeck's own `tui-check` xtask:
-
-```text
-┌ Xtasks > tui-check ────────────────────────────────────────────────────────────────────────────────┐
-│┌ Parameters ───────────────────────────┐ ┌ Output <#1-1/1> [s]nap-bottom:✓ ───────────────────────┐│
-││@ --allow-dirty off # Allow cargo pa...│ │Run the selected xtask to see output here.              ││
-││# bool: off, on (default: off)         │ │                                                        ││
-││                                       │ │                                                        ││
-││Run local TUI checks expected before...│ │                                                        ││
-││cargo xtask tui-check                  │ │                                                        ││
-││                                       │ │                                                        ││
-││                                       │ │                                                        ││
-│└───────────────────────────────────────┘ └ [/]search<[            ]> [o]pen-editor ───────────────┘│
-└ [esc]back [tab]output [r]run ─────────────────────────────────────────────────────────────────────┘
-```
-
-```sh
-cargo xtask <command> [args...]
-```
-
-Argument choices are remembered per project. Default-valued optional arguments
-are omitted from the command line, and required values are checked before the
-process starts.
-
-Use the arrow keys to select and change arguments. `Enter` advances boolean and
-enum values, or opens an editor for text and numeric values.
-
-Press `Tab` to switch between parameters and output. Output has the same
-search, filter, and external-open controls as test output. Press `Esc` to return
-to the command picker.
-
-## JSON Contract
-
-Projects that do not use Clap can implement the endpoint directly. Version `1`
-returns a command list with named arguments:
-
-```json
-{
-  "schema_version": 1,
-  "commands": [
-    {
-      "name": "release",
-      "about": "Build release artifacts",
-      "args": [
-        {
-          "name": "allow-dirty",
-          "long": "allow-dirty",
-          "help": "Allow a dirty worktree",
-          "value": { "type": "bool", "default": false }
-        },
-        {
-          "name": "profile",
-          "long": "profile",
-          "required": true,
-          "value": {
-            "type": "enum",
-            "values": ["dev", "release"],
-            "default": "release"
-          }
-        }
-      ]
-    }
-  ]
-}
-```
-
-Supported value types are `bool`, `string`, `number`, and `enum`. String,
-number, and enum values are passed as `--name value`; a true boolean is passed
-as `--flag`.
+- [`xtask-clap` helper and manifest types](https://docs.rs/crate/nextdeck-helper/latest/source/src/xtask.rs)
+- [Nextdeck's xtask integration](../../xtask/src/main.rs)

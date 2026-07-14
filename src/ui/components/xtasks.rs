@@ -94,7 +94,7 @@ impl<'a> XtasksModal<'a> {
             lines.extend([
                 Line::from(""),
                 Line::styled(
-                    "This project has not exposed nextdeck xtask metadata yet.",
+                    "This project has not exposed Nextdeck xtask metadata yet.",
                     theme.text(),
                 ),
                 Line::styled(

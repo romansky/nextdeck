@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use nextdeck_test_events::TestEvent;
+use nextdeck_helper::TestEvent;
 use nextest_metadata::{FilterMatch, TestListSummary};
 use serde::Deserialize;
 use serde_json::Value;
@@ -812,10 +812,7 @@ impl NextestClient {
         command.args(scope_args);
         command.env("NEXTEST_EXPERIMENTAL_LIBTEST_JSON", "1");
         if capture_test_events {
-            command.env(
-                nextdeck_test_events::ENV_VAR,
-                nextdeck_test_events::ENV_VALUE,
-            );
+            command.env(nextdeck_helper::ENV_VAR, nextdeck_helper::ENV_VALUE);
         }
         command
     }
@@ -1463,7 +1460,7 @@ impl TestOutputDecoder {
         self.pending.push_str(chunk);
         let mut chunks = Vec::new();
         loop {
-            let Some(marker_index) = self.pending.find(nextdeck_test_events::FRAME_PREFIX) else {
+            let Some(marker_index) = self.pending.find(nextdeck_helper::FRAME_PREFIX) else {
                 let keep = partial_frame_prefix_len(&self.pending);
                 let emit_len = if final_read {
                     self.pending.len()
@@ -1481,7 +1478,7 @@ impl TestOutputDecoder {
                 continue;
             }
 
-            let payload_start = nextdeck_test_events::FRAME_PREFIX.len();
+            let payload_start = nextdeck_helper::FRAME_PREFIX.len();
             let payload = &self.pending[payload_start..];
             if let Some(line_end) = payload.find('\n') {
                 let event_json = payload[..line_end].trim_end_matches('\r').to_owned();
@@ -1515,9 +1512,9 @@ fn take_raw_output(output: &mut Vec<TestOutputChunk>) -> String {
 }
 
 fn partial_frame_prefix_len(text: &str) -> usize {
-    (1..nextdeck_test_events::FRAME_PREFIX.len())
+    (1..nextdeck_helper::FRAME_PREFIX.len())
         .rev()
-        .find(|length| text.ends_with(&nextdeck_test_events::FRAME_PREFIX[..*length]))
+        .find(|length| text.ends_with(&nextdeck_helper::FRAME_PREFIX[..*length]))
         .unwrap_or_default()
 }
 
@@ -1535,10 +1532,7 @@ fn push_text_chunk(chunks: &mut Vec<TestOutputChunk>, text: String) {
 fn push_event_chunk(chunks: &mut Vec<TestOutputChunk>, json: &str) {
     match crate::test_events::parse_event_line(json) {
         Ok(event) => chunks.push(TestOutputChunk::Event(event)),
-        Err(_) => push_text_chunk(
-            chunks,
-            format!("{}{json}\n", nextdeck_test_events::FRAME_PREFIX),
-        ),
+        Err(_) => push_text_chunk(chunks, format!("{}{json}\n", nextdeck_helper::FRAME_PREFIX)),
     }
 }
 

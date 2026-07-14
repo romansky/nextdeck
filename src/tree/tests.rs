@@ -34,23 +34,23 @@ fn builds_package_module_test_tree() {
 #[test]
 fn workspace_label_uses_discovered_cwd() {
     let mut test = discovered_test("demo::demo", "demo", "tests", "works");
-    test.cwd = PathBuf::from("/Users/roman/Code/demo");
+    test.cwd = PathBuf::from("/workspace/demo");
 
     let tree = Tree::from_tests(vec![test]);
 
-    assert_eq!(tree.root.label, "/Users/roman/Code/demo");
+    assert_eq!(tree.root.label, "/workspace/demo");
 }
 
 #[test]
 fn workspace_label_uses_common_cwd_for_multiple_packages() {
     let mut first = discovered_test("app::app", "app", "tests", "works");
-    first.cwd = PathBuf::from("/Users/roman/Code/workspace/app");
+    first.cwd = PathBuf::from("/workspace/project/app");
     let mut second = discovered_test("core::core", "core", "tests", "works");
-    second.cwd = PathBuf::from("/Users/roman/Code/workspace/core");
+    second.cwd = PathBuf::from("/workspace/project/core");
 
     let tree = Tree::from_tests(vec![first, second]);
 
-    assert_eq!(tree.root.label, "/Users/roman/Code/workspace");
+    assert_eq!(tree.root.label, "/workspace/project");
 }
 
 #[test]
@@ -424,7 +424,7 @@ fn inline_event_survives_finished_event_with_stdout() {
         event_prefix: Some("demo::demo".to_owned()),
         name: "tests::works".to_owned(),
     };
-    let event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Info, "hit");
+    let event = nextdeck_helper::TestEvent::new(nextdeck_helper::Level::Info, "hit");
 
     assert!(tree.append_test_event(&key, &event, "@ event info cache: hit"));
     tree.finish_test(
@@ -454,7 +454,7 @@ fn appended_event_bubbles_to_target_ancestors() {
         discovered_test("demo::demo", "demo", "alpha", "one"),
         discovered_test("demo::demo", "demo", "beta", "two"),
     ]);
-    let event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Warn, "slow");
+    let event = nextdeck_helper::TestEvent::new(nextdeck_helper::Level::Warn, "slow");
     let key = TestKey {
         binary_id: Some("demo::demo".to_owned()),
         event_prefix: Some("demo::demo".to_owned()),
@@ -486,7 +486,7 @@ fn prepare_for_run_clears_event_bubbles() {
         "tests",
         "works",
     )]);
-    let event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Info, "hit");
+    let event = nextdeck_helper::TestEvent::new(nextdeck_helper::Level::Info, "hit");
     let key = TestKey {
         binary_id: Some("demo::demo".to_owned()),
         event_prefix: Some("demo::demo".to_owned()),

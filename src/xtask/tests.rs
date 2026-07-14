@@ -124,6 +124,27 @@ fn omits_optional_defaults() {
 }
 
 #[test]
+fn emits_boolean_flag_when_value_differs_from_declared_default() {
+    let mut spec = XtaskArgSpec {
+        name: "feature".to_owned(),
+        long: Some("feature".to_owned()),
+        short: None,
+        help: None,
+        required: false,
+        value: XtaskValueSpec::Bool { default: false },
+    };
+    let mut args = Vec::new();
+
+    append_arg(&mut args, &spec, &XtaskArgValue::Bool(true)).expect("set true flag");
+    assert_eq!(args, ["--feature"]);
+
+    spec.value = XtaskValueSpec::Bool { default: true };
+    args.clear();
+    append_arg(&mut args, &spec, &XtaskArgValue::Bool(false)).expect("set false flag");
+    assert_eq!(args, ["--feature"]);
+}
+
+#[test]
 fn validates_required_values() {
     let mut manifest = sample_manifest();
     manifest.commands[0].args[1].required = true;

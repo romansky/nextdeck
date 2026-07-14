@@ -1,127 +1,68 @@
 # Test Events
 
-Captured stdout is useful after a failure, but it has no structure. Test events
-add small, searchable records for the decisions that explain a test: which
-fixture was selected, whether a cache hit, or which external service handled a
-request.
+Nextdeck can help facilitate test-time event logs, these can be generated and captureed regardlress of the log level or
+configuration of the apps logging framework, test events are accessible via "E" global command.
 
-Events are optional. The macro is a no-op unless `NEXTDECK_TEST_EVENTS` is set
-to Nextdeck's current transport; Nextdeck sets it for tests that it launches.
-
-## Add Events to a Test
+## Rust Setup
 
 Add the helper as a development dependency:
 
 ```toml
 [dev-dependencies]
-nextdeck-test-events = "0.1"
+nextdeck-helper = "0.1"
 ```
 
-Emit an event from a test or helper called by a test:
+Emit an event from anywhere in your code:
 
 ```rust
-#[test]
-fn reuses_the_cached_artifact() {
-    let cache_key = "docs-v2";
-
-    nextdeck_test_events::event!(
-        level: nextdeck_test_events::Level::Info,
-        target: "artifact-cache",
-        "cache hit";
-        "key" => cache_key,
-        "source" => "local",
-    );
-
-    // Continue the test.
-}
+nextdeck_helper::event!(
+    level: nextdeck_helper::Level::Info,
+    target: "artifact-cache",
+    "cache hit";
+    "key" => "docs-v2",
+    "source" => "local",
+);
 ```
 
-The short form emits an `info` event and uses the Rust module path as its
-target:
+The short form emits an `info` event and uses the Rust module path as its target:
 
 ```rust
-nextdeck_test_events::event!("fixture ready"; "rows" => rows.len());
+nextdeck_helper::event!("fixture ready"; "rows" => rows.len());
 ```
 
-Field values can be any type that implements `serde::Serialize`.
+Field values may be any type implementing `serde::Serialize`.
 
-## View Events
+The `nextdeck_helper::event` macro enter and emit only when `NEXTDECK_TEST_EVENTS` environment variable is present, it
+is set by Nextdeck automatically when its running tests.
 
-Run the test from Nextdeck. Nextdeck sets
-`NEXTDECK_TEST_EVENTS=stdio-v1` for the test process. Events travel in the same
-captured stream as stdout and stderr, so their position is preserved in the
-live snapshots reported by nextest.
+## Output Schema
 
-Running this repository produces four events. This shortened capture shows the
-run they belong to, their fields, and the source line that emitted them:
+Events are emitted as a single line in the form `NEXTDECK_EVENT_V1 <single-line JSON>`.
 
-```text
-┌ Test Events ───────────────────────────────────────────────────────────────────────────────────────┐
-│┌ Runs ──────────────────────────┐ ┌ Events <#1-25/25> [s]nap-bottom:✓ ────────────────────────────┐│
-││> passed      4 workspace       │ │#1  info  nextdeck::app::tests     verifying inline test event││
-││                                │ │    { "component": "app" }                                  ││
-││                                │ │    at nextdeck::app::tests src/app/tests.rs:438              ││
-││                                │ │                                                               ││
-││                                │ │#2  info  nextdeck::nextest::tests running nextdeck fixture   ││
-││                                │ │    { "fixture": "pass_emits_nextdeck_event" }              ││
-││                                │ │    at nextdeck::nextest::tests src/nextest/tests.rs:113      ││
-││                                │ │                                                               ││
-││                                │ │#3  info  dogfood-output  stdout reached info event           ││
-││                                │ │    { "step": 1, "stream": "stdout" }                     ││
-││                                │ │    at nextdeck::output::tests src/output/tests.rs:98         ││
-││                                │ │                                                               ││
-││                                │ │#4  warn  dogfood-output  stderr reached warn event           ││
-│└ [tab]events ───────────────────┘ └ [/]search<[            ]> [o]pen-editor ──────────────────────┘│
-└ [esc]close [tab]events ────────────────────────────────────────────────────────────────────────────┘
+The event JSON Schema is represented below as an illustrative TypeScript type:
+
+```ts
+type TestEventV1 = {
+    schema_version: 1;
+    sequence: number; // Unsigned and monotonically increasing per process
+    time: number; // Unix time in milliseconds
+    level: "trace" | "debug" | "info" | "warn" | "error";
+    message: string;
+
+    pid?: number; // Include when events can come from multiple processes
+    thread?: string;
+    target?: string;
+    fields?: Record<string, unknown>;
+    source?: {
+        module: string;
+        file: string;
+        line: number;
+    };
+};
 ```
 
-- Events appear inline with the captured output of the test that emitted them.
-- Press `E` for the event view, which keeps a searchable stream for each run.
-- The event view records the run scope and final status as well as the events.
+## Source References
 
-Nextdeck removes the protocol frames before rendering output. A failed test
-gets a separate `nextest:` summary after its captured output; passing tests do
-not get an additional runner footer.
-
-## What Gets Recorded
-
-The event macro records a schema version, timestamp, process ID, level,
-message, and source location. A thread name, target, and extra fields are
-included when available. Events built directly with `TestEvent` can omit the
-optional source, thread, target, and fields.
-
-```json
-{
-  "schema_version": 1,
-  "sequence": 7,
-  "time": 1783420000000,
-  "pid": 12345,
-  "thread": "tests::reuses_the_cached_artifact",
-  "level": "info",
-  "target": "artifact-cache",
-  "message": "cache hit",
-  "fields": {
-    "key": "docs-v2",
-    "source": "local"
-  },
-  "source": {
-    "module": "my_crate::tests",
-    "file": "src/lib.rs",
-    "line": 42
-  }
-}
-```
-
-The macro intentionally ignores write errors so instrumentation cannot fail a
-test. Code that needs error handling can build a `TestEvent` and call
-`nextdeck_test_events::emit`, which returns `std::io::Result<()>`.
-
-## Scope
-
-Test events are not a general logging framework and do not replace `tracing` or
-`log`. They are a narrow test-output protocol for data that is most useful
-while examining a test run. The environment-variable gate means normal
-`cargo test` and `cargo nextest run` invocations do not emit event frames.
-
-The same helper crate also provides the optional
-[Clap xtask integration](../xtask-integration/README.md).
+- [Rust event API and wire-format implementation](https://docs.rs/crate/nextdeck-helper/latest/source/src/lib.rs)
+- [Test fixture using the event macro](../../tests/fixtures/output-workspace/src/lib.rs)
+- [Nextdeck's event parser](../../src/test_events.rs)

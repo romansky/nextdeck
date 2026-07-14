@@ -1,4 +1,5 @@
 use super::*;
+use std::time::UNIX_EPOCH;
 
 #[test]
 fn formats_bytes_with_binary_units() {
@@ -9,10 +10,13 @@ fn formats_bytes_with_binary_units() {
 }
 
 #[test]
-fn formats_timestamps_as_utc() {
+fn formats_timestamps_in_local_time_with_offset() {
+    let timestamp = UNIX_EPOCH + std::time::Duration::from_secs(86_400);
+    let expected: chrono::DateTime<chrono::Local> = timestamp.into();
+
     assert_eq!(
-        format_timestamp_utc(UNIX_EPOCH + std::time::Duration::from_secs(86_400)),
-        "1970-01-02 00:00:00 UTC"
+        format_timestamp_local(timestamp),
+        expected.format("%Y-%m-%d %H:%M:%S %:z").to_string()
     );
 }
 

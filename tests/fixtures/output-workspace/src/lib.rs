@@ -28,8 +28,8 @@ mod tests {
 
     #[test]
     fn pass_emits_nextdeck_event() {
-        nextdeck_test_events::event!(
-            level: nextdeck_test_events::Level::Info,
+        nextdeck_helper::event!(
+            level: nextdeck_helper::Level::Info,
             target: "fixture",
             "event from fixture";
             "phase" => "arrange",

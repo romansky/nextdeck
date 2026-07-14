@@ -164,7 +164,7 @@ impl Drop for DebugLogExitNotice {
 
 fn debug_log_exit_message(path: &Path) -> String {
     format!(
-        "nextdeck debug log: {}\nbefore sharing, scrub the log for PII or other sensitive data",
+        "Nextdeck debug log: {}\nbefore sharing, scrub the log for PII or other sensitive data",
         path.display()
     )
 }
@@ -177,7 +177,7 @@ mod tests {
     fn debug_log_exit_message_includes_path() {
         assert_eq!(
             debug_log_exit_message(Path::new("/tmp/nextdeck-debug.log")),
-            "nextdeck debug log: /tmp/nextdeck-debug.log\nbefore sharing, scrub the log for PII or other sensitive data"
+            "Nextdeck debug log: /tmp/nextdeck-debug.log\nbefore sharing, scrub the log for PII or other sensitive data"
         );
     }
 }

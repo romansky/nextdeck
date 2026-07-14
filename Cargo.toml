@@ -2,22 +2,28 @@
 name = "nextdeck"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.95"
 description = "A TUI wrapper for cargo-nextest, Clap-powered xtasks, and more."
 license = "Apache-2.0"
 readme = "README.md"
 documentation = "https://docs.rs/nextdeck"
+repository = "https://github.com/romansky/nextdeck"
+homepage = "https://github.com/romansky/nextdeck"
+keywords = ["tui", "nextest", "testing", "cargo", "rust"]
+categories = ["command-line-utilities", "development-tools::testing"]
 
 [workspace]
-members = [".", "nextdeck-test-events", "xtask"]
+members = [".", "nextdeck-helper", "xtask"]
 resolver = "3"
 
 [dependencies]
 anyhow = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.28"
 libc = "0.2"
 nextest-metadata = "0.14.1"
-nextdeck-test-events = { version = "0.1.0", path = "nextdeck-test-events" }
+nextdeck-helper = { version = "0.1.0", path = "nextdeck-helper" }
 ratatui = "0.29"
 regex = "1.11"
 rustc-demangle = "0.1"

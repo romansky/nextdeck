@@ -24,7 +24,7 @@ impl fmt::Display for Error {
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Json(error) => write!(formatter, "{error}"),
             Self::UnsupportedFormat(format) => {
-                write!(formatter, "unsupported nextdeck info format: {format}")
+                write!(formatter, "unsupported Nextdeck info format: {format}")
             }
             Self::MissingFormatValue => write!(formatter, "--format requires a value"),
         }
@@ -286,6 +286,8 @@ mod tests {
             profile: Profile,
             #[arg(long)]
             name: Option<String>,
+            #[arg(long, action = clap::ArgAction::SetFalse)]
+            color: bool,
         },
     }
 
@@ -320,6 +322,9 @@ mod tests {
                 if values == &vec!["dev".to_owned(), "release".to_owned()]
                     && default.as_deref() == Some("dev")
         ));
+        assert!(manifest.commands[0].args.iter().any(|arg| {
+            arg.name == "color" && matches!(arg.value, XtaskValue::Bool { default: true })
+        }));
     }
 
     #[test]

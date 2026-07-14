@@ -15,7 +15,7 @@ use crate::{
     request::RequestId,
     scroll::ViewportState,
 };
-pub use nextdeck_test_events::xtask::{
+pub use nextdeck_helper::xtask::{
     INFO_COMMAND, SCHEMA_VERSION, XtaskArg as XtaskArgSpec, XtaskCommand as XtaskCommandSpec,
     XtaskManifest, XtaskValue as XtaskValueSpec,
 };
@@ -870,8 +870,15 @@ fn combined_output_fallback(stdout: &str, stderr: &str) -> String {
 
 fn append_arg(args: &mut Vec<String>, spec: &XtaskArgSpec, value: &XtaskArgValue) -> Result<()> {
     match value {
-        XtaskArgValue::Bool(true) => args.push(spec.flag()),
-        XtaskArgValue::Bool(false) => {}
+        XtaskArgValue::Bool(value) => {
+            let default = match &spec.value {
+                XtaskValueSpec::Bool { default } => *default,
+                _ => false,
+            };
+            if *value != default {
+                args.push(spec.flag());
+            }
+        }
         XtaskArgValue::Number(value) => append_value_arg(args, spec, value)?,
         XtaskArgValue::String(value) | XtaskArgValue::Enum(value) => {
             append_value_arg(args, spec, value)?;

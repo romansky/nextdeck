@@ -8,7 +8,7 @@ use crate::xtask::{
     SCHEMA_VERSION, XtaskArgSpec, XtaskCommandSpec, XtaskDetailFocus, XtaskManifest, XtaskValueSpec,
 };
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use nextdeck_test_events::{Level, TestEvent};
+use nextdeck_helper::{Level, TestEvent};
 
 fn app_with_tree(tree: Tree) -> App {
     App::with_settings(tree, AppSettings::default())
@@ -434,7 +434,7 @@ fn test_events_modal_opens_from_tests_focus_and_uses_dedicated_output_search() {
 
 #[test]
 fn test_event_run_events_are_inlined_into_matching_test_output() {
-    nextdeck_test_events::event!(
+    nextdeck_helper::event!(
         "verifying inline test event output";
         "component" => "app",
     );

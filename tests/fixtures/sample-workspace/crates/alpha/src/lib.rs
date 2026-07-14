@@ -13,7 +13,7 @@ mod tests {
     fn alpha_only() {
         assert!(
             std::env::var_os("NEXTDECK_FORCE_ALPHA_FAIL").is_none(),
-            "forced failure for nextdeck manual verification"
+            "forced failure for Nextdeck manual verification"
         );
         assert_eq!(super::add_one(2), 3);
     }

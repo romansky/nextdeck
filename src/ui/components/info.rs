@@ -9,7 +9,7 @@ use ratatui::{
 use crate::{
     app::App,
     config,
-    disk_usage::{format_bytes, format_timestamp_utc},
+    disk_usage::{format_bytes, format_timestamp_local},
     parameter_list::{ParameterList, ParameterListRow, ParameterListRowKind},
     theme::Theme,
     tree::NodeKind,
@@ -134,7 +134,7 @@ impl<'a> InfoPanel<'a> {
                         .map(format_bytes)
                         .unwrap_or_else(|| "-".to_owned())
                 ),
-                detail_row!(theme, "updated" => format_timestamp_utc(snapshot.updated_at)),
+                detail_row!(theme, "updated" => format_timestamp_local(snapshot.updated_at)),
             ];
             for entry in &snapshot.entries {
                 rows.push(detail_row!(

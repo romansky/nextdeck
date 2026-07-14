@@ -488,7 +488,7 @@ impl Tree {
     pub fn append_test_event(
         &mut self,
         key: &TestKey,
-        event: &nextdeck_test_events::TestEvent,
+        event: &nextdeck_helper::TestEvent,
         line: &str,
     ) -> bool {
         let mut appended = false;

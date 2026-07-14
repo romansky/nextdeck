@@ -117,7 +117,7 @@ impl<'a> TestEventsModal<'a> {
             return vec![
                 Line::styled("No runs yet.", theme.muted()),
                 Line::from(""),
-                Line::styled("Run tests from NextDeck to collect events.", theme.text()),
+                Line::styled("Run tests from Nextdeck to collect events.", theme.text()),
             ];
         }
         test_events

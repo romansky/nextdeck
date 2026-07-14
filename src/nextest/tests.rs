@@ -9,7 +9,7 @@ fn output_chunks_text(output: &[TestOutputChunk]) -> String {
         })
         .collect()
 }
-use crate::diagnostics::ProcessTracker;
+use crate::{app::App, config::AppSettings, diagnostics::ProcessTracker, tree::Tree};
 
 #[tokio::test]
 async fn working_dir_resolves_workspace_root_from_nested_package() {
@@ -99,9 +99,9 @@ async fn fixture_run_streams_info_preview_before_final_output() {
 }
 
 #[tokio::test]
-async fn fixture_run_captures_nextdeck_test_events() {
-    nextdeck_test_events::event!(
-        "running nextdeck event fixture";
+async fn fixture_run_captures_nextdeck_events() {
+    nextdeck_helper::event!(
+        "running Nextdeck event fixture";
         "fixture" => "pass_emits_nextdeck_event",
     );
 
@@ -136,6 +136,63 @@ async fn fixture_run_captures_failed_output_from_json_event() {
             .output
             .contains("FAIL_PANIC: expected fixture failure")
     );
+}
+
+#[tokio::test]
+async fn fixture_failure_is_displayed_in_selected_test_output() {
+    let events = run_output_fixture("fail_prints_stdout_and_stderr").await;
+    let key = events
+        .iter()
+        .find_map(|event| match event {
+            RunEvent::TestFinished { key, .. }
+                if key.name.contains("fail_prints_stdout_and_stderr") =>
+            {
+                Some(key.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing failed fixture key; events: {events:#?}"));
+    let mut test = discovered_test(
+        "nextdeck-output-fixture",
+        "nextdeck_output_fixture",
+        "lib",
+        &key.name,
+    );
+    test.key = key;
+    let mut app = App::with_settings(Tree::from_tests(vec![test]), AppSettings::default());
+    assert!(app.begin_run(&RunRequest::default()).is_some());
+
+    for event in events {
+        app.apply_run_event(event);
+    }
+
+    app.tree.select_next();
+    app.tree.expand_selected();
+    app.tree.select_next();
+    app.tree.expand_selected();
+    app.tree.select_next();
+
+    assert_eq!(
+        app.tree.selected_node().map(|node| node.status),
+        Some(TestStatus::Failed)
+    );
+    let output = app.output_source_text();
+    let summary_index = output
+        .find("nextest: failed")
+        .unwrap_or_else(|| panic!("missing Nextest failure summary in:\n{output}"));
+    for captured in [
+        "FAIL_STDOUT: lib fail stdout",
+        "FAIL_STDERR: lib fail stderr",
+        "FAIL_PANIC: expected fixture failure",
+    ] {
+        let captured_index = output
+            .find(captured)
+            .unwrap_or_else(|| panic!("missing {captured:?} in:\n{output}"));
+        assert!(
+            captured_index < summary_index,
+            "captured output must precede the Nextest summary:\n{output}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -497,13 +554,9 @@ fn output_snapshot_tracker_dedupes_final_output_after_preview() {
 
 #[test]
 fn output_decoder_preserves_text_event_text_order() {
-    let event =
-        TestEvent::new(nextdeck_test_events::Level::Warn, "cache miss").with_target("cache");
+    let event = TestEvent::new(nextdeck_helper::Level::Warn, "cache miss").with_target("cache");
     let json = serde_json::to_string(&event).expect("serialize event");
-    let capture = format!(
-        "before\n{}{json}\nafter",
-        nextdeck_test_events::FRAME_PREFIX
-    );
+    let capture = format!("before\n{}{json}\nafter", nextdeck_helper::FRAME_PREFIX);
     let chunks = TestOutputDecoder::default().push(&capture, true);
 
     assert_eq!(
@@ -518,9 +571,9 @@ fn output_decoder_preserves_text_event_text_order() {
 
 #[test]
 fn output_decoder_retains_a_frame_split_across_polls() {
-    let event = TestEvent::new(nextdeck_test_events::Level::Info, "checkpoint");
+    let event = TestEvent::new(nextdeck_helper::Level::Info, "checkpoint");
     let json = serde_json::to_string(&event).expect("serialize event");
-    let frame = format!("{}{json}", nextdeck_test_events::FRAME_PREFIX);
+    let frame = format!("{}{json}", nextdeck_helper::FRAME_PREFIX);
     let split = frame.len() - 8;
     let mut decoder = TestOutputDecoder::default();
 
@@ -533,7 +586,7 @@ fn output_decoder_retains_a_frame_split_across_polls() {
 
 #[test]
 fn output_decoder_preserves_plain_text_that_only_looks_like_a_frame() {
-    let capture = format!("{}not-json\nafter", nextdeck_test_events::FRAME_PREFIX);
+    let capture = format!("{}not-json\nafter", nextdeck_helper::FRAME_PREFIX);
 
     assert_eq!(
         TestOutputDecoder::default().push(&capture, true),
@@ -548,9 +601,9 @@ fn output_snapshot_tracker_emits_each_framed_event_once() {
         event_prefix: Some("demo::demo".to_owned()),
         name: "tests::passes".to_owned(),
     };
-    let event = TestEvent::new(nextdeck_test_events::Level::Info, "checkpoint");
+    let event = TestEvent::new(nextdeck_helper::Level::Info, "checkpoint");
     let json = serde_json::to_string(&event).expect("serialize event");
-    let first_capture = format!("before\n{}{json}", nextdeck_test_events::FRAME_PREFIX);
+    let first_capture = format!("before\n{}{json}", nextdeck_helper::FRAME_PREFIX);
     let mut snapshots = OutputSnapshotTracker::default();
 
     let first = snapshots

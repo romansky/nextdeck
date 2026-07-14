@@ -6,7 +6,7 @@ edition = "2024"
 [workspace]
 
 [dependencies]
-nextdeck-test-events = { path = "../../../nextdeck-test-events" }
+nextdeck-helper = { path = "../../../nextdeck-helper" }
 
 [lib]
 path = "src/lib.rs"

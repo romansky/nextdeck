@@ -8,7 +8,7 @@ use super::{
 };
 use crate::command::AppCommand;
 use crate::custom_run::CustomRunFilter;
-use crate::disk_usage::{DiskUsageEntry, DiskUsageSnapshot};
+use crate::disk_usage::{DiskUsageEntry, DiskUsageSnapshot, format_timestamp_local};
 use crate::parameter_list::ParameterList;
 use crate::tree::{DiscoveredTest, TestKey, TestNode, TestStatus, Tree};
 use crate::xtask::XtaskState;
@@ -232,7 +232,7 @@ fn info_columns_keep_run_and_storage_details_separate() {
     assert!(storage_text.contains("low"));
     assert!(storage_text.contains("available"));
     assert!(storage_text.contains("2.0 KiB"));
-    assert!(storage_text.contains("1970-01-01 00:00:00 UTC"));
+    assert!(storage_text.contains(&format_timestamp_local(std::time::UNIX_EPOCH)));
     assert!(!storage_text.contains("total"));
     assert!(storage_text.contains("/target"));
     assert!(storage_text.contains("1.0 KiB"));
@@ -646,7 +646,7 @@ fn tree_labels_show_bubbling_event_marker_on_the_right() {
         ignored: false,
         ignore_reason: None,
     }]);
-    let event = nextdeck_test_events::TestEvent::new(nextdeck_test_events::Level::Info, "hit");
+    let event = nextdeck_helper::TestEvent::new(nextdeck_helper::Level::Info, "hit");
 
     assert!(tree.append_test_event(&key, &event, "@ event info cache: hit"));
 

@@ -28,5 +28,5 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
         if: runner.os == 'Linux'
       - run: cargo test --workspace --all-features
-      - run: cargo xtask lib-publish-local
+      - run: cargo xtask helper-publish-local
         if: runner.os == 'Linux'

@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, time::Duration};
 
-use nextdeck_test_events::Level;
+use nextdeck_helper::Level;
 
 pub(crate) const OUTPUT_TEXT_LIMIT_BYTES: usize = 512 * 1024;
 const OUTPUT_TRUNCATED_MARKER: &str = "[... output truncated; showing tail ...]\n";
