@@ -10,7 +10,7 @@ To install both:
 
 ```sh
 cargo install --locked cargo-nextest
-cargo install --git https://github.com/romansky/nextdeck --locked nextdeck
+cargo install --locked nextdeck
 ```
 
 Run Nextdeck from a Cargo workspace:
