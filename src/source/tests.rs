@@ -21,7 +21,7 @@ fn resolves_custom_integration_test_target_path() {
         Some(root.join("src/tier_scenario.rs"))
     );
 
-    let _ = fs::remove_dir_all(root);
+    fs::remove_dir_all(root).expect("remove test directory");
 }
 
 #[test]
@@ -36,7 +36,7 @@ fn resolves_default_binary_main_when_src_bin_target_is_absent() {
         Some(root.join("src/main.rs"))
     );
 
-    let _ = fs::remove_dir_all(root);
+    fs::remove_dir_all(root).expect("remove test directory");
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn source_locator_resolves_unit_tests_in_module_files() {
         Some(root.join("src/output/tests.rs"))
     );
 
-    let _ = fs::remove_dir_all(root);
+    fs::remove_dir_all(root).expect("remove test directory");
 }
 
 #[test]
@@ -75,7 +75,7 @@ fn finds_async_test_function_line() {
 
     assert_eq!(find_test_line(&path, "tests::second_case"), Some(5));
 
-    let _ = fs::remove_dir_all(root);
+    fs::remove_dir_all(root).expect("remove test directory");
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn finds_ignore_reason_for_test_function() {
     );
     assert_eq!(ignore_reason_for_test(&path, "tests::normal_case"), None);
 
-    let _ = fs::remove_dir_all(root);
+    fs::remove_dir_all(root).expect("remove test directory");
 }
 
 fn temp_dir(name: &str) -> PathBuf {

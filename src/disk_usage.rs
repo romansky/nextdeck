@@ -291,10 +291,13 @@ fn available_space(path: &Path) -> Option<u64> {
 
     let path = CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is a live, NUL-terminated C string and `stat` points to valid writable
+    // storage for one `statvfs` value for the duration of the call.
     let result = unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) };
     if result != 0 {
         return None;
     }
+    // SAFETY: POSIX specifies that a successful `statvfs` call initializes the output struct.
     let stat = unsafe { stat.assume_init() };
     Some(
         (stat.f_bavail as u128)

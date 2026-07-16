@@ -36,7 +36,7 @@ async fn resolves_cargo_workspace_root_from_nested_directory() {
 
     assert_eq!(resolved, root.canonicalize().expect("canonical root"));
 
-    let _ = fs::remove_dir_all(root);
+    fs::remove_dir_all(root).expect("remove test directory");
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn controller_flushes_and_restores_state_revision() {
     );
     assert_eq!(restored.pending_preferences(), None);
 
-    let _ = fs::remove_dir_all(root);
+    fs::remove_dir_all(root).expect("remove test directory");
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn controller_retries_failed_revision_after_cooldown() {
     );
     assert_eq!(state.pending_preferences(), None);
 
-    let _ = fs::remove_dir_all(root);
+    fs::remove_dir_all(root).expect("remove test directory");
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn stores_preferences_independently_per_workspace() {
     assert!(stored.contains(r#""type": "enum""#));
     assert!(stored.ends_with('\n'));
 
-    let _ = fs::remove_dir_all(root);
+    fs::remove_dir_all(root).expect("remove test directory");
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn empty_preferences_remove_workspace_entry() {
     let stored = fs::read_to_string(path).expect("read state file");
     assert!(!stored.contains("/workspace/a"));
 
-    let _ = fs::remove_dir_all(root);
+    fs::remove_dir_all(root).expect("remove test directory");
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn rejects_unknown_state_schema() {
             .contains("unsupported xtask state schema 2")
     );
 
-    let _ = fs::remove_dir_all(root);
+    fs::remove_dir_all(root).expect("remove test directory");
 }
 
 #[cfg(unix)]
@@ -194,7 +194,7 @@ fn state_file_is_user_private() {
         & 0o777;
     assert_eq!(mode, 0o600);
 
-    let _ = fs::remove_dir_all(root);
+    fs::remove_dir_all(root).expect("remove test directory");
 }
 
 fn preferences(command: &str, arg: &str, value: XtaskArgValue) -> XtaskPreferences {

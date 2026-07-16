@@ -1,0 +1,27 @@
+[package]
+name = "nextdeck-cancellation-fixture"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+
+[workspace]
+
+[[test]]
+name = "a_bootstrap"
+path = "tests/bootstrap.rs"
+
+[[test]]
+name = "b_scenario"
+path = "tests/scenario.rs"
+
+[[test]]
+name = "c_scenario"
+path = "tests/scenario_c.rs"
+
+[[test]]
+name = "d_scenario"
+path = "tests/scenario_d.rs"
+
+[[test]]
+name = "z_deferred"
+path = "tests/deferred.rs"

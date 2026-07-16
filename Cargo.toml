@@ -1,8 +1,8 @@
 [package]
 name = "nextdeck"
 version = "0.1.0"
-edition = "2024"
-rust-version = "1.95"
+edition.workspace = true
+rust-version.workspace = true
 description = "A TUI wrapper for cargo-nextest, Clap-powered xtasks, and more."
 license = "Apache-2.0"
 readme = "README.md"
@@ -16,20 +16,33 @@ categories = ["command-line-utilities", "development-tools::testing"]
 members = [".", "nextdeck-helper", "xtask"]
 resolver = "3"
 
-[dependencies]
+[workspace.package]
+edition = "2024"
+rust-version = "1.96"
+
+[workspace.dependencies]
 anyhow = "1.0"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-clap = { version = "4.5", features = ["derive"] }
-crossterm = "0.28"
-libc = "0.2"
-nextest-metadata = "0.14.1"
-nextdeck-helper = { version = "0.1.0", path = "nextdeck-helper" }
-ratatui = "0.29"
-regex = "1.11"
-rustc-demangle = "0.1"
+clap = "4.6"
+nextdeck-helper = { version = "0.1", path = "nextdeck-helper" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-terminal-colorsaurus = "1.0.3"
-tokio = { version = "1.48", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+
+[dependencies]
+anyhow.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { workspace = true, features = ["derive"] }
+crossterm = "0.29"
+libc = "0.2"
+nextest-metadata = "0.14"
+nextdeck-helper.workspace = true
+ratatui = "0.30"
+regex = "1.13"
+rustc-demangle = "0.1"
+serde.workspace = true
+serde_json.workspace = true
+terminal-colorsaurus = "1.0"
+tokio = { version = "1.52", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-segmentation = "1.13"
+unicode-width = "0.2"

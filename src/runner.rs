@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -44,9 +43,16 @@ pub async fn run(
     }
     let (queue_tx, queue_rx) = queue::channel();
 
-    let git_status = start_git_status(Some(client.project_dir()), queue_tx.clone());
     let input = InputSource::start(queue_tx.clone());
-    let ticker = queue::start_ticker(queue_tx.clone(), UI_TICK_INTERVAL);
+    let mut background_tasks = BackgroundTasks::default();
+    background_tasks.track(
+        "git status",
+        start_git_status(Some(client.project_dir()), queue_tx.clone()),
+    );
+    background_tasks.track(
+        "UI ticker",
+        queue::start_ticker(queue_tx.clone(), UI_TICK_INTERVAL),
+    );
     let mut context = RunLoopContext {
         client,
         theme,
@@ -56,14 +62,13 @@ pub async fn run(
         runtime_settings: RuntimeSettings::from_settings(&app.settings),
         xtask_persistence,
         disk_usage: None,
+        background_tasks,
     };
     let mut run_control = None;
     for effect in app.startup_effects() {
         handle_effect(app, &mut context, effect, &mut run_control);
     }
     let result = run_loop(terminal, app, context, queue_rx, run_control).await;
-    git_status.abort();
-    ticker.abort();
     drop(input);
     result
 }
@@ -90,6 +95,7 @@ async fn run_loop(
             drain_pending_events(&mut queue_rx, &mut pending_events);
             dirty |= handle_queue_events(app, &mut context, &mut pending_events, &mut run_control);
             pending_events.clear();
+            context.background_tasks.reap_finished().await;
         }
         Ok(())
     }
@@ -100,14 +106,16 @@ async fn run_loop(
     if let Some(control) = run_control {
         control.shutdown().await;
     }
+    context.background_tasks.shutdown().await;
     result
 }
 
 fn draw_frame(terminal: &mut AppTerminal, app: &mut App, theme: &Theme) -> Result<()> {
-    let size = terminal.size()?;
-    let area = Rect::new(0, 0, size.width, size.height);
-    app.prepare_frame(ui::viewport_metrics(area, app));
-    terminal.draw(|frame| ui::draw(frame, app, theme))?;
+    terminal.draw(|frame| {
+        let geometry = ui::UiGeometry::new(frame.area(), app);
+        app.prepare_frame(geometry.viewport_metrics());
+        ui::draw_prepared(frame, app, theme, &geometry);
+    })?;
     Ok(())
 }
 
@@ -131,6 +139,7 @@ struct RunLoopContext<'a> {
     runtime_settings: RuntimeSettings,
     xtask_persistence: XtaskPersistence,
     disk_usage: Option<DiskUsageControl>,
+    background_tasks: BackgroundTasks,
 }
 
 impl RunLoopContext<'_> {
@@ -365,7 +374,9 @@ fn handle_effect(
             }
         }
         AppEffect::StartDiscovery(request_id) => {
-            start_discovery(context.client.clone(), request_id, context.queue_tx.clone());
+            let task =
+                start_discovery(context.client.clone(), request_id, context.queue_tx.clone());
+            context.background_tasks.track("test discovery", task);
         }
         AppEffect::StartRun(request) => {
             *run_control = start_run(app, context, *request);
@@ -383,7 +394,8 @@ fn handle_effect(
             let tracker = run_control
                 .as_ref()
                 .map(|control| control.process_tracker.clone());
-            start_test_stack_sample(request, tracker, context.queue_tx.clone());
+            let task = start_test_stack_sample(request, tracker, context.queue_tx.clone());
+            context.background_tasks.track("test stack sample", task);
         }
         AppEffect::OpenSource(location) => match context.editor.open_source(&location) {
             Ok(()) => {
@@ -407,26 +419,29 @@ fn handle_effect(
             context.refresh_disk_usage(request_id);
         }
         AppEffect::RunCargoClean(request_id) => {
-            start_cargo_clean(
+            let task = start_cargo_clean(
                 Some(context.client.project_dir()),
                 request_id,
                 context.queue_tx.clone(),
             );
+            context.background_tasks.track("cargo clean", task);
         }
         AppEffect::RefreshXtasks(request_id) => {
-            start_xtask_info(
+            let task = start_xtask_info(
                 Some(context.client.project_dir()),
                 request_id,
                 context.queue_tx.clone(),
             );
+            context.background_tasks.track("xtask discovery", task);
         }
         AppEffect::RunXtask(request_id, request) => {
-            start_xtask_run(
+            let task = start_xtask_run(
                 Some(context.client.project_dir()),
                 request_id,
                 request,
                 context.queue_tx.clone(),
             );
+            context.background_tasks.track("xtask run", task);
         }
     }
 }
@@ -451,7 +466,7 @@ fn apply_runtime_settings(context: &mut RunLoopContext<'_>, settings: &AppSettin
 }
 
 struct RunControl {
-    stop_tx: Option<mpsc::UnboundedSender<()>>,
+    stop_tx: Option<mpsc::Sender<()>>,
     process_tracker: ProcessTracker,
     producer: Option<tokio::task::JoinHandle<()>>,
     forwarder: Option<tokio::task::JoinHandle<()>>,
@@ -461,6 +476,53 @@ struct DiskUsageControl {
     request_id: RequestId,
     cancellation: disk_usage::DiskScanCancellation,
     task: tokio::task::JoinHandle<()>,
+}
+
+struct NamedBackgroundTask {
+    name: &'static str,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct BackgroundTasks {
+    tasks: Vec<NamedBackgroundTask>,
+}
+
+impl BackgroundTasks {
+    fn track(&mut self, name: &'static str, handle: tokio::task::JoinHandle<()>) {
+        self.tasks.push(NamedBackgroundTask { name, handle });
+    }
+
+    async fn reap_finished(&mut self) {
+        let mut index = 0;
+        while index < self.tasks.len() {
+            if self.tasks[index].handle.is_finished() {
+                let task = self.tasks.swap_remove(index);
+                await_background_task(task, false).await;
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        for task in &self.tasks {
+            task.handle.abort();
+        }
+        for task in self.tasks.drain(..) {
+            await_background_task(task, true).await;
+        }
+    }
+}
+
+async fn await_background_task(task: NamedBackgroundTask, cancellation_expected: bool) {
+    match task.handle.await {
+        Ok(()) => {}
+        Err(error) if cancellation_expected && error.is_cancelled() => {}
+        Err(error) => {
+            tracing::error!(%error, task = task.name, "background task failed");
+        }
+    }
 }
 
 impl Drop for DiskUsageControl {
@@ -474,7 +536,7 @@ impl RunControl {
     fn request_stop(&mut self) -> bool {
         self.stop_tx
             .take()
-            .is_some_and(|stop_tx| stop_tx.send(()).is_ok())
+            .is_some_and(|stop_tx| stop_tx.try_send(()).is_ok())
     }
 
     async fn shutdown(mut self) {
@@ -568,7 +630,7 @@ fn start_cargo_clean(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut command = tokio::process::Command::new("cargo");
-        command.arg("clean");
+        command.arg("clean").kill_on_drop(true);
         if let Some(cwd) = cwd {
             command.current_dir(cwd);
         }
@@ -630,7 +692,7 @@ fn start_xtask_run(
     tokio::spawn(async move {
         let (chunk_tx, mut chunk_rx) = mpsc::channel(queue::APP_EVENT_QUEUE_CAPACITY);
         let output_tx = tx.clone();
-        let output_forwarder = tokio::spawn(async move {
+        let output_forwarder = async move {
             while let Some(chunk) = chunk_rx.recv().await {
                 if output_tx
                     .send(QueueEvent::Xtask(XtaskEvent::RunOutput {
@@ -643,11 +705,10 @@ fn start_xtask_run(
                     break;
                 }
             }
-        });
-        let result = xtask::run_streaming(cwd, request, chunk_tx)
-            .await
-            .map_err(|error| format!("{error:#}"));
-        let _ = output_forwarder.await;
+        };
+        let run = xtask::run_streaming(cwd, request, chunk_tx);
+        let (result, ()) = tokio::join!(run, output_forwarder);
+        let result = result.map_err(|error| format!("{error:#}"));
         let _ = tx
             .send(QueueEvent::Xtask(XtaskEvent::RunFinished {
                 request_id,
@@ -675,7 +736,7 @@ fn start_run(
     app.begin_test_event_run(test_event_run);
 
     let (run_tx, run_rx) = mpsc::channel::<RunEvent>(queue::APP_EVENT_QUEUE_CAPACITY);
-    let (stop_tx, stop_rx) = mpsc::unbounded_channel();
+    let (stop_tx, stop_rx) = mpsc::channel(1);
     let process_tracker = ProcessTracker::default();
     let run_process_tracker = process_tracker.clone();
     let info_output_poll_interval = app.settings.test_output_poll_interval();

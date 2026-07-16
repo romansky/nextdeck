@@ -12,8 +12,8 @@ use crate::disk_usage::{DiskUsageEntry, DiskUsageSnapshot, format_timestamp_loca
 use crate::parameter_list::ParameterList;
 use crate::tree::{DiscoveredTest, TestKey, TestNode, TestStatus, Tree};
 use crate::xtask::XtaskState;
-use ratatui::style::Style;
 use ratatui::text::Line;
+use ratatui::{Terminal, backend::TestBackend, layout::Rect, style::Style};
 use std::{path::PathBuf, time::Duration};
 
 fn app_with_tree(tree: Tree) -> App {
@@ -23,11 +23,11 @@ fn app_with_tree(tree: Tree) -> App {
 #[test]
 fn output_status_shows_all_when_text_fits() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.main_output.apply_viewport_page_size(5);
     let text = "one\ntwo";
+    app.main_output.apply_viewport_geometry(5, 80, text);
 
     assert_eq!(
-        app.main_output.status("Output", text),
+        app.main_output.status("Output"),
         "Output <#1-2/2> [s]nap-bottom:✓"
     );
 }
@@ -35,27 +35,26 @@ fn output_status_shows_all_when_text_fits() {
 #[test]
 fn output_status_shows_clamped_line_ranges() {
     let mut app = app_with_tree(Tree::from_tests(Vec::new()));
-    app.main_output.apply_viewport_page_size(3);
     let text = "1\n2\n3\n4\n5\n6";
-    app.main_output.apply_content_len(text.lines().count());
+    app.main_output.apply_viewport_geometry(3, 80, text);
 
     app.main_output.set_scroll(0);
     assert_eq!(
-        app.main_output.status("Output", text),
+        app.main_output.status("Output"),
         "Output <#1-3/6> [s]nap-bottom:✓"
     );
 
     app.main_output.set_scroll(2);
     app.main_output.set_follow(false);
     assert_eq!(
-        app.main_output.status("Output", text),
+        app.main_output.status("Output"),
         "Output <#3-5/6> [s]nap-bottom:✗"
     );
 
     app.main_output.set_scroll(3);
     app.main_output.set_follow(true);
     assert_eq!(
-        app.main_output.status("Output", text),
+        app.main_output.status("Output"),
         "Output <#4-6/6> [s]nap-bottom:✓"
     );
 }
@@ -999,8 +998,8 @@ fn output_lines_color_run_result_summaries() {
     let app = app_with_tree(Tree::from_tests(Vec::new()));
     let theme = Theme::dark();
     let output_view = crate::output_pane::OutputView {
-        text: "Run passed: 1 passed\nRun failed: 1 failed\nRun command failed: nextest exited with 101\n@ event info fixture: cached\n@ event warn fixture: slow\n@ event error fixture: failed".to_owned(),
-        source_lines: vec![0, 1, 2, 3, 4, 5],
+        text: "Run passed: 1 passed\nRun failed: 1 failed\nRun command failed: nextest exited with 101\nnextest: time limit exceeded\n@ event info fixture: cached\n@ event warn fixture: slow\n@ event error fixture: failed".to_owned(),
+        source_lines: vec![0, 1, 2, 3, 4, 5, 6],
     };
 
     let lines = output_lines(&app.main_output.search, &theme, &output_view);
@@ -1008,9 +1007,10 @@ fn output_lines_color_run_result_summaries() {
     assert_eq!(lines[0].style, theme.success());
     assert_eq!(lines[1].style, theme.danger());
     assert_eq!(lines[2].style, theme.danger());
-    assert_eq!(lines[3].style, theme.accent());
-    assert_eq!(lines[4].style, theme.warning());
-    assert_eq!(lines[5].style, theme.danger());
+    assert_eq!(lines[3].style, theme.danger());
+    assert_eq!(lines[4].style, theme.accent());
+    assert_eq!(lines[5].style, theme.warning());
+    assert_eq!(lines[6].style, theme.danger());
 }
 
 #[test]
@@ -1030,6 +1030,38 @@ fn output_lines_marks_only_current_search_range_active() {
     assert_eq!(line_text(&lines[0]), "panic one panic two");
     assert_eq!(lines[0].spans[0].style, theme.search_match());
     assert_eq!(lines[0].spans[2].style, theme.active_search_match());
+}
+
+#[test]
+fn output_panel_renders_the_precomputed_visual_rows_without_rewrapping() {
+    let theme = Theme::dark();
+    let text = "abc defghi";
+    let mut state = crate::output_pane::OutputPaneState::default();
+    state.apply_viewport_geometry(3, 5, text);
+    let backend = TestBackend::new(7, 5);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+
+    terminal
+        .draw(|frame| {
+            OutputPanel::new(&state, text.to_owned(), "Output", true).render(
+                frame,
+                &theme,
+                Rect::new(0, 0, 7, 5),
+            );
+        })
+        .expect("render output panel");
+
+    let buffer = terminal.backend().buffer();
+    let rendered = (1..=3)
+        .map(|y| {
+            (1..=5)
+                .map(|x| buffer.cell((x, y)).expect("body cell").symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rendered, vec!["abc", "defgh", "i"]);
 }
 
 #[test]

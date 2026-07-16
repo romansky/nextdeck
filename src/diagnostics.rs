@@ -427,7 +427,15 @@ mod macos {
             }
             Err(error) => Err(format!("could not run sample: {error}")),
         };
-        let _ = fs::remove_file(path);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(
+                path = %path.display(),
+                %error,
+                "could not remove temporary sample output"
+            ),
+        }
         result
     }
 

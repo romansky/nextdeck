@@ -81,7 +81,7 @@ where
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
-    command.args(args);
+    command.args(args).kill_on_drop(true);
     let output = command.output().await.ok()?;
     output
         .status

@@ -81,6 +81,13 @@ fn prepare_test_viewports(app: &mut App, tree_page_size: usize, main_output_page
     }));
 }
 
+fn prepare_main_output_geometry(app: &mut App, page_size: usize, content_width: usize) {
+    app.prepare_frame(FrameViewportMetrics::new(vec![ViewportSpec::new(
+        ViewportId::MainOutput,
+        ViewportMetrics::new(page_size).with_content_width(content_width),
+    )]));
+}
+
 fn sample_xtask_manifest() -> XtaskManifest {
     XtaskManifest {
         schema_version: SCHEMA_VERSION,
@@ -1180,6 +1187,7 @@ fn failing_test_run_reports_failed_result() {
     assert_eq!(app.run_result_label(), "failed");
     assert!(app.status.starts_with("Failed:"));
     assert!(app.status.contains("1 failed"));
+    assert!(app.output_text().contains("boom"));
     assert!(app.output_text().contains("Run failed: 0 passed, 1 failed"));
 }
 
@@ -1427,7 +1435,7 @@ fn output_snap_follows_polled_chunks_until_the_user_scrolls() {
     let first_bottom = scroll::max_scroll(app.output_view().line_count(), 2);
 
     assert!(app.main_output.follow());
-    assert_eq!(app.main_output.scroll() as usize, first_bottom);
+    assert_eq!(app.main_output.scroll(), first_bottom);
 
     app.apply_run_event(RunEvent::TestOutput {
         key: key.clone(),
@@ -1437,7 +1445,7 @@ fn output_snap_follows_polled_chunks_until_the_user_scrolls() {
     let second_bottom = scroll::max_scroll(app.output_view().line_count(), 2);
 
     assert!(second_bottom > first_bottom);
-    assert_eq!(app.main_output.scroll() as usize, second_bottom);
+    assert_eq!(app.main_output.scroll(), second_bottom);
 
     app.apply_command(AppCommand::Scroll(scroll::ScrollAction::PageUp));
     let manual_scroll = app.main_output.scroll();
@@ -1596,6 +1604,36 @@ fn output_find_next_steps_between_matches_on_same_line() {
     assert_eq!(app.main_output.search.current_line, Some(1));
     assert_eq!(app.main_output.search.current_range, Some((10, 15)));
     assert!(app.status.contains("2/2"));
+}
+
+#[test]
+fn output_find_scrolls_to_the_visual_rows_containing_a_wrapped_match() {
+    let mut app = app_with_finished_output("aaaa bbbb needle");
+    app.main_output.search.query = "needle".to_owned();
+    prepare_main_output_geometry(&mut app, 1, 5);
+
+    app.apply_command(AppCommand::FindNextOutputMatch);
+
+    assert_eq!(app.main_output.search.current_range, Some((10, 16)));
+    assert_eq!(app.main_output.scroll(), 2);
+}
+
+#[test]
+fn output_resize_preserves_the_manual_viewports_source_anchor() {
+    let mut app = app_with_finished_output("head\nabcdefghij\ntail");
+    prepare_main_output_geometry(&mut app, 1, 4);
+    app.main_output.set_follow(false);
+    app.main_output.set_scroll(2);
+
+    prepare_main_output_geometry(&mut app, 1, 6);
+
+    assert_eq!(app.main_output.scroll(), 1);
+    assert_eq!(
+        app.main_output
+            .top_position()
+            .map(|position| position.source_line),
+        Some(1)
+    );
 }
 
 #[test]

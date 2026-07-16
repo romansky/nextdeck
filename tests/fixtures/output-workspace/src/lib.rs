@@ -45,6 +45,24 @@ mod tests {
     }
 
     #[test]
+    fn fail_returns_error_message() -> Result<(), &'static str> {
+        println!("RETURNED_ERROR_STDOUT: before failure");
+        Err("RETURNED_ERROR_MESSAGE: expected fixture failure")
+    }
+
+    #[test]
+    #[should_panic(expected = "EXPECTED_PANIC_TEXT")]
+    fn fail_should_panic_message_mismatch() {
+        panic!("ACTUAL_PANIC_TEXT");
+    }
+
+    #[test]
+    fn fail_times_out() {
+        println!("TIMEOUT_STDOUT: before sleep");
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+
+    #[test]
     #[ignore = "fixture ignored test"]
     fn ignored_prints_when_explicitly_run() {
         println!("IGNORED_STDOUT: ignored stdout");

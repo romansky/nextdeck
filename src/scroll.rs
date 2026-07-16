@@ -113,10 +113,6 @@ impl ViewportState {
     pub fn render_scroll(&self) -> u16 {
         self.scroll.min(u16::MAX as usize) as u16
     }
-
-    pub fn render_scroll_for(&self, content_len: usize) -> u16 {
-        clamp(self.scroll, content_len.max(1), self.page_size).min(u16::MAX as usize) as u16
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -234,14 +230,6 @@ impl FollowViewportState {
     pub fn reset_for_modal(&mut self) {
         self.viewport.reset();
         self.follow = false;
-    }
-
-    pub fn render_scroll_for(&self, content_len: usize) -> u16 {
-        self.viewport.render_scroll_for(content_len)
-    }
-
-    pub fn render_scroll(&self) -> u16 {
-        self.viewport.render_scroll()
     }
 }
 

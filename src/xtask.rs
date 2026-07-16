@@ -647,8 +647,8 @@ impl XtaskState {
     }
 
     fn sync_output_scroll_to_content(&mut self) {
-        let line_count = self.output.output_view(&self.output_text()).line_count();
-        self.output.apply_content_len(line_count);
+        let text = self.output_text();
+        self.output.sync_layout(&text);
     }
 
     fn ensure_selected_parameter_visible(&mut self) {

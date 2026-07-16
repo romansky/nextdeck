@@ -1,18 +1,17 @@
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::Clear,
+    widgets::{Clear, Paragraph},
 };
 
+#[cfg(test)]
+use crate::output_pane::OutputView;
 use crate::{
-    output_pane::{OutputPaneState, OutputSearchState, OutputView},
-    scroll::ViewportState,
+    output_pane::{OutputPaneState, OutputSearchState},
     theme::Theme,
 };
-
-use super::super::primitives::scrollable_paragraph;
 
 pub(in crate::ui) struct OutputPanel<'a> {
     state: &'a OutputPaneState,
@@ -21,11 +20,10 @@ pub(in crate::ui) struct OutputPanel<'a> {
     focused: bool,
 }
 
-pub(in crate::ui) struct OutputPanelContent<'a> {
+pub(in crate::ui) struct OutputPanelContent {
     pub(in crate::ui) status: String,
     pub(in crate::ui) actions: String,
     pub(in crate::ui) lines: Vec<Line<'static>>,
-    pub(in crate::ui) viewport: &'a ViewportState,
 }
 
 struct PanelChrome<'a> {
@@ -61,18 +59,15 @@ impl<'a> OutputPanel<'a> {
             },
             output.lines,
             focused,
-            output.viewport,
         );
     }
 
-    pub(in crate::ui) fn content(&self, theme: &Theme) -> OutputPanelContent<'a> {
-        let output_view = self.state.output_view(&self.source_text);
+    pub(in crate::ui) fn content(&self, theme: &Theme) -> OutputPanelContent {
         let search_actions = self.state.search_actions(&self.source_text);
         OutputPanelContent {
-            status: self.state.status(&self.label, &output_view.text),
+            status: self.state.status(&self.label),
             actions: output_actions(&search_actions),
-            lines: output_lines(&self.state.search, theme, &output_view),
-            viewport: self.state.viewport(),
+            lines: output_layout_lines(self.state, theme),
         }
     }
 }
@@ -84,21 +79,43 @@ fn draw_output_panel(
     chrome: PanelChrome<'_>,
     lines: Vec<Line<'static>>,
     focused: bool,
-    viewport: &ViewportState,
 ) {
-    let output = scrollable_paragraph(lines, theme, viewport).block(theme.panel_block(
-        chrome.status,
-        Some(chrome.actions),
-        focused,
-    ));
+    let block = theme.panel_block(chrome.status, Some(chrome.actions), focused);
+    let inner = block.inner(area);
+    let output = Paragraph::new(lines)
+        .alignment(Alignment::Left)
+        .style(theme.text());
     frame.render_widget(Clear, area);
-    frame.render_widget(output, area);
+    frame.render_widget(block, area);
+    frame.render_widget(output, inner);
 }
 
 pub(in crate::ui) fn output_actions(search_actions: &str) -> String {
     format!("{search_actions} [o]pen-editor")
 }
 
+fn output_layout_lines(state: &OutputPaneState, theme: &Theme) -> Vec<Line<'static>> {
+    let layout = state.layout();
+    let start = state.scroll();
+    let end = start
+        .saturating_add(state.page_size())
+        .min(layout.row_count());
+    (start..end)
+        .filter_map(|index| layout.row(index))
+        .map(|row| {
+            let logical_line = layout.logical_line_text(row);
+            highlighted_output_row(
+                &state.search,
+                theme,
+                row.source_line(),
+                logical_line,
+                row.byte_range(),
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
 pub(in crate::ui) fn output_lines(
     search: &OutputSearchState,
     theme: &Theme,
@@ -130,6 +147,55 @@ pub(in crate::ui) fn output_lines(
     }
 }
 
+fn highlighted_output_row(
+    search: &OutputSearchState,
+    theme: &Theme,
+    source_line: Option<usize>,
+    line: &str,
+    row_range: std::ops::Range<usize>,
+) -> Line<'static> {
+    let base_style = output_line_style(theme, line);
+    let ranges = search.match_ranges(line).unwrap_or_default();
+    let mut boundaries = vec![row_range.start, row_range.end];
+    for (start, end) in &ranges {
+        if *start < row_range.end && row_range.start < *end {
+            boundaries.push((*start).max(row_range.start));
+            boundaries.push((*end).min(row_range.end));
+        }
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    if boundaries.len() < 2 {
+        return Line::styled(String::new(), base_style);
+    }
+    let spans = boundaries
+        .windows(2)
+        .filter(|boundary| boundary[0] < boundary[1])
+        .map(|boundary| {
+            let start = boundary[0];
+            let end = boundary[1];
+            let matching_range = ranges
+                .iter()
+                .copied()
+                .find(|(match_start, match_end)| *match_start <= start && end <= *match_end);
+            let style = match matching_range {
+                Some(range)
+                    if source_line == search.current_line
+                        && search.current_range.is_none_or(|current| current == range) =>
+                {
+                    theme.active_search_match()
+                }
+                Some(_) => theme.search_match(),
+                None => base_style,
+            };
+            Span::styled(line[start..end].to_owned(), style)
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans)
+}
+
+#[cfg(test)]
 fn highlighted_output_line(
     search: &OutputSearchState,
     theme: &Theme,
@@ -170,7 +236,7 @@ fn output_line_style(theme: &Theme, line: &str) -> Style {
         theme.success()
     } else if line.starts_with("Run failed:")
         || line.starts_with("Run command failed:")
-        || line.starts_with("nextest: failed")
+        || line.starts_with("nextest:")
         || line.starts_with("Stack sampling failed:")
     {
         theme.danger()

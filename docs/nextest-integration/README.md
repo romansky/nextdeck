@@ -1,8 +1,7 @@
 # Nextest Integration
 
 Nextdeck works with an existing
-[`cargo-nextest`](https://nexte.st/) setup. It does not require a Nextdeck-specific
-test manifest or configuration file.
+[`cargo-nextest`](https://nexte.st/) setup. It does not require a Nextdeck-specific setup.
 
 ## Setup
 

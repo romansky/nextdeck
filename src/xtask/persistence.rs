@@ -199,10 +199,22 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         output.sync_all()?;
         fs::rename(&temporary, path)
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
+    match result {
+        Ok(()) => Ok(()),
+        Err(write_error) => match fs::remove_file(&temporary) {
+            Ok(()) => Err(write_error),
+            Err(cleanup_error) if cleanup_error.kind() == io::ErrorKind::NotFound => {
+                Err(write_error)
+            }
+            Err(cleanup_error) => Err(io::Error::new(
+                write_error.kind(),
+                format!(
+                    "{write_error}; could not remove temporary file {}: {cleanup_error}",
+                    temporary.display()
+                ),
+            )),
+        },
     }
-    result
 }
 
 #[cfg(test)]

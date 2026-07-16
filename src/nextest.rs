@@ -80,6 +80,7 @@ pub struct RunOptions {
     pub profile: Option<String>,
     pub filterset: Option<String>,
     pub ignored: RunIgnored,
+    pub(crate) test_threads: Option<u32>,
     pub retries: Option<u32>,
     pub flaky_result: Option<FlakyResult>,
     pub fail_fast: FailFast,
@@ -213,6 +214,9 @@ impl RunOptions {
             RunIgnored::Default => {}
             RunIgnored::Only => args.extend(["--run-ignored".to_owned(), "only".to_owned()]),
             RunIgnored::All => args.extend(["--run-ignored".to_owned(), "all".to_owned()]),
+        }
+        if let Some(test_threads) = self.test_threads {
+            args.extend(["--test-threads".to_owned(), test_threads.to_string()]);
         }
         if let Some(retries) = self.retries {
             args.extend(["--retries".to_owned(), retries.to_string()]);
@@ -471,6 +475,9 @@ pub enum RunEvent {
         run_id: Option<String>,
         profile: Option<String>,
     },
+    RunCancelling {
+        running_tests: usize,
+    },
     SuiteStarted {
         test_count: usize,
     },
@@ -575,7 +582,7 @@ impl NextestClient {
         &self,
         request: RunRequest,
         tx: mpsc::Sender<RunEvent>,
-        mut stop_rx: mpsc::UnboundedReceiver<()>,
+        mut stop_rx: mpsc::Receiver<()>,
         capture_test_events: bool,
         process_tracker: ProcessTracker,
         info_output_poll_interval: Duration,
@@ -680,8 +687,9 @@ impl NextestClient {
                         observe_info_output_event(&event, &stdout_info_output);
                         if starts_test_execution(&event)
                             && let Some(start_tx) = info_poll_start_tx.take()
+                            && start_tx.send(()).is_err()
                         {
-                            let _ = start_tx.send(());
+                            tracing::debug!("info output poll ended before test execution started");
                         }
                         let _ = stdout_tx.send(event).await;
                     }
@@ -838,7 +846,7 @@ enum RunProcessOutcome {
 
 struct RunOnceContext<'a> {
     tx: &'a mpsc::Sender<RunEvent>,
-    stop_rx: &'a mut mpsc::UnboundedReceiver<()>,
+    stop_rx: &'a mut mpsc::Receiver<()>,
     capture_test_events: bool,
     process_tracker: &'a ProcessTracker,
     info_output_poll_interval: Duration,
@@ -885,6 +893,8 @@ fn start_info_output_poll(
 
 #[cfg(unix)]
 fn signal_info_output(pid: u32) -> io::Result<()> {
+    // SAFETY: `kill` only reads the integer PID and signal value. The PID comes from the live
+    // child process, and SIGUSR1 is a valid signal on this Unix target.
     let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGUSR1) };
     if result == 0 {
         Ok(())
@@ -979,6 +989,8 @@ fn signal_child_process_group(child: &Child, signal: libc::c_int) -> io::Result<
         return Ok(());
     };
     let process_group = -(pid as libc::pid_t);
+    // SAFETY: `kill` only reads the integer process-group ID and signal. The negative ID
+    // deliberately targets the child-owned process group configured at spawn time.
     let result = unsafe { libc::kill(process_group, signal) };
     if result == 0 {
         return Ok(());
@@ -1186,11 +1198,22 @@ fn parse_run_line(line: &str) -> Option<RunEvent> {
 
 fn parse_runner_line(line: &str) -> Option<RunEvent> {
     let line = line.trim();
-    let rest = line.strip_prefix("Nextest run ID ")?;
-    let (run_id, profile) = rest.split_once(" with nextest profile: ")?;
-    Some(RunEvent::RunMetadata {
-        run_id: Some(run_id.to_owned()),
-        profile: Some(profile.to_owned()),
+    if let Some(rest) = line.strip_prefix("Nextest run ID ") {
+        let (run_id, profile) = rest.split_once(" with nextest profile: ")?;
+        return Some(RunEvent::RunMetadata {
+            run_id: Some(run_id.to_owned()),
+            profile: Some(profile.to_owned()),
+        });
+    }
+
+    let rest = line.strip_prefix("Cancelling due to test failure: ")?;
+    let count = rest
+        .strip_suffix(" tests still running")
+        .or_else(|| rest.strip_suffix(" test still running"))?
+        .parse()
+        .ok()?;
+    Some(RunEvent::RunCancelling {
+        running_tests: count,
     })
 }
 
@@ -1216,7 +1239,7 @@ fn parse_test_record(value: Value, mut record: LibtestRecord) -> Option<RunEvent
         "failed" => Some(RunEvent::TestFinished {
             key,
             status: TestStatus::Failed,
-            output: vec![TestOutputChunk::Text(record.output())],
+            output: vec![TestOutputChunk::Text(record.failed_output())],
             duration: seconds_to_duration(record.exec_time),
         }),
         "ignored" => Some(RunEvent::TestFinished {
@@ -1330,6 +1353,10 @@ impl SuccessfulOutputCollector {
 
     fn finish_event(&mut self) -> Option<RunEvent> {
         let fallback = self.collecting_for.take()?;
+        if failed_output_test_name(&self.lines).is_some() {
+            self.lines.clear();
+            return None;
+        }
         let key = self.resolve_output_key(fallback);
         let text = clean_success_output_block(&key.name, &self.lines);
         self.lines.clear();
@@ -1824,6 +1851,17 @@ fn success_output_test_name(lines: &[String]) -> Option<String> {
     })
 }
 
+fn failed_output_test_name(lines: &[String]) -> Option<String> {
+    lines.iter().find_map(|line| {
+        let line = line.trim();
+        let rest = line.strip_prefix("test ")?;
+        let (name, status) = rest.rsplit_once(" ... ")?;
+        status
+            .eq_ignore_ascii_case("failed")
+            .then(|| name.to_owned())
+    })
+}
+
 fn is_libtest_success_output_metadata(test_name: &str, line: &str) -> bool {
     let trimmed = line.trim();
     trimmed == "running 1 test"
@@ -1908,6 +1946,8 @@ struct LibtestRecord {
     name: Option<String>,
     stdout: Option<String>,
     stderr: Option<String>,
+    reason: Option<String>,
+    message: Option<String>,
     exec_time: Option<f64>,
     test_count: Option<usize>,
     passed: Option<usize>,
@@ -1923,6 +1963,32 @@ impl LibtestRecord {
             &self.stderr.take().unwrap_or_default(),
         )
     }
+
+    fn failed_output(&mut self) -> String {
+        let mut output = self.output();
+        let reason = self.reason.take();
+        let message = self.message.take();
+        for detail in [reason, message].into_iter().flatten() {
+            append_nextest_failure_detail(&mut output, &detail);
+        }
+        output
+    }
+}
+
+fn append_nextest_failure_detail(output: &mut String, detail: &str) {
+    let detail = detail.trim();
+    if detail.is_empty() {
+        return;
+    }
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    if !output.trim().is_empty() && !output.ends_with("\n\n") {
+        output.push('\n');
+    }
+    output.push_str("nextest: ");
+    output.push_str(detail);
+    output.push('\n');
 }
 
 #[cfg(test)]

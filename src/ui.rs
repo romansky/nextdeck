@@ -28,7 +28,7 @@ use components::test_details::TestDetailsModal;
 use components::test_events::TestEventsModal;
 use components::tests::TestsPanel;
 use components::xtasks::XtasksModal;
-use geometry::{centered_rect, modal_inner_area, panel_body_page_size};
+use geometry::{centered_rect, modal_inner_area, panel_body_page_size, panel_body_width};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AppLayout {
@@ -36,6 +36,66 @@ pub struct AppLayout {
     pub details: Rect,
     pub output: Rect,
     pub status: Rect,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UiGeometry {
+    app_layout: AppLayout,
+    viewports: FrameViewportMetrics,
+}
+
+impl UiGeometry {
+    pub fn new(area: Rect, app: &App) -> Self {
+        let app_layout = layout(area, app.settings.tree_width_percent);
+        let xtask_inner = modal_inner_area(88, 82, area);
+        let test_events_inner = modal_inner_area(88, 82, area);
+        let test_details_inner = modal_inner_area(86, 88, area);
+        let main_output_area = if app.discovery.error.is_some() {
+            centered_rect(62, 58, area)
+        } else {
+            app_layout.output
+        };
+        let viewports = FrameViewportMetrics::new(vec![
+            ViewportSpec::new(
+                ViewportId::Tree,
+                ViewportMetrics::new(panel_body_page_size(app_layout.tree)),
+            ),
+            ViewportSpec::new(
+                ViewportId::MainOutput,
+                output_viewport_metrics(main_output_area),
+            ),
+            ViewportSpec::new(
+                ViewportId::XtaskParameters,
+                ViewportMetrics::new(panel_body_page_size(XtasksModal::detail_parameters_area(
+                    xtask_inner,
+                ))),
+            ),
+            ViewportSpec::new(
+                ViewportId::XtaskOutput,
+                output_viewport_metrics(XtasksModal::detail_output_area(xtask_inner)),
+            ),
+            ViewportSpec::new(
+                ViewportId::TestEventsOutput,
+                output_viewport_metrics(TestEventsModal::output_area(test_events_inner)),
+            ),
+            ViewportSpec::new(
+                ViewportId::TestStackSampleOutput,
+                output_viewport_metrics(test_details_inner),
+            ),
+            ViewportSpec::new(
+                ViewportId::TestDetails,
+                ViewportMetrics::new(panel_body_page_size(centered_rect(86, 88, area))),
+            ),
+        ]);
+        Self {
+            app_layout,
+            viewports,
+        }
+    }
+
+    pub fn viewport_metrics(&self) -> FrameViewportMetrics {
+        self.viewports.clone()
+    }
 }
 
 pub fn layout(area: Rect, tree_width_percent: u16) -> AppLayout {
@@ -72,52 +132,23 @@ pub fn layout(area: Rect, tree_width_percent: u16) -> AppLayout {
     }
 }
 
+#[cfg(test)]
 pub fn viewport_metrics(area: Rect, app: &App) -> FrameViewportMetrics {
-    let app_layout = layout(area, app.settings.tree_width_percent);
-    let xtask_inner = modal_inner_area(88, 82, area);
-    let test_events_inner = modal_inner_area(88, 82, area);
-    let test_details_inner = modal_inner_area(86, 88, area);
-
-    FrameViewportMetrics::new(vec![
-        ViewportSpec::new(
-            ViewportId::Tree,
-            ViewportMetrics::new(panel_body_page_size(app_layout.tree)),
-        ),
-        ViewportSpec::new(
-            ViewportId::MainOutput,
-            ViewportMetrics::new(panel_body_page_size(app_layout.output)),
-        ),
-        ViewportSpec::new(
-            ViewportId::XtaskParameters,
-            ViewportMetrics::new(panel_body_page_size(XtasksModal::detail_parameters_area(
-                xtask_inner,
-            ))),
-        ),
-        ViewportSpec::new(
-            ViewportId::XtaskOutput,
-            ViewportMetrics::new(panel_body_page_size(XtasksModal::detail_output_area(
-                xtask_inner,
-            ))),
-        ),
-        ViewportSpec::new(
-            ViewportId::TestEventsOutput,
-            ViewportMetrics::new(panel_body_page_size(TestEventsModal::output_area(
-                test_events_inner,
-            ))),
-        ),
-        ViewportSpec::new(
-            ViewportId::TestStackSampleOutput,
-            ViewportMetrics::new(panel_body_page_size(test_details_inner)),
-        ),
-        ViewportSpec::new(
-            ViewportId::TestDetails,
-            ViewportMetrics::new(panel_body_page_size(centered_rect(86, 88, area))),
-        ),
-    ])
+    UiGeometry::new(area, app).viewport_metrics()
 }
 
+fn output_viewport_metrics(area: Rect) -> ViewportMetrics {
+    ViewportMetrics::new(panel_body_page_size(area)).with_content_width(panel_body_width(area))
+}
+
+#[cfg(test)]
 pub fn draw(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
-    let app_layout = layout(frame.area(), app.settings.tree_width_percent);
+    let geometry = UiGeometry::new(frame.area(), app);
+    draw_prepared(frame, app, theme, &geometry);
+}
+
+pub fn draw_prepared(frame: &mut Frame<'_>, app: &App, theme: &Theme, geometry: &UiGeometry) {
+    let app_layout = geometry.app_layout;
     TestsPanel::new(app).render(frame, theme, app_layout.tree);
     InfoPanel::new(app).render(frame, theme, app_layout.details);
     draw_output(frame, app, theme, app_layout.output);

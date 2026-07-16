@@ -1,6 +1,6 @@
 use std::io::{self, Stdout};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -18,16 +18,25 @@ impl TerminalSession {
     pub fn enter() -> Result<Self> {
         enable_raw_mode().context("enabling terminal raw mode")?;
         if let Err(error) = execute!(io::stdout(), EnterAlternateScreen) {
-            let _ = disable_raw_mode();
-            return Err(error).context("entering alternate terminal screen");
+            let error = anyhow::Error::new(error).context("entering alternate terminal screen");
+            return match rollback_terminal_setup(false) {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(error.context(format!(
+                    "terminal setup rollback failed: {rollback_error:#}"
+                ))),
+            };
         }
 
         let terminal = match Terminal::new(CrosstermBackend::new(io::stdout())) {
             Ok(terminal) => terminal,
             Err(error) => {
-                let _ = execute!(io::stdout(), LeaveAlternateScreen);
-                let _ = disable_raw_mode();
-                return Err(error).context("creating terminal backend");
+                let error = anyhow::Error::new(error).context("creating terminal backend");
+                return match rollback_terminal_setup(true) {
+                    Ok(()) => Err(error),
+                    Err(rollback_error) => Err(error.context(format!(
+                        "terminal setup rollback failed: {rollback_error:#}"
+                    ))),
+                };
             }
         };
 
@@ -46,14 +55,37 @@ impl TerminalSession {
             return Ok(());
         }
 
-        disable_raw_mode().context("disabling terminal raw mode")?;
-        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)
-            .context("leaving alternate terminal screen")?;
-        self.terminal
-            .show_cursor()
-            .context("showing terminal cursor")?;
-        self.restored = true;
+        let mut errors = Vec::new();
+        if let Err(error) = disable_raw_mode() {
+            errors.push(format!("disabling terminal raw mode: {error}"));
+        }
+        if let Err(error) = execute!(self.terminal.backend_mut(), LeaveAlternateScreen) {
+            errors.push(format!("leaving alternate terminal screen: {error}"));
+        }
+        if let Err(error) = self.terminal.show_cursor() {
+            errors.push(format!("showing terminal cursor: {error}"));
+        }
+        if errors.is_empty() {
+            self.restored = true;
+            Ok(())
+        } else {
+            Err(anyhow!(errors.join("; ")))
+        }
+    }
+}
+
+fn rollback_terminal_setup(leave_alternate_screen: bool) -> Result<()> {
+    let mut errors = Vec::new();
+    if leave_alternate_screen && let Err(error) = execute!(io::stdout(), LeaveAlternateScreen) {
+        errors.push(format!("leaving alternate terminal screen: {error}"));
+    }
+    if let Err(error) = disable_raw_mode() {
+        errors.push(format!("disabling terminal raw mode: {error}"));
+    }
+    if errors.is_empty() {
         Ok(())
+    } else {
+        Err(anyhow!(errors.join("; ")))
     }
 }
 

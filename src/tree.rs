@@ -516,6 +516,22 @@ impl Tree {
         self.recompute_statuses();
     }
 
+    pub fn skip_unfinished_tests(&mut self, scope: &crate::nextest::RunScope) {
+        visit_mut(&mut self.root, &mut |node| {
+            let NodeKind::Test(test) = &node.kind else {
+                return;
+            };
+            if scope.matches_test(test)
+                && matches!(node.status, TestStatus::Pending | TestStatus::Running)
+            {
+                node.status = TestStatus::Skipped;
+                node.started_at = None;
+                node.finished_at = None;
+            }
+        });
+        self.recompute_statuses();
+    }
+
     pub fn append_runner_output(&mut self, line: String) {
         self.runner_output.push(bounded_text(line));
         if self.runner_output.len() > 500 {
@@ -564,6 +580,26 @@ impl Tree {
             }
         });
         tests
+    }
+
+    #[cfg(test)]
+    pub fn select_test(&mut self, key: &TestKey) -> bool {
+        let mut target = None;
+        visit(&self.root, &mut |node| {
+            if target.is_none() && node_matches(node, key) {
+                target = Some(node.id.clone());
+            }
+        });
+        target.is_some_and(|target| self.focus_node(target))
+    }
+
+    #[cfg(test)]
+    fn focus_node(&mut self, target: NodeId) -> bool {
+        if !expand_path_to(&mut self.root, &target) {
+            return false;
+        }
+        self.selected = target;
+        true
     }
 
     pub fn select_next_failed(&mut self) -> bool {
@@ -842,6 +878,23 @@ fn visit_mut(node: &mut TestNode, f: &mut impl FnMut(&mut TestNode)) {
     f(node);
     for child in &mut node.children {
         visit_mut(child, f);
+    }
+}
+
+#[cfg(test)]
+fn expand_path_to(node: &mut TestNode, target: &NodeId) -> bool {
+    if &node.id == target {
+        return true;
+    }
+    if node
+        .children
+        .iter_mut()
+        .any(|child| expand_path_to(child, target))
+    {
+        node.expanded = true;
+        true
+    } else {
+        false
     }
 }
 

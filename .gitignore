@@ -1,3 +1,4 @@
 /target
 tests/fixtures/**/target
 .idea
+.DS_Store

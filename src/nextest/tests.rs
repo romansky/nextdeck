@@ -1,4 +1,10 @@
 use super::*;
+use ratatui::{
+    Terminal,
+    backend::TestBackend,
+    buffer::Buffer,
+    layout::{Margin, Rect},
+};
 
 fn output_chunks_text(output: &[TestOutputChunk]) -> String {
     output
@@ -34,7 +40,7 @@ async fn working_dir_resolves_workspace_root_from_nested_package() {
 
     assert_eq!(client.project_dir(), root.canonicalize().unwrap());
 
-    let _ = fs::remove_dir_all(root);
+    fs::remove_dir_all(root).expect("remove test workspace");
 }
 
 #[tokio::test]
@@ -140,57 +146,185 @@ async fn fixture_run_captures_failed_output_from_json_event() {
 
 #[tokio::test]
 async fn fixture_failure_is_displayed_in_selected_test_output() {
-    let events = run_output_fixture("fail_prints_stdout_and_stderr").await;
-    let key = events
-        .iter()
-        .find_map(|event| match event {
-            RunEvent::TestFinished { key, .. }
-                if key.name.contains("fail_prints_stdout_and_stderr") =>
-            {
-                Some(key.clone())
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("missing failed fixture key; events: {events:#?}"));
-    let mut test = discovered_test(
-        "nextdeck-output-fixture",
-        "nextdeck_output_fixture",
-        "lib",
-        &key.name,
-    );
-    test.key = key;
-    let mut app = App::with_settings(Tree::from_tests(vec![test]), AppSettings::default());
-    assert!(app.begin_run(&RunRequest::default()).is_some());
+    let mut run = run_output_fixture_in_tui("fail_prints_stdout_and_stderr").await;
+    assert_eq!(run.selected_status(), Some(TestStatus::Failed));
 
-    for event in events {
-        app.apply_run_event(event);
-    }
-
-    app.tree.select_next();
-    app.tree.expand_selected();
-    app.tree.select_next();
-    app.tree.expand_selected();
-    app.tree.select_next();
-
-    assert_eq!(
-        app.tree.selected_node().map(|node| node.status),
-        Some(TestStatus::Failed)
-    );
-    let output = app.output_source_text();
-    let summary_index = output
-        .find("nextest: failed")
-        .unwrap_or_else(|| panic!("missing Nextest failure summary in:\n{output}"));
-    for captured in [
+    let output = run.visible_output_pane(100, 30);
+    for visible in [
         "FAIL_STDOUT: lib fail stdout",
         "FAIL_STDERR: lib fail stderr",
         "FAIL_PANIC: expected fixture failure",
+        "nextest: failed after",
+        "Run failed: 0 passed, 1 failed",
     ] {
-        let captured_index = output
-            .find(captured)
-            .unwrap_or_else(|| panic!("missing {captured:?} in:\n{output}"));
         assert!(
-            captured_index < summary_index,
-            "captured output must precede the Nextest summary:\n{output}"
+            output.contains(visible),
+            "missing visible output {visible:?} in rendered output pane:\n{output}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn fixture_fail_fast_wait_is_visible_while_in_flight_test_finishes() {
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cancellation-workspace");
+    let marker = fixture.join("target/cancellation-scenario-started");
+    match fs::remove_file(&marker) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("remove stale cancellation fixture marker: {error}"),
+    }
+
+    let client = NextestClient::for_project_dir(fixture);
+    let discovery = client
+        .discover()
+        .await
+        .expect("discover cancellation fixture");
+    let bootstrap = discovery
+        .tests
+        .iter()
+        .find(|test| test.full_name == "bootstrap_fails_after_scenario_starts")
+        .expect("bootstrap cancellation fixture");
+    let bootstrap_key = bootstrap.key.clone();
+    let scenario = discovery
+        .tests
+        .iter()
+        .find(|test| test.full_name == "scenario_finishes_successfully_with_error_logs")
+        .expect("scenario cancellation fixture");
+    let scenario_key = scenario.key.clone();
+    let deferred_key = discovery
+        .tests
+        .iter()
+        .find(|test| test.full_name == "deferred_test_must_not_start_after_fail_fast")
+        .expect("deferred cancellation fixture")
+        .key
+        .clone();
+    let request = RunRequest {
+        scope: RunScope::Workspace,
+        options: RunOptions {
+            // An outer Nextest run exports NEXTEST_TEST_THREADS to this process.
+            // Pin the nested fixture's concurrency so its deferred test cannot start.
+            test_threads: Some(4),
+            ..RunOptions::default()
+        },
+    };
+    let mut run = TuiFixtureRun {
+        app: App::with_settings(Tree::from_tests(discovery.tests), AppSettings::default()),
+    };
+    assert!(run.app.begin_run(&request).is_some());
+    let events = collect_run_events(&client, request, false).await;
+
+    let cancelling_at = events
+        .iter()
+        .position(|event| matches!(event, RunEvent::RunCancelling { running_tests: 3 }))
+        .unwrap_or_else(|| panic!("missing Nextest cancellation transition: {events:#?}"));
+    let scenario_finished_at = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                RunEvent::TestFinished { key, status: TestStatus::Passed, .. }
+                    if key.name == scenario_key.name
+            )
+        })
+        .unwrap_or_else(|| panic!("missing scenario success: {events:#?}"));
+    assert!(cancelling_at < scenario_finished_at, "events: {events:#?}");
+
+    for event in events.iter().take(cancelling_at + 1).cloned() {
+        run.app.apply_run_event(event);
+    }
+    assert_eq!(run.app.run_status_label(), "cancelling");
+    assert!(run.app.running);
+    assert!(run.visible_screen(120, 36).contains("tests: cancelling"));
+    assert!(run.app.select_test(&scenario_key));
+    assert_eq!(run.selected_status(), Some(TestStatus::Running));
+
+    for event in events
+        .iter()
+        .skip(cancelling_at + 1)
+        .take(scenario_finished_at - cancelling_at)
+        .cloned()
+    {
+        run.app.apply_run_event(event);
+    }
+    assert_eq!(
+        run.app.run_status_label(),
+        "cancelling",
+        "in-flight test events must not reset the cancellation phase"
+    );
+    assert_eq!(
+        run.app.run.phase,
+        crate::app::RunPhase::Cancelling { remaining: 2 }
+    );
+    assert!(run.app.select_test(&scenario_key));
+    assert_eq!(run.selected_status(), Some(TestStatus::Passed));
+    let output = run.visible_output_pane(120, 36);
+    assert!(output.contains("[ERR] CANCELLATION_SCENARIO_CLEANUP"));
+
+    for event in events.iter().skip(scenario_finished_at + 1).cloned() {
+        run.app.apply_run_event(event);
+    }
+    assert!(run.app.select_test(&bootstrap_key));
+    assert_eq!(run.selected_status(), Some(TestStatus::Failed));
+    assert!(run.app.select_test(&deferred_key));
+    assert_eq!(run.selected_status(), Some(TestStatus::Skipped));
+    assert_eq!(run.app.run.outcome, crate::app::RunOutcome::Failed);
+    assert_eq!(run.app.run_status_label(), "idle");
+}
+
+#[tokio::test]
+async fn fixture_returned_error_is_visible_in_tui_output() {
+    let mut run = run_output_fixture_in_tui("fail_returns_error_message").await;
+    assert_eq!(run.selected_status(), Some(TestStatus::Failed));
+
+    let output = run.visible_output_pane(160, 42);
+    for visible in [
+        "RETURNED_ERROR_STDOUT: before failure",
+        "Error: \"RETURNED_ERROR_MESSAGE: expected fixture failure\"",
+        "nextest: failed after",
+        "Run failed: 0 passed, 1 failed",
+    ] {
+        assert!(
+            output.contains(visible),
+            "missing visible output {visible:?} in rendered output pane:\n{output}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn fixture_libtest_failure_details_are_visible_in_tui_output() {
+    let mut run = run_output_fixture_in_tui("fail_should_panic_message_mismatch").await;
+    assert_eq!(run.selected_status(), Some(TestStatus::Failed));
+
+    let output = run.visible_output_pane(100, 30);
+    for visible in [
+        "ACTUAL_PANIC_TEXT",
+        "note: panic did not contain expected string",
+        "panic message: \"ACTUAL_PANIC_TEXT\"",
+        "expected substring: \"EXPECTED_PANIC_TEXT\"",
+        "nextest: failed after",
+    ] {
+        assert!(
+            output.contains(visible),
+            "missing visible output {visible:?} in rendered output pane:\n{output}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn fixture_nextest_timeout_reason_is_visible_in_tui_output() {
+    let mut run = run_output_fixture_in_tui("fail_times_out").await;
+    assert_eq!(run.selected_status(), Some(TestStatus::Failed));
+
+    let output = run.visible_output_pane(160, 42);
+    for visible in [
+        "TIMEOUT_STDOUT: before sleep",
+        "nextest: time limit exceeded",
+        "nextest: failed after",
+    ] {
+        assert!(
+            output.contains(visible),
+            "missing visible output {visible:?} in rendered output pane:\n{output}"
         );
     }
 }
@@ -242,6 +376,16 @@ fn parses_nextest_run_metadata_banner() {
 }
 
 #[test]
+fn parses_nextest_cancelling_banner() {
+    let event = parse_runner_line("  Cancelling due to test failure: 9 tests still running")
+        .expect("event");
+    assert!(matches!(
+        event,
+        RunEvent::RunCancelling { running_tests: 9 }
+    ));
+}
+
+#[test]
 fn strips_current_nextest_binary_prefix_from_test_name() {
     let line = r#"{"type":"test","event":"started","name":"demo::demo_bin$tests::it_works"}"#;
     let event = parse_run_line(line).expect("event");
@@ -273,6 +417,34 @@ fn parses_libtest_json_plus_finished_event() {
             assert_eq!(output_chunks_text(&output), "out\nerr");
             assert_eq!(duration, Some(Duration::from_millis(250)));
         }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn parses_nextest_failure_reason_after_captured_output() {
+    let line = r#"{"type":"test","event":"failed","name":"tests::slow","stdout":"before timeout","reason":"time limit exceeded","exec_time":1.0}"#;
+    let event = parse_run_line(line).expect("event");
+
+    match event {
+        RunEvent::TestFinished { output, .. } => assert_eq!(
+            output_chunks_text(&output),
+            "before timeout\n\nnextest: time limit exceeded\n"
+        ),
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn parses_libtest_failure_message_without_captured_output() {
+    let line = r#"{"type":"test","event":"failed","name":"tests::returns_error","message":"the test returned an error","exec_time":0.01}"#;
+    let event = parse_run_line(line).expect("event");
+
+    match event {
+        RunEvent::TestFinished { output, .. } => assert_eq!(
+            output_chunks_text(&output),
+            "nextest: the test returned an error\n"
+        ),
         other => panic!("unexpected event: {other:?}"),
     }
 }
@@ -447,6 +619,42 @@ fn successful_output_collector_does_not_reuse_key_after_output_was_emitted() {
         }
         other => panic!("unexpected event: {other:?}"),
     }
+}
+
+#[test]
+fn successful_output_collector_does_not_attach_failure_to_previous_success() {
+    let passed_key = TestKey {
+        binary_id: Some("demo::demo".to_owned()),
+        event_prefix: Some("demo::demo".to_owned()),
+        name: "tests::passes".to_owned(),
+    };
+    let failed_key = TestKey {
+        binary_id: Some("demo::demo".to_owned()),
+        event_prefix: Some("demo::demo".to_owned()),
+        name: "tests::fails".to_owned(),
+    };
+    let mut collector = SuccessfulOutputCollector::default();
+    collector.observe_event(&RunEvent::TestFinished {
+        key: passed_key,
+        status: TestStatus::Passed,
+        output: Vec::new(),
+        duration: Some(Duration::from_millis(5)),
+    });
+    collector.observe_event(&RunEvent::TestStarted {
+        key: failed_key.clone(),
+    });
+    collector.observe_event(&RunEvent::TestFinished {
+        key: failed_key,
+        status: TestStatus::Failed,
+        output: vec![TestOutputChunk::Text("assertion failed".to_owned())],
+        duration: Some(Duration::from_millis(7)),
+    });
+
+    assert!(collector.try_start("  output ───"));
+    collector.push_line("    assertion failed".to_owned());
+    collector.push_line("    test tests::fails ... FAILED".to_owned());
+
+    assert!(collector.finish_event().is_none());
 }
 
 #[test]
@@ -740,6 +948,7 @@ fn manual_run_request_command_includes_run_options() {
             profile: Some("ci".to_owned()),
             filterset: Some("package(demo)".to_owned()),
             ignored: RunIgnored::All,
+            test_threads: Some(4),
             retries: Some(2),
             flaky_result: Some(FlakyResult::Fail),
             fail_fast: FailFast::Off,
@@ -753,7 +962,7 @@ fn manual_run_request_command_includes_run_options() {
 
     assert_eq!(
         manual_run_request_command(&request),
-        "cargo nextest run -P ci -E 'package(demo)' --run-ignored all --retries 2 --flaky-result fail --no-fail-fast --max-fail 3:immediate --no-capture --debugger 'rust-lldb --args' --stress-count 10 --stress-duration 30s -p demo --lib 'tests::case one'"
+        "cargo nextest run -P ci -E 'package(demo)' --run-ignored all --test-threads 4 --retries 2 --flaky-result fail --no-fail-fast --max-fail 3:immediate --no-capture --debugger 'rust-lldb --args' --stress-count 10 --stress-duration 30s -p demo --lib 'tests::case one'"
     );
 }
 
@@ -899,26 +1108,24 @@ async fn run_output_fixture_with_options(
     options: RunOptions,
     capture_events: bool,
 ) -> Vec<RunEvent> {
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/output-workspace");
-    let client = NextestClient::for_project_dir(fixture);
-    let (tx, mut rx) = tokio::sync::mpsc::channel(crate::queue::APP_EVENT_QUEUE_CAPACITY);
-    let (_stop_tx, stop_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (binary, kind) = if filter.starts_with("integration_") {
-        ("integration_output", "test")
-    } else {
-        ("nextdeck_output_fixture", "lib")
+    let client = output_fixture_client();
+    let request = RunRequest {
+        scope: RunScope::Test(output_fixture_selector(filter)),
+        options,
     };
+    collect_run_events(&client, request, capture_events).await
+}
+
+async fn collect_run_events(
+    client: &NextestClient,
+    request: RunRequest,
+    capture_events: bool,
+) -> Vec<RunEvent> {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(crate::queue::APP_EVENT_QUEUE_CAPACITY);
+    let (_stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
     client
         .run(
-            RunRequest {
-                scope: RunScope::Test(test_selector(
-                    "nextdeck-output-fixture",
-                    binary,
-                    kind,
-                    filter,
-                )),
-                options,
-            },
+            request,
             tx,
             stop_rx,
             capture_events,
@@ -941,6 +1148,99 @@ async fn run_output_fixture_with_options(
         "fixture run did not finish; events: {events:#?}"
     );
     events
+}
+
+fn output_fixture_client() -> NextestClient {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/output-workspace");
+    NextestClient::for_project_dir(fixture)
+}
+
+fn output_fixture_selector(filter: &str) -> TestSelector {
+    let (binary, kind) = if filter.starts_with("integration_") {
+        ("integration_output", "test")
+    } else {
+        ("nextdeck_output_fixture", "lib")
+    };
+    test_selector("nextdeck-output-fixture", binary, kind, filter)
+}
+
+struct TuiFixtureRun {
+    app: App,
+}
+
+impl TuiFixtureRun {
+    fn selected_status(&self) -> Option<TestStatus> {
+        self.app.tree.selected_node().map(|node| node.status)
+    }
+
+    fn visible_output_pane(&mut self, width: u16, height: u16) -> String {
+        let area = Rect::new(0, 0, width, height);
+        self.app
+            .prepare_frame(crate::ui::viewport_metrics(area, &self.app));
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &self.app, &crate::theme::Theme::dark()))
+            .expect("render fixture app");
+        let output_area = crate::ui::layout(area, self.app.settings.tree_width_percent)
+            .output
+            .inner(Margin::new(1, 1));
+        buffer_rect_text(terminal.backend().buffer(), output_area)
+    }
+
+    fn visible_screen(&mut self, width: u16, height: u16) -> String {
+        let area = Rect::new(0, 0, width, height);
+        self.app
+            .prepare_frame(crate::ui::viewport_metrics(area, &self.app));
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &self.app, &crate::theme::Theme::dark()))
+            .expect("render fixture app");
+        buffer_rect_text(terminal.backend().buffer(), area)
+    }
+}
+
+async fn run_output_fixture_in_tui(filter: &str) -> TuiFixtureRun {
+    let client = output_fixture_client();
+    let discovery = client.discover().await.expect("discover output fixture");
+    let selected_test = discovery
+        .tests
+        .iter()
+        .find(|test| test.full_name == filter || test.full_name.ends_with(&format!("::{filter}")))
+        .unwrap_or_else(|| panic!("fixture discovery did not contain {filter}"));
+    let selected_key = selected_test.key.clone();
+    let selector = TestSelector::from_test(selected_test);
+    let request = RunRequest::new(RunScope::Test(selector));
+    let mut app = App::with_settings(Tree::from_tests(discovery.tests), AppSettings::default());
+    assert!(app.begin_run(&request).is_some());
+
+    for event in collect_run_events(&client, request, false).await {
+        app.apply_run_event(event);
+    }
+    assert!(app.select_test(&selected_key));
+
+    TuiFixtureRun { app }
+}
+
+fn buffer_rect_text(buffer: &Buffer, area: Rect) -> String {
+    let mut lines = Vec::with_capacity(area.height as usize);
+    for y in area.top()..area.bottom() {
+        let mut line = String::new();
+        for x in area.left()..area.right() {
+            line.push_str(
+                buffer
+                    .cell((x, y))
+                    .unwrap_or_else(|| panic!("buffer cell outside {area:?}: ({x}, {y})"))
+                    .symbol(),
+            );
+        }
+        lines.push(line.trim_end().to_owned());
+    }
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines.join("\n")
 }
 
 fn target(package: &str, name: &str, kind: &str) -> TargetSelector {
@@ -988,6 +1288,8 @@ fn discovered_test(package: &str, binary: &str, kind: &str, full_name: &str) -> 
 
 #[cfg(unix)]
 fn process_group_exists(process_group: u32) -> bool {
+    // SAFETY: signal 0 performs an existence/permission check without delivering a signal, and
+    // `kill` only reads the process-group ID supplied by the spawned fixture process.
     let result = unsafe { libc::kill(-(process_group as libc::pid_t), 0) };
     if result == 0 {
         return true;

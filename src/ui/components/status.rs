@@ -152,12 +152,14 @@ impl<'a> StatusBar<'a> {
             crate::app::RunPhase::NotRunning => "idle",
             crate::app::RunPhase::Building => "building",
             crate::app::RunPhase::RunningTests => "running",
+            crate::app::RunPhase::Cancelling { .. } => "cancelling",
         }
     }
 
     fn run_status_style(app: &App, theme: &Theme) -> Style {
         match app.run.phase {
             crate::app::RunPhase::Building | crate::app::RunPhase::RunningTests => theme.accent(),
+            crate::app::RunPhase::Cancelling { .. } => theme.warning(),
             crate::app::RunPhase::NotRunning => theme.muted(),
         }
         .bg(theme.footer_bg)

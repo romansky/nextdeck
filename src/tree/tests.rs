@@ -558,6 +558,27 @@ fn parent_output_is_bounded_across_descendants() {
 }
 
 #[test]
+fn selecting_test_by_key_expands_the_exact_hidden_path() {
+    let mut tree = Tree::from_tests(vec![
+        discovered_test("demo::unit", "demo", "tests", "duplicate"),
+        discovered_test("demo::integration", "demo", "tests", "duplicate"),
+    ]);
+    let key = TestKey {
+        binary_id: Some("demo::integration".to_owned()),
+        event_prefix: Some("demo::integration".to_owned()),
+        name: "tests::duplicate".to_owned(),
+    };
+
+    assert!(tree.select_test(&key));
+    assert_eq!(tree.selected_id(), &NodeId::Test { key });
+    assert!(
+        tree.visible_rows()
+            .iter()
+            .any(|row| row.node.id == *tree.selected_id())
+    );
+}
+
+#[test]
 fn pending_module_output_stays_scoped_and_short() {
     let mut tree = Tree::from_tests(vec![discovered_test(
         "demo::demo",

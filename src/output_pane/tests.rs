@@ -28,6 +28,53 @@ fn filtered_view_preserves_source_line_mapping() {
 }
 
 #[test]
+fn snap_bottom_and_status_use_wrapped_terminal_rows() {
+    let text = "123456789\nok";
+    let mut state = OutputPaneState::default();
+    state.apply_viewport_geometry(2, 4, text);
+
+    assert_eq!(state.layout().row_count(), 4);
+    assert_eq!(state.scroll(), 2);
+    assert_eq!(state.status("Output"), "Output <#3-4/4> [s]nap-bottom:✓");
+}
+
+#[test]
+fn manual_viewport_preserves_its_source_position_when_width_changes() {
+    let text = "head\nabcdefghij\ntail";
+    let mut state = OutputPaneState::default();
+    state.apply_viewport_geometry(1, 4, text);
+    state.set_follow(false);
+    state.set_scroll(2);
+
+    assert_eq!(
+        state.top_position().map(|position| position.byte_offset),
+        Some(4)
+    );
+
+    state.apply_viewport_geometry(1, 6, text);
+
+    assert_eq!(state.scroll(), 1);
+    assert_eq!(
+        state.top_position().map(|position| position.source_line),
+        Some(1)
+    );
+}
+
+#[test]
+fn unchanged_projection_and_width_reuse_the_wrapped_layout() {
+    let text = "one two three";
+    let mut state = OutputPaneState::default();
+    state.apply_viewport_geometry(2, 7, text);
+    let builds = state.layout_build_count();
+
+    state.apply_viewport_geometry(4, 7, text);
+    state.sync_layout(text);
+
+    assert_eq!(state.layout().row_count(), 2);
+    assert_eq!(state.layout_build_count(), builds);
+}
+
+#[test]
 fn finds_next_and_previous_matches() {
     let mut search = OutputSearchState {
         query: "case".to_owned(),

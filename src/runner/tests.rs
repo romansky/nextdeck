@@ -43,16 +43,19 @@ fn runtime_context<'a>(
         runtime_settings: RuntimeSettings::from_settings(settings),
         xtask_persistence: XtaskPersistence::default(),
         disk_usage: None,
+        background_tasks: BackgroundTasks::default(),
     }
 }
 
 #[tokio::test]
 async fn run_control_shutdown_requests_stop_and_awaits_owned_tasks() {
-    let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
+    let (stop_tx, mut stop_rx) = mpsc::channel(1);
     let (done_tx, done_rx) = oneshot::channel();
     let producer = tokio::spawn(async move {
-        let _ = stop_rx.recv().await;
-        let _ = done_tx.send(());
+        stop_rx.recv().await.expect("stop sender remains available");
+        done_tx
+            .send(())
+            .expect("shutdown observer remains available");
     });
     let forwarder = tokio::spawn(async {});
     let control = RunControl {
@@ -65,6 +68,29 @@ async fn run_control_shutdown_requests_stop_and_awaits_owned_tasks() {
     control.shutdown().await;
 
     assert!(done_rx.await.is_ok());
+}
+
+#[tokio::test]
+async fn background_tasks_reap_completions_and_join_shutdown_cancellations() {
+    let mut tasks = BackgroundTasks::default();
+    tasks.track("completed", tokio::spawn(async {}));
+    tokio::task::yield_now().await;
+
+    tasks.reap_finished().await;
+    assert!(tasks.tasks.is_empty());
+
+    let (started_tx, started_rx) = oneshot::channel();
+    tasks.track(
+        "pending",
+        tokio::spawn(async move {
+            started_tx.send(()).expect("start observer remains open");
+            std::future::pending::<()>().await;
+        }),
+    );
+    started_rx.await.expect("pending task starts");
+
+    tasks.shutdown().await;
+    assert!(tasks.tasks.is_empty());
 }
 
 #[tokio::test]

@@ -3,7 +3,7 @@
 Nextdeck can help expose project automation commands built with [`xtask`](https://github.com/matklad/cargo-xtask)
 convention in the TUI accessible via "X" global command.
 
-If you are using Clap CLI its recommended to use the `nextdeck-helper` create for fast and simple integration,
+If you are using Clap CLI its recommended to use the `nextdeck-helper` crate for fast and simple integration,
 alternatively you can use the provided schema and manually generate the manifest to drive the integration.
 
 Nextdeck integration happens by reading the output produced by running:

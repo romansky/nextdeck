@@ -11,7 +11,7 @@ pub(in crate::ui) fn scrollable_paragraph(
     theme: &Theme,
     viewport: &ViewportState,
 ) -> Paragraph<'static> {
-    let scroll = viewport.render_scroll_for(lines.len().max(1));
+    let scroll = viewport.render_scroll();
     Paragraph::new(lines)
         .alignment(Alignment::Left)
         .style(theme.text())

@@ -131,6 +131,24 @@ pub fn emit_with_fields(
     emit(&event)
 }
 
+#[doc(hidden)]
+pub fn emit_with_fields_best_effort(
+    level: Level,
+    target: Option<String>,
+    message: String,
+    fields: BTreeMap<String, Value>,
+    module: &'static str,
+    file: &'static str,
+    line: u32,
+) {
+    match emit_with_fields(level, target, message, fields, module, file, line) {
+        Ok(()) => {}
+        Err(_error) => {
+            // Structured events are optional telemetry and must not change test behavior.
+        }
+    }
+}
+
 #[must_use]
 pub fn now_millis() -> u64 {
     let millis = SystemTime::now()
@@ -160,7 +178,7 @@ macro_rules! event {
             $(
                 fields.insert($key.to_string(), $crate::field_value(&$value));
             )*
-            let _ = $crate::emit_with_fields(
+            $crate::emit_with_fields_best_effort(
                 $level,
                 Some(($target).to_string()),
                 ($message).to_string(),
@@ -173,7 +191,7 @@ macro_rules! event {
     }};
     (level: $level:expr, target: $target:expr, $message:expr $(,)?) => {{
         if $crate::enabled() {
-            let _ = $crate::emit_with_fields(
+            $crate::emit_with_fields_best_effort(
                 $level,
                 Some(($target).to_string()),
                 ($message).to_string(),
@@ -190,7 +208,7 @@ macro_rules! event {
             $(
                 fields.insert($key.to_string(), $crate::field_value(&$value));
             )*
-            let _ = $crate::emit_with_fields(
+            $crate::emit_with_fields_best_effort(
                 $crate::Level::Info,
                 Some(module_path!().to_string()),
                 ($message).to_string(),
@@ -203,7 +221,7 @@ macro_rules! event {
     }};
     ($message:expr $(,)?) => {{
         if $crate::enabled() {
-            let _ = $crate::emit_with_fields(
+            $crate::emit_with_fields_best_effort(
                 $crate::Level::Info,
                 Some(module_path!().to_string()),
                 ($message).to_string(),

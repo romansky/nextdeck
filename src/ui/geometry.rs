@@ -1,4 +1,7 @@
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::{
+    layout::{Constraint, Direction, Layout, Margin, Rect},
+    widgets::Block,
+};
 
 pub(in crate::ui) fn modal_inner_area(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     centered_rect(percent_x, percent_y, area).inner(Margin {
@@ -8,7 +11,15 @@ pub(in crate::ui) fn modal_inner_area(percent_x: u16, percent_y: u16, area: Rect
 }
 
 pub(in crate::ui) fn panel_body_page_size(area: Rect) -> usize {
-    area.height.saturating_sub(2).max(1) as usize
+    panel_body_area(area).height.max(1) as usize
+}
+
+pub(in crate::ui) fn panel_body_width(area: Rect) -> usize {
+    panel_body_area(area).width.max(1) as usize
+}
+
+pub(in crate::ui) fn panel_body_area(area: Rect) -> Rect {
+    Block::bordered().inner(area)
 }
 
 pub(in crate::ui) fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

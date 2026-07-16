@@ -5,9 +5,7 @@ use ratatui::{
     widgets::{Clear, Paragraph, Wrap},
 };
 
-use crate::{scroll::ViewportState, theme::Theme};
-
-use super::scrollable_paragraph;
+use crate::theme::Theme;
 
 pub(in crate::ui) struct ModalChrome<'a> {
     pub(in crate::ui) title: &'a str,
@@ -48,8 +46,10 @@ pub(in crate::ui) fn draw_modal_output_lines(
     area: Rect,
     chrome: ModalChrome<'_>,
     lines: Vec<Line<'static>>,
-    viewport: &ViewportState,
 ) {
     let inner = draw_modal_shell(frame, theme, area, chrome);
-    frame.render_widget(scrollable_paragraph(lines, theme, viewport), inner);
+    let paragraph = Paragraph::new(lines)
+        .alignment(Alignment::Left)
+        .style(theme.text());
+    frame.render_widget(paragraph, inner);
 }

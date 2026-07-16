@@ -17,6 +17,7 @@ use crate::{
         DiscoveryEvent, DiscoveryOutput, RunEvent, RunIgnored, RunRequest, RunScope,
         TargetSelector, TestOutputChunk, TestSelector, manual_run_request_command,
     },
+    output_layout::OutputPosition,
     output_pane::{
         OutputPaneState, OutputSearchState, OutputView, SearchDirection, SearchModalFocus,
     },
@@ -86,6 +87,7 @@ pub enum ViewportId {
 pub struct ViewportMetrics {
     pub page_size: usize,
     pub content_len: Option<usize>,
+    pub content_width: Option<usize>,
 }
 
 impl ViewportMetrics {
@@ -93,7 +95,13 @@ impl ViewportMetrics {
         Self {
             page_size: page_size.max(1),
             content_len: None,
+            content_width: None,
         }
+    }
+
+    pub fn with_content_width(mut self, content_width: usize) -> Self {
+        self.content_width = Some(content_width.max(1));
+        self
     }
 }
 
@@ -173,6 +181,9 @@ pub enum RunPhase {
     NotRunning,
     Building,
     RunningTests,
+    Cancelling {
+        remaining: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -372,16 +383,21 @@ impl App {
     }
 
     fn apply_output_viewport_metrics(&mut self, output: OutputPaneId, metrics: ViewportMetrics) {
+        let content_width = metrics
+            .content_width
+            .unwrap_or_else(|| self.output_state(output).content_width());
         if !self.output_viewport_is_active(output) {
-            self.output_state_mut(output)
-                .apply_viewport_page_size(metrics.page_size);
+            let state = self.output_state_mut(output);
+            state.apply_viewport_page_size(metrics.page_size);
+            state.set_content_width(content_width);
             return;
         }
-        let line_count = metrics
-            .content_len
-            .unwrap_or_else(|| self.output_content_len(output));
-        self.output_state_mut(output)
-            .apply_viewport_metrics(metrics.page_size, line_count);
+        let source_text = self.output_source_text_for(output);
+        self.output_state_mut(output).apply_viewport_geometry(
+            metrics.page_size,
+            content_width,
+            &source_text,
+        );
     }
 
     fn output_viewport_is_active(&self, output: OutputPaneId) -> bool {
@@ -1327,6 +1343,14 @@ impl App {
         self.after_selection_action(before);
     }
 
+    #[cfg(test)]
+    pub(crate) fn select_test(&mut self, key: &crate::tree::TestKey) -> bool {
+        let before = self.tree.selected_id().clone();
+        let selected = self.tree.select_test(key);
+        self.after_selection_action(before);
+        selected
+    }
+
     pub fn toggle_show_success(&mut self) {
         let mut filter = self.tree.view_filter;
         filter.show_success = !filter.show_success;
@@ -1465,6 +1489,16 @@ impl App {
                 }
                 None
             }
+            RunEvent::RunCancelling { running_tests } => {
+                self.mark_tests_running();
+                self.run.phase = RunPhase::Cancelling {
+                    remaining: running_tests,
+                };
+                let message = cancellation_status(running_tests);
+                self.tree.append_runner_output(message.clone());
+                self.status = message;
+                None
+            }
             RunEvent::SuiteStarted { test_count } => {
                 self.mark_tests_running();
                 self.tree
@@ -1485,6 +1519,7 @@ impl App {
                 self.mark_tests_running();
                 self.append_test_output_chunks(&key, output);
                 self.tree.finish_test(&key, status, String::new(), duration);
+                self.advance_cancellation();
                 None
             }
             RunEvent::TestOutput { key, output } => {
@@ -1503,6 +1538,9 @@ impl App {
             self.running = false;
             self.run.active = false;
             self.finish_run_timers();
+            if !stopped && exit_code != Some(0) && self.run.tests_started_at.is_some() {
+                self.tree.skip_unfinished_tests(&self.run.scope);
+            }
             self.run.phase = RunPhase::NotRunning;
             self.run.exit_code = exit_code;
             if stopped {
@@ -1542,6 +1580,7 @@ impl App {
         match self.run.phase {
             RunPhase::Building => "building",
             RunPhase::RunningTests => "running tests",
+            RunPhase::Cancelling { .. } => "cancelling",
             RunPhase::NotRunning => "idle",
         }
     }
@@ -1568,13 +1607,15 @@ impl App {
     pub fn build_duration(&self) -> Option<Duration> {
         match self.run.phase {
             RunPhase::Building => self.run.started_at.map(|started_at| started_at.elapsed()),
-            RunPhase::RunningTests | RunPhase::NotRunning => self.run.build_duration,
+            RunPhase::RunningTests | RunPhase::Cancelling { .. } | RunPhase::NotRunning => {
+                self.run.build_duration
+            }
         }
     }
 
     pub fn test_duration(&self) -> Option<Duration> {
         match self.run.phase {
-            RunPhase::RunningTests => self
+            RunPhase::RunningTests | RunPhase::Cancelling { .. } => self
                 .run
                 .tests_started_at
                 .map(|tests_started_at| tests_started_at.elapsed()),
@@ -1890,7 +1931,7 @@ impl App {
                 let output = target
                     .output_pane()
                     .expect("output viewport id maps to an output pane");
-                let line_count = self.output_content_len(output);
+                let line_count = self.sync_output_content_len(output);
                 self.output_state_mut(output)
                     .apply_scroll(action, line_count);
             }
@@ -1918,14 +1959,9 @@ impl App {
         self.output_state(output).output_view(&text)
     }
 
-    fn output_content_len(&self, output: OutputPaneId) -> usize {
-        self.output_view_for(output).line_count()
-    }
-
     fn sync_output_content_len(&mut self, output: OutputPaneId) -> usize {
-        let line_count = self.output_content_len(output);
-        self.output_state_mut(output).apply_content_len(line_count);
-        line_count
+        let source_text = self.output_source_text_for(output);
+        self.output_state_mut(output).sync_layout(&source_text)
     }
 
     fn output_source_text_for(&self, output: OutputPaneId) -> String {
@@ -2062,7 +2098,10 @@ impl App {
             return;
         }
 
-        if self.run.phase == RunPhase::RunningTests {
+        if matches!(
+            self.run.phase,
+            RunPhase::RunningTests | RunPhase::Cancelling { .. }
+        ) {
             return;
         }
 
@@ -2100,8 +2139,29 @@ impl App {
                     .tests_started_at
                     .map(|tests_started_at| tests_started_at.elapsed());
             }
+            RunPhase::Cancelling { .. } => {
+                if self.run.build_duration.is_none() {
+                    self.run.build_duration = self
+                        .run
+                        .tests_started_at
+                        .map(|tests_started_at| tests_started_at.duration_since(started_at));
+                }
+                self.run.test_duration = self
+                    .run
+                    .tests_started_at
+                    .map(|tests_started_at| tests_started_at.elapsed());
+            }
             RunPhase::NotRunning => {}
         }
+    }
+
+    fn advance_cancellation(&mut self) {
+        let observed_running = self.tree.status_counts_for_scope(&self.run.scope).running;
+        let RunPhase::Cancelling { remaining } = &mut self.run.phase else {
+            return;
+        };
+        *remaining = (*remaining).min(observed_running);
+        self.status = cancellation_status(*remaining);
     }
 
     fn start_output_search(&mut self) {
@@ -2181,6 +2241,7 @@ impl App {
 
     fn apply_output_search(&mut self) {
         let output = self.active_output_pane();
+        self.disable_output_snap(output);
         let preserved_source_line = self.output_top_source_line(output);
         let (query_empty, previous_current_match) = {
             let search = &mut self.output_state_mut(output).search;
@@ -2377,45 +2438,30 @@ impl App {
         let Some(source_line) = self.output_state(output).search.current_line else {
             return;
         };
-        let view = self.output_view_for(output);
-        if let Some(view_line) = view.line_index_for_source_line(source_line) {
-            let state = self.output_state(output);
-            let scroll = scroll::ensure_visible(
-                state.scroll() as usize,
-                view_line,
-                view.source_lines.len().max(1),
-                state.page_size() as usize,
-            );
-            self.set_output_scroll(output, scroll.min(u16::MAX as usize) as u16);
-        }
+        let byte_range = self
+            .output_state(output)
+            .search
+            .current_range
+            .map_or(0..usize::MAX, |(start, end)| start..end);
+        self.sync_output_content_len(output);
+        self.output_state_mut(output)
+            .ensure_source_range_visible(source_line, byte_range);
     }
 
-    fn output_top_source_line(&self, output: OutputPaneId) -> Option<usize> {
-        let view = self.output_view_for(output);
-        let top = self.output_state(output).scroll() as usize;
-        view.source_lines.get(top).copied()
+    fn output_top_source_line(&mut self, output: OutputPaneId) -> Option<OutputPosition> {
+        self.sync_output_content_len(output);
+        self.output_state(output).top_position()
     }
 
     fn restore_output_scroll_to_source_line(
         &mut self,
         output: OutputPaneId,
-        source_line: Option<usize>,
+        position: Option<OutputPosition>,
     ) {
-        let Some(source_line) = source_line else {
-            self.sync_output_content_len(output);
-            return;
-        };
-        let view = self.output_view_for(output);
-        if let Some(view_line) = view.line_index_for_source_line(source_line) {
-            self.set_output_scroll(output, view_line.min(u16::MAX as usize) as u16);
-        } else {
-            self.sync_output_content_len(output);
-        }
-    }
-
-    fn set_output_scroll(&mut self, output: OutputPaneId, scroll: u16) {
         self.sync_output_content_len(output);
-        self.output_state_mut(output).set_scroll(scroll);
+        if let Some(position) = position {
+            self.output_state_mut(output).restore_position(position);
+        }
     }
 
     fn output_match_status(&self, output: OutputPaneId, index: usize, total: usize) -> String {
@@ -2468,6 +2514,17 @@ fn run_outcome(exit_code: Option<i32>, counts: StatusCounts) -> RunOutcome {
         Some(0) if counts.failed == 0 => RunOutcome::Passed,
         Some(_) if counts.failed > 0 => RunOutcome::Failed,
         Some(_) | None => RunOutcome::CommandFailed,
+    }
+}
+
+fn cancellation_status(remaining: usize) -> String {
+    if remaining == 0 {
+        "Cancelling after test failure: waiting for nextest to finish".to_owned()
+    } else {
+        format!(
+            "Cancelling after test failure: {remaining} test{} still running",
+            if remaining == 1 { "" } else { "s" }
+        )
     }
 }
 

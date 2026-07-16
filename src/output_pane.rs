@@ -2,6 +2,7 @@ use regex::{Regex, RegexBuilder};
 
 use crate::{
     input_field::{InputField, InputFieldInput},
+    output_layout::{OutputLayout, OutputPosition},
     scroll,
     symbols::bool_symbol,
 };
@@ -23,10 +24,31 @@ pub struct OutputSearchState {
     pub current_range: Option<(usize, usize)>,
 }
 
-#[derive(Clone, Debug, Default)]
+const DEFAULT_CONTENT_WIDTH: usize = 4096;
+
+#[derive(Clone, Debug)]
 pub struct OutputPaneState {
     viewport: scroll::FollowViewportState,
+    content_width: usize,
+    layout: OutputLayout,
+    layout_initialized: bool,
+    #[cfg(test)]
+    layout_build_count: usize,
     pub search: OutputSearchState,
+}
+
+impl Default for OutputPaneState {
+    fn default() -> Self {
+        Self {
+            viewport: scroll::FollowViewportState::default(),
+            content_width: DEFAULT_CONTENT_WIDTH,
+            layout: OutputLayout::default(),
+            layout_initialized: false,
+            #[cfg(test)]
+            layout_build_count: 0,
+            search: OutputSearchState::default(),
+        }
+    }
 }
 
 impl OutputPaneState {
@@ -34,10 +56,10 @@ impl OutputPaneState {
         self.search.filtered_view(source_text)
     }
 
-    pub fn status(&self, label: &str, text: &str) -> String {
-        let total = output_line_count(text);
-        let top = self.render_scroll(text) as usize;
-        let visible = self.page_size() as usize;
+    pub fn status(&self, label: &str) -> String {
+        let total = self.layout.row_count();
+        let top = self.scroll();
+        let visible = self.page_size();
         let bottom = top.saturating_add(visible).min(total);
         format!(
             "{label} <#{}-{bottom}/{total}> [s]nap-bottom:{}",
@@ -50,36 +72,81 @@ impl OutputPaneState {
         self.search.view(source_text).actions_fragment()
     }
 
-    pub fn render_scroll(&self, text: &str) -> u16 {
-        self.viewport.render_scroll_for(output_line_count(text))
+    pub fn scroll(&self) -> usize {
+        self.viewport.viewport().scroll()
     }
 
-    pub fn scroll(&self) -> u16 {
-        self.viewport.render_scroll()
+    pub fn page_size(&self) -> usize {
+        self.viewport.page_size()
     }
 
-    pub fn page_size(&self) -> u16 {
-        self.viewport.page_size().min(u16::MAX as usize) as u16
+    pub fn content_width(&self) -> usize {
+        self.content_width
     }
 
     pub fn follow(&self) -> bool {
         self.viewport.follow()
     }
 
-    pub fn viewport(&self) -> &scroll::ViewportState {
-        self.viewport.viewport()
+    pub fn layout(&self) -> &OutputLayout {
+        &self.layout
     }
 
     pub fn apply_viewport_page_size(&mut self, page_size: usize) {
         self.viewport.set_page_size(page_size);
     }
 
+    pub fn set_content_width(&mut self, content_width: usize) {
+        self.content_width = content_width.max(1);
+    }
+
+    #[cfg(test)]
     pub fn apply_content_len(&mut self, line_count: usize) {
         self.viewport.set_content_len(line_count);
     }
 
+    #[cfg(test)]
     pub fn apply_viewport_metrics(&mut self, page_size: usize, line_count: usize) {
         self.viewport.set_metrics(page_size, line_count);
+    }
+
+    pub fn apply_viewport_geometry(
+        &mut self,
+        page_size: usize,
+        content_width: usize,
+        source_text: &str,
+    ) {
+        self.content_width = content_width.max(1);
+        self.prepare_layout(source_text, page_size);
+    }
+
+    pub fn sync_layout(&mut self, source_text: &str) -> usize {
+        self.prepare_layout(source_text, self.viewport.page_size());
+        self.layout.row_count()
+    }
+
+    fn prepare_layout(&mut self, source_text: &str, page_size: usize) {
+        let anchor = (self.layout_initialized && !self.follow())
+            .then(|| self.layout.top_position(self.scroll()))
+            .flatten();
+        let view = self.output_view(source_text);
+        if !self.layout.matches(&view, self.content_width) {
+            self.layout = OutputLayout::new(view, self.content_width);
+            self.layout_initialized = true;
+            #[cfg(test)]
+            {
+                self.layout_build_count += 1;
+            }
+        }
+
+        self.viewport
+            .set_metrics(page_size, self.layout.row_count());
+        if !self.follow()
+            && let Some(anchor) = anchor
+            && let Some(row) = self.layout.row_for_position(anchor)
+        {
+            self.viewport.set_scroll(row);
+        }
     }
 
     pub fn apply_scroll(&mut self, action: scroll::ScrollAction, line_count: usize) {
@@ -100,21 +167,70 @@ impl OutputPaneState {
         self.viewport.toggle_follow(line_count)
     }
 
-    pub fn set_scroll(&mut self, scroll: u16) {
-        self.viewport.set_scroll(scroll as usize);
+    #[cfg(test)]
+    pub fn set_scroll(&mut self, scroll: usize) {
+        self.viewport.set_scroll(scroll);
+    }
+
+    pub fn top_position(&self) -> Option<OutputPosition> {
+        self.layout.top_position(self.scroll())
+    }
+
+    pub fn restore_position(&mut self, position: OutputPosition) {
+        if let Some(row) = self.layout.row_for_position(position) {
+            self.viewport.set_scroll(row);
+        }
+    }
+
+    pub fn ensure_source_range_visible(
+        &mut self,
+        source_line: usize,
+        byte_range: std::ops::Range<usize>,
+    ) {
+        let Some(rows) = self
+            .layout
+            .row_range_for_source_bytes(source_line, byte_range)
+        else {
+            return;
+        };
+        let scroll = if rows.len() == 1 {
+            scroll::ensure_visible(
+                self.scroll(),
+                rows.start,
+                self.layout.row_count(),
+                self.page_size(),
+            )
+        } else {
+            scroll::ensure_range_visible(
+                self.scroll(),
+                rows.start,
+                rows.len(),
+                self.layout.row_count(),
+                self.page_size(),
+            )
+        };
+        self.viewport.set_scroll(scroll);
     }
 
     pub fn reset_for_source_change(&mut self) {
         self.viewport.reset_for_source_change();
+        self.layout_initialized = false;
         self.search.clear_current_match();
     }
 
     pub fn reset_for_modal(&mut self) {
         self.viewport.reset_for_modal();
+        self.layout_initialized = false;
         self.search.clear_current_match();
+    }
+
+    #[cfg(test)]
+    pub fn layout_build_count(&self) -> usize {
+        self.layout_build_count
     }
 }
 
+#[cfg(test)]
 pub fn output_line_count(text: &str) -> usize {
     text.lines().count().max(1)
 }
@@ -126,10 +242,12 @@ pub struct OutputView {
 }
 
 impl OutputView {
+    #[cfg(test)]
     pub fn line_count(&self) -> usize {
         output_line_count(&self.text)
     }
 
+    #[cfg(test)]
     pub fn line_index_for_source_line(&self, source_line: usize) -> Option<usize> {
         self.source_lines
             .iter()
