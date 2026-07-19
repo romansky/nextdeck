@@ -165,6 +165,39 @@ async fn fixture_failure_is_displayed_in_selected_test_output() {
 }
 
 #[tokio::test]
+async fn fixture_compiler_error_is_visible_in_tui_output() {
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compile-failure-workspace");
+    let client = NextestClient::for_project_dir(fixture);
+    let request = RunRequest::default();
+    let mut run = TuiFixtureRun {
+        app: App::with_settings(
+            Tree::from_tests(vec![discovered_test(
+                "nextdeck-compile-failure-fixture::lib",
+                "nextdeck_compile_failure_fixture",
+                "lib",
+                "tests::never_runs_because_the_test_binary_does_not_compile",
+            )]),
+            AppSettings::default(),
+        ),
+    };
+    assert!(run.app.begin_run(&request).is_some());
+
+    for event in collect_run_events(&client, request, false).await {
+        run.app.apply_run_event(event);
+    }
+
+    assert_eq!(run.app.run.outcome, crate::app::RunOutcome::CommandFailed);
+    let output = run.visible_output_pane(120, 36);
+    assert!(output.contains("error[E0283]"), "output: {output}");
+    assert!(
+        output.contains("ambiguous_type_for_nextdeck"),
+        "output: {output}"
+    );
+    assert!(!output.contains("No output captured"), "output: {output}");
+}
+
+#[tokio::test]
 async fn fixture_fail_fast_wait_is_visible_while_in_flight_test_finishes() {
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cancellation-workspace");

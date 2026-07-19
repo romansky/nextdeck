@@ -219,7 +219,11 @@ impl OutputPaneState {
     }
 
     pub fn reset_for_modal(&mut self) {
-        self.viewport.reset_for_modal();
+        self.reset_to_start();
+    }
+
+    pub fn reset_to_start(&mut self) {
+        self.viewport.reset_to_start();
         self.layout_initialized = false;
         self.search.clear_current_match();
     }

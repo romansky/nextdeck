@@ -227,7 +227,7 @@ impl FollowViewportState {
         self.follow = true;
     }
 
-    pub fn reset_for_modal(&mut self) {
+    pub fn reset_to_start(&mut self) {
         self.viewport.reset();
         self.follow = false;
     }

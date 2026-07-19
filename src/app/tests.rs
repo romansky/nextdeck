@@ -1167,6 +1167,31 @@ fn command_failure_summary_includes_command_hint_and_runner_output() {
 }
 
 #[test]
+fn command_failure_preserves_compiler_diagnostics_before_trailing_output() {
+    let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
+    assert!(app.begin_run(&RunRequest::default()).is_some());
+    app.apply_run_event(RunEvent::RunnerOutput(
+        "error[E0283]: type annotations needed\n  --> src/lib.rs:7:5\n   |\n7  |     ambiguous_type_for_nextdeck();"
+            .to_owned(),
+    ));
+    for index in 0..35 {
+        app.apply_run_event(RunEvent::RunnerOutput(format!(
+            "warning: trailing compiler output {index}"
+        )));
+    }
+    app.apply_run_event(RunEvent::RunnerFinished {
+        exit_code: Some(101),
+    });
+
+    let output = app.output_text();
+    assert!(output.starts_with("Run command failed: nextest exited with 101"));
+    assert!(output.contains("Failure excerpt:\nerror[E0283]: type annotations needed"));
+    assert!(output.contains("error[E0283]: type annotations needed"));
+    assert!(output.contains("ambiguous_type_for_nextdeck"));
+    assert!(!output.contains("No output captured"));
+}
+
+#[test]
 fn failing_test_run_reports_failed_result() {
     let mut app = app_with_tree(Tree::from_tests(test_rows(1)));
     assert!(app.begin_run(&RunRequest::default()).is_some());

@@ -539,9 +539,8 @@ impl Tree {
         }
     }
 
-    pub fn runner_output_tail(&self, max_lines: usize) -> String {
-        let start = self.runner_output.len().saturating_sub(max_lines);
-        self.runner_output[start..].join("\n")
+    pub fn runner_output(&self) -> String {
+        bounded_text(self.runner_output.join("\n"))
     }
 
     fn clear_runner_output(&mut self) {
@@ -566,7 +565,7 @@ impl Tree {
             "Select a test to inspect captured output. Press r to run, R to rerun failures, q to quit."
                 .to_owned()
         } else {
-            self.runner_output.join("\n")
+            self.runner_output()
         }
     }
 

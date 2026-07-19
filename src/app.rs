@@ -1552,6 +1552,9 @@ impl App {
             } else {
                 run_outcome(exit_code, counts)
             };
+            if self.run.outcome == RunOutcome::CommandFailed {
+                self.main_output.reset_to_start();
+            }
             self.test_events.finish_active_run(self.run_result_label());
             self.status = run_summary_status(self.run.outcome, counts, exit_code);
         }
@@ -1801,6 +1804,8 @@ impl App {
     pub(crate) fn output_source_text(&self) -> String {
         if let Some(error) = &self.discovery.error {
             discovery_error_output(error)
+        } else if self.run.outcome == RunOutcome::CommandFailed {
+            self.run_output_summary("").unwrap_or_default()
         } else {
             self.output_with_run_summary(self.tree.selected_output())
         }
@@ -1838,9 +1843,7 @@ impl App {
             RunOutcome::CommandFailed => Some(command_failure_summary(
                 self.run.exit_code,
                 self.run.command_line.as_deref(),
-                &self
-                    .tree
-                    .runner_output_tail(COMMAND_FAILURE_RUNNER_TAIL_LINES),
+                &self.tree.runner_output(),
                 current_output,
             )),
             RunOutcome::Stopped => Some(format!(
@@ -2528,8 +2531,6 @@ fn cancellation_status(remaining: usize) -> String {
     }
 }
 
-const COMMAND_FAILURE_RUNNER_TAIL_LINES: usize = 20;
-
 fn command_failure_summary(
     exit_code: Option<i32>,
     command_line: Option<&str>,
@@ -2544,16 +2545,36 @@ fn command_failure_summary(
         summary.push('\n');
         summary.push_str(hint);
     }
+
+    let runner_output = runner_output.trim();
+    if let Some(excerpt) = command_failure_excerpt(runner_output)
+        && excerpt.trim() != runner_output
+    {
+        append_summary_section(&mut summary, "Failure excerpt", &excerpt);
+    }
     if let Some(command_line) = command_line.filter(|command_line| !command_line.trim().is_empty())
     {
         append_summary_section(&mut summary, "Command", command_line);
     }
 
-    let runner_output = runner_output.trim();
     if !runner_output.is_empty() && !current_output.contains(runner_output) {
         append_summary_section(&mut summary, "Runner output", runner_output);
     }
     summary
+}
+
+const COMMAND_FAILURE_EXCERPT_LINES: usize = 30;
+
+fn command_failure_excerpt(runner_output: &str) -> Option<String> {
+    let lines = runner_output.lines().collect::<Vec<_>>();
+    let start = lines.iter().position(|line| {
+        let line = line.trim_start();
+        line.starts_with("error[") || line.starts_with("error:")
+    })?;
+    let end = start
+        .saturating_add(COMMAND_FAILURE_EXCERPT_LINES)
+        .min(lines.len());
+    Some(lines[start..end].join("\n"))
 }
 
 fn append_summary_section(summary: &mut String, title: &str, body: &str) {
