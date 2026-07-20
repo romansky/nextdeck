@@ -70,6 +70,26 @@ fn reports_storage_health_for_transient_states() {
     );
 }
 
+#[test]
+fn failed_refreshes_also_delay_the_next_automatic_attempt() {
+    let mut state = DiskUsageState::default();
+    let completed_at = Instant::now();
+    state.begin_scan();
+    assert_eq!(
+        state.apply_result_at(Err("scan failed".to_owned()), completed_at),
+        Err("scan failed".to_owned())
+    );
+
+    assert!(!state.refresh_due(
+        completed_at + std::time::Duration::from_secs(29),
+        std::time::Duration::from_secs(30),
+    ));
+    assert!(state.refresh_due(
+        completed_at + std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(30),
+    ));
+}
+
 #[cfg(unix)]
 #[test]
 fn dir_size_counts_hard_links_once() {

@@ -34,6 +34,8 @@ use crate::{
     xtask::{XtaskEvent, XtaskRunRequest, XtaskState},
 };
 
+const DISK_USAGE_AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FocusPane {
     Tree,
@@ -588,9 +590,39 @@ impl App {
         if request_id != self.disk_usage.request_id {
             return;
         }
-        if let Some(error) = self.disk_usage.apply_result(result).err() {
+        let result = self.disk_usage.apply_result(result);
+        self.finish_disk_usage_update(result);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn apply_disk_usage_at(
+        &mut self,
+        request_id: RequestId,
+        result: Result<DiskUsageSnapshot, String>,
+        completed_at: Instant,
+    ) {
+        if request_id != self.disk_usage.request_id {
+            return;
+        }
+        let result = self.disk_usage.apply_result_at(result, completed_at);
+        self.finish_disk_usage_update(result);
+    }
+
+    fn finish_disk_usage_update(&mut self, result: Result<(), String>) {
+        if let Some(error) = result.err() {
             self.status = format!("Disk usage failed: {error}");
         }
+    }
+
+    pub(crate) fn refresh_disk_usage_if_due(&mut self, now: Instant) -> AppEffect {
+        if self.disk_cleanup.running
+            || !self
+                .disk_usage
+                .refresh_due(now, DISK_USAGE_AUTO_REFRESH_INTERVAL)
+        {
+            return AppEffect::None;
+        }
+        AppEffect::RefreshDiskUsage(self.begin_disk_usage_scan())
     }
 
     pub fn begin_cargo_clean(&mut self) -> Option<RequestId> {

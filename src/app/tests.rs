@@ -1978,6 +1978,56 @@ fn stale_disk_usage_result_is_ignored() {
 }
 
 #[test]
+fn disk_usage_auto_refresh_is_30_seconds_after_the_last_completed_update() {
+    let mut app = app_with_tree(Tree::from_tests(Vec::new()));
+    let first_update = Instant::now();
+    let first_request = app.begin_disk_usage_scan();
+    app.apply_disk_usage_at(
+        first_request,
+        Ok(DiskUsageSnapshot {
+            entries: Vec::new(),
+            available_bytes: None,
+            updated_at: std::time::SystemTime::now(),
+        }),
+        first_update,
+    );
+
+    assert_eq!(
+        app.refresh_disk_usage_if_due(first_update + Duration::from_secs(29)),
+        AppEffect::None
+    );
+    assert_eq!(
+        app.refresh_disk_usage_if_due(first_update + Duration::from_secs(30)),
+        AppEffect::RefreshDiskUsage(RequestId(2))
+    );
+    assert!(app.disk_usage.loading);
+    assert_eq!(
+        app.refresh_disk_usage_if_due(first_update + Duration::from_secs(60)),
+        AppEffect::None,
+        "an in-progress automatic scan must not be restarted"
+    );
+
+    let second_update = first_update + Duration::from_secs(35);
+    app.apply_disk_usage_at(
+        RequestId(2),
+        Ok(DiskUsageSnapshot {
+            entries: Vec::new(),
+            available_bytes: None,
+            updated_at: std::time::SystemTime::now(),
+        }),
+        second_update,
+    );
+    assert_eq!(
+        app.refresh_disk_usage_if_due(second_update + Duration::from_secs(29)),
+        AppEffect::None
+    );
+    assert_eq!(
+        app.refresh_disk_usage_if_due(second_update + Duration::from_secs(30)),
+        AppEffect::RefreshDiskUsage(RequestId(3))
+    );
+}
+
+#[test]
 fn output_search_editor_can_insert_at_cursor_and_apply() {
     let mut app = app_with_finished_output("zero\npanic\nok");
 

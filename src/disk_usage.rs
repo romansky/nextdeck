@@ -5,7 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
 #[cfg(unix)]
@@ -48,6 +48,7 @@ pub struct DiskUsageState {
     pub loading: bool,
     pub snapshot: Option<DiskUsageSnapshot>,
     pub error: Option<String>,
+    last_refresh_completed_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,7 +94,16 @@ impl DiskUsageState {
         &mut self,
         result: Result<DiskUsageSnapshot, String>,
     ) -> Result<(), String> {
+        self.apply_result_at(result, Instant::now())
+    }
+
+    pub(crate) fn apply_result_at(
+        &mut self,
+        result: Result<DiskUsageSnapshot, String>,
+        completed_at: Instant,
+    ) -> Result<(), String> {
         self.loading = false;
+        self.last_refresh_completed_at = Some(completed_at);
         match result {
             Ok(snapshot) => {
                 self.snapshot = Some(snapshot);
@@ -105,6 +115,13 @@ impl DiskUsageState {
                 Err(error)
             }
         }
+    }
+
+    pub fn refresh_due(&self, now: Instant, interval: Duration) -> bool {
+        !self.loading
+            && self
+                .last_refresh_completed_at
+                .is_some_and(|updated_at| now.saturating_duration_since(updated_at) >= interval)
     }
 
     pub fn health(&self, low_space_threshold_bytes: u64) -> StorageHealth {

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -346,8 +346,23 @@ fn handle_queue_event(
             app.apply_xtask_event(event);
             UiDirty::MODAL
         }
-        QueueEvent::Tick => app.tick(),
+        QueueEvent::Tick => handle_tick(app, context, run_control, Instant::now()),
     }
+}
+
+fn handle_tick(
+    app: &mut App,
+    context: &mut RunLoopContext<'_>,
+    run_control: &mut Option<RunControl>,
+    now: Instant,
+) -> UiDirty {
+    let mut dirty = app.tick();
+    let effect = app.refresh_disk_usage_if_due(now);
+    if effect != AppEffect::None {
+        handle_effect(app, context, effect, run_control);
+        dirty |= UiDirty::DETAILS | UiDirty::STATUS;
+    }
+    dirty
 }
 
 fn key_echo_text(key: String, command: &AppCommand) -> String {

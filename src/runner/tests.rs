@@ -285,6 +285,51 @@ fn idle_tick_does_not_request_redraw() {
     assert!(!dirty.contains(UiDirty::TREE));
 }
 
+#[tokio::test]
+async fn idle_tick_starts_one_due_disk_usage_refresh() {
+    let client = NextestClient::default();
+    let settings = AppSettings::default();
+    let mut context = runtime_context(&client, &settings, Theme::dark());
+    let mut app = App::with_settings(crate::tree::Tree::from_tests(Vec::new()), settings);
+    let mut run_control = None;
+    let completed_at = Instant::now();
+    let request_id = app.begin_disk_usage_scan();
+    app.apply_disk_usage_at(
+        request_id,
+        Err("initial scan failed".to_owned()),
+        completed_at,
+    );
+
+    let dirty = handle_tick(
+        &mut app,
+        &mut context,
+        &mut run_control,
+        completed_at + Duration::from_secs(30),
+    );
+
+    assert!(dirty.contains(UiDirty::DETAILS));
+    assert!(dirty.contains(UiDirty::STATUS));
+    assert!(app.disk_usage.loading);
+    assert_eq!(app.disk_usage.request_id, RequestId(2));
+    assert_eq!(
+        context
+            .disk_usage
+            .as_ref()
+            .map(|control| control.request_id),
+        Some(RequestId(2))
+    );
+
+    let next_dirty = handle_tick(
+        &mut app,
+        &mut context,
+        &mut run_control,
+        completed_at + Duration::from_secs(60),
+    );
+    assert_eq!(next_dirty, UiDirty::NONE);
+    assert_eq!(app.disk_usage.request_id, RequestId(2));
+    context.cancel_disk_usage();
+}
+
 #[test]
 fn pane_width_settings_save_does_not_rebuild_theme() {
     let client = NextestClient::default();
