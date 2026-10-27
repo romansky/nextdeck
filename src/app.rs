@@ -315,8 +315,9 @@ impl App {
         }
     }
 
-    pub fn discovering(settings: AppSettings) -> Self {
+    pub fn discovering(settings: AppSettings, cargo_profile: Option<String>) -> Self {
         let mut app = Self::with_settings(Tree::from_tests(Vec::new()), settings);
+        app.custom_run.run_config.cargo_profile = cargo_profile;
         app.begin_discovery();
         app
     }
@@ -542,8 +543,15 @@ impl App {
             ticks: 0,
             error: None,
         };
-        self.status = "Discovering tests".to_owned();
+        self.status = self.discovery_status_label();
         request_id
+    }
+
+    fn discovery_status_label(&self) -> String {
+        format!(
+            "Discovering tests (Cargo profile: {})",
+            self.custom_run.run_config.cargo_profile_name(),
+        )
     }
 
     pub fn apply_discovery_event(&mut self, request_id: RequestId, event: DiscoveryEvent) -> bool {
@@ -560,7 +568,10 @@ impl App {
                 self.reset_output_for_source_change();
                 self.discovery.running = false;
                 self.discovery.error = None;
-                self.status = format!("Discovered {count} test(s)");
+                self.status = format!(
+                    "Discovered {count} test(s) (Cargo profile: {})",
+                    self.custom_run.run_config.cargo_profile_name(),
+                );
                 true
             }
             DiscoveryEvent::Finished(Err(error)) => {
@@ -965,7 +976,7 @@ impl App {
             }
             AppCommand::RunSelected => {
                 if self.discovery.running {
-                    self.status = "Discovering tests".to_owned();
+                    self.status = self.discovery_status_label();
                     AppEffect::None
                 } else {
                     AppEffect::StartRun(Box::new(RunRequest::new(self.selected_scope())))
@@ -1496,8 +1507,12 @@ impl App {
     }
 
     pub fn custom_run_command_preview(&self) -> Result<String, String> {
-        self.custom_run_request()
-            .map(|request| manual_run_request_command(&request))
+        self.custom_run_request().map(|request| {
+            manual_run_request_command(
+                &request,
+                self.custom_run.run_config.cargo_profile.as_deref(),
+            )
+        })
     }
 
     pub fn begin_run(&mut self, request: &RunRequest) -> Option<RequestId> {
@@ -1673,7 +1688,7 @@ impl App {
 
     fn open_custom_run(&mut self) {
         if self.discovery.running {
-            self.status = "Discovering tests".to_owned();
+            self.status = self.discovery_status_label();
             return;
         }
         if self.running {
@@ -1736,7 +1751,7 @@ impl App {
 
     fn run_custom_effect(&mut self) -> AppEffect {
         if self.discovery.running {
-            self.status = "Discovering tests".to_owned();
+            self.status = self.discovery_status_label();
             return AppEffect::None;
         }
         if self.running {
@@ -2084,7 +2099,11 @@ impl App {
 
     fn reset_for_run(&mut self, request: &RunRequest) {
         self.tree.prepare_for_run(&request.scope);
-        self.status = format!("Building {}", request.scope.label());
+        self.status = format!(
+            "Building {} (Cargo profile: {})",
+            request.scope.label(),
+            self.custom_run.run_config.cargo_profile_name(),
+        );
         self.running = true;
         self.run.active = true;
         self.run.phase = RunPhase::Building;
@@ -2095,7 +2114,10 @@ impl App {
             .clone()
             .unwrap_or_else(|| "default".to_owned());
         self.run.scope = request.scope.clone();
-        self.run.command_line = Some(manual_run_request_command(request));
+        self.run.command_line = Some(manual_run_request_command(
+            request,
+            self.custom_run.run_config.cargo_profile.as_deref(),
+        ));
         self.run.outcome = RunOutcome::Running;
         self.run.exit_code = None;
         self.run.started_at = Some(Instant::now());
@@ -2147,7 +2169,11 @@ impl App {
             .map(|started_at| now.duration_since(started_at));
         self.run.tests_started_at = Some(now);
         self.run.phase = RunPhase::RunningTests;
-        self.status = format!("Running tests for {}", self.run.scope.label());
+        self.status = format!(
+            "Running tests for {} (Cargo profile: {})",
+            self.run.scope.label(),
+            self.custom_run.run_config.cargo_profile_name(),
+        );
     }
 
     fn finish_run_timers(&mut self) {

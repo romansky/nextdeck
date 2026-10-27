@@ -99,7 +99,7 @@ async fn main() -> Result<()> {
         editor::EditorConfig::resolve(cli.open_with.clone(), settings.open_with_command.clone());
     let client = NextestClient::resolve(cli.working_dir).await?;
 
-    let mut app = App::discovering(settings);
+    let mut app = App::discovering(settings, client.cargo_profile().map(ToOwned::to_owned));
     let theme_mode = cli
         .theme
         .map(ThemeMode::from)

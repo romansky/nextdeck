@@ -32,6 +32,20 @@ See Nextest's
 [repository configuration](https://nexte.st/docs/configuration/) documentation
 for the complete format and supported settings.
 
+### Cargo profile
+
+To select a Cargo profile to be used with Nextest commands, add this setting to the workspace's
+root `Cargo.toml`:
+
+```toml
+[workspace.metadata.nextdeck]
+cargo-profile = "test-fast"
+
+[profile.test-fast]
+inherits = "dev"
+opt-level = 1
+```
+
 ## Source References
 
 - [Nextest integration](../../src/nextest.rs)

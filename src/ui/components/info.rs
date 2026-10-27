@@ -92,7 +92,11 @@ impl<'a> InfoPanel<'a> {
             detail_row!(theme, "run id" => app.run.run_id.clone().unwrap_or_else(|| "-".to_owned())),
             detail_row!(theme, "status" => app.run_status_label()),
             detail_row!(theme, "result" => app.run_result_label(), Self::run_result_style(app, theme)),
-            detail_row!(theme, "profile" => app.run.profile.clone(), theme.accent()),
+            detail_row!(theme, "profile" => format!(
+                "nextest:{} cargo:{}",
+                app.run.profile,
+                app.custom_run.run_config.cargo_profile_name(),
+            ), theme.accent()),
             detail_row!(theme, "scope" => app.run.scope.label()),
             detail_row!(theme, "duration" => Self::run_duration_summary_label(app)),
             detail_row!(theme, "latest event" => app.test_events.latest_event_label(), theme.accent()),

@@ -42,6 +42,7 @@ serde.workspace = true
 serde_json.workspace = true
 terminal-colorsaurus = "1.0"
 tokio = { version = "1.52", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-segmentation = "1.13"

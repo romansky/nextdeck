@@ -108,7 +108,7 @@ fn sample_xtask_manifest() -> XtaskManifest {
 
 #[test]
 fn startup_effects_are_created_by_app_state() {
-    let mut app = App::discovering(AppSettings::default());
+    let mut app = App::discovering(AppSettings::default(), None);
 
     let effects = app.startup_effects();
 
@@ -1108,7 +1108,7 @@ fn run_phase_starts_as_building_then_switches_to_running_tests() {
 
     assert_eq!(app.run.phase, RunPhase::Building);
     assert_eq!(app.run_status_label(), "building");
-    assert_eq!(app.status, "Building workspace");
+    assert_eq!(app.status, "Building workspace (Cargo profile: test)");
     assert!(app.build_duration().is_some());
     assert_eq!(app.test_duration(), None);
 
@@ -1116,7 +1116,10 @@ fn run_phase_starts_as_building_then_switches_to_running_tests() {
 
     assert_eq!(app.run.phase, RunPhase::RunningTests);
     assert_eq!(app.run_status_label(), "running tests");
-    assert_eq!(app.status, "Running tests for workspace");
+    assert_eq!(
+        app.status,
+        "Running tests for workspace (Cargo profile: test)"
+    );
     assert!(app.build_duration().is_some());
     assert!(app.test_duration().is_some());
 }
@@ -1929,12 +1932,12 @@ fn refresh_tests_retries_after_discovery_error() {
     assert_eq!(effect, AppEffect::StartDiscovery(app.discovery.request_id));
     assert!(app.discovery.running);
     assert_eq!(app.discovery.error, None);
-    assert_eq!(app.status, "Discovering tests");
+    assert_eq!(app.status, "Discovering tests (Cargo profile: test)");
 }
 
 #[test]
 fn stale_discovery_event_is_ignored() {
-    let mut app = App::discovering(crate::config::AppSettings::default());
+    let mut app = App::discovering(crate::config::AppSettings::default(), None);
     let stale_request_id = app.discovery.request_id;
     let current_request_id = app.begin_discovery();
 
@@ -1945,7 +1948,7 @@ fn stale_discovery_event_is_ignored() {
 
     assert!(app.discovery.running);
     assert_eq!(app.discovery.error, None);
-    assert_eq!(app.status, "Discovering tests");
+    assert_eq!(app.status, "Discovering tests (Cargo profile: test)");
 
     assert!(app.apply_discovery_event(
         current_request_id,

@@ -1,6 +1,6 @@
 use ratatui::{Frame, text::Line};
 
-use crate::{app::App, theme::Theme};
+use crate::{app::App, nextest::manual_discovery_command, theme::Theme};
 
 use super::super::{
     geometry::centered_rect,
@@ -46,7 +46,12 @@ impl<'a> DiscoveryModal<'a> {
                 ),
                 Line::from(""),
                 Line::styled(
-                    "Running cargo nextest list --message-format json",
+                    format!(
+                        "Running {}",
+                        manual_discovery_command(
+                            self.app.custom_run.run_config.cargo_profile.as_deref(),
+                        ),
+                    ),
                     theme.text(),
                 ),
                 Line::styled(

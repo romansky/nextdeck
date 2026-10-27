@@ -39,8 +39,102 @@ async fn working_dir_resolves_workspace_root_from_nested_package() {
     let client = NextestClient::resolve(Some(package)).await.unwrap();
 
     assert_eq!(client.project_dir(), root.canonicalize().unwrap());
+    assert!(client.cargo_profile.is_none());
+    for command in [
+        client.list_command(),
+        client.run_command(Vec::new(), &RunOptions::default(), false),
+    ] {
+        assert!(
+            !command
+                .as_std()
+                .get_args()
+                .any(|arg| arg == "--cargo-profile")
+        );
+    }
 
     fs::remove_dir_all(root).expect("remove test workspace");
+}
+
+#[tokio::test]
+async fn workspace_cargo_profile_applies_to_discovery_runs_and_copied_commands() {
+    let root = env::temp_dir().join(format!("nextdeck-cargo-profile-{}", std::process::id()));
+    let package = root.join("crates/demo");
+    fs::create_dir_all(package.join("src")).unwrap();
+    let manifest = "[workspace]\nmembers = [\"crates/demo\"]\n\
+        [workspace.metadata.nextdeck]\ncargo-profile = \"agent\"\n\
+        [profile.agent]\ninherits = \"dev\"\ndebug-assertions = false\n";
+    fs::write(root.join("Cargo.toml"), manifest).unwrap();
+    fs::write(
+        package.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("src/lib.rs"),
+        "#[test] fn uses_agent_profile() { assert!(!cfg!(debug_assertions)); }",
+    )
+    .unwrap();
+
+    let client = NextestClient::resolve(Some(package.clone())).await.unwrap();
+    for command in [
+        client.list_command(),
+        client.run_command(Vec::new(), &RunOptions::default(), false),
+    ] {
+        let args = command.as_std().get_args().collect::<Vec<_>>();
+        assert!(
+            args.windows(2)
+                .any(|args| args == ["--cargo-profile", "agent"])
+        );
+    }
+    let discovery = client.discover().await.unwrap();
+    assert_eq!(discovery.tests.len(), 1);
+    let mut app = App::discovering(
+        AppSettings::default(),
+        client.cargo_profile().map(ToOwned::to_owned),
+    );
+    assert_eq!(app.custom_run.run_config.cargo_profile_name(), "agent");
+    app.apply_discovery_event(
+        app.discovery.request_id,
+        DiscoveryEvent::Finished(Ok(discovery)),
+    );
+    assert!(
+        app.custom_run_command_preview()
+            .unwrap()
+            .contains("--cargo-profile agent")
+    );
+    app.begin_run(&RunRequest::default()).unwrap();
+    assert_eq!(
+        app.run.command_line.as_deref(),
+        Some("cargo nextest run --cargo-profile agent")
+    );
+
+    let output = client
+        .run_command(Vec::new(), &RunOptions::default(), false)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for invalid in ["42", "\"   \""] {
+        fs::write(
+            root.join("Cargo.toml"),
+            manifest.replace("\"agent\"", invalid),
+        )
+        .unwrap();
+        let error = NextestClient::resolve(Some(package.clone()))
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cargo-profile must be a non-empty string")
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]
@@ -994,7 +1088,7 @@ fn manual_run_request_command_includes_run_options() {
     };
 
     assert_eq!(
-        manual_run_request_command(&request),
+        manual_run_request_command(&request, None),
         "cargo nextest run -P ci -E 'package(demo)' --run-ignored all --test-threads 4 --retries 2 --flaky-result fail --no-fail-fast --max-fail 3:immediate --no-capture --debugger 'rust-lldb --args' --stress-count 10 --stress-duration 30s -p demo --lib 'tests::case one'"
     );
 }

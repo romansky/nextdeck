@@ -28,12 +28,14 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct NextestClient {
     project_dir: PathBuf,
+    cargo_profile: Option<String>,
 }
 
 impl Default for NextestClient {
     fn default() -> Self {
         Self {
             project_dir: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            cargo_profile: None,
         }
     }
 }
@@ -121,6 +123,7 @@ pub struct DiscoveryOutput {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunConfig {
+    pub cargo_profile: Option<String>,
     pub profiles: Vec<NextestProfile>,
     pub filter_presets: Vec<FilterPreset>,
 }
@@ -128,12 +131,19 @@ pub struct RunConfig {
 impl Default for RunConfig {
     fn default() -> Self {
         Self {
+            cargo_profile: None,
             profiles: vec![NextestProfile {
                 name: "default".to_owned(),
                 default_filter: None,
             }],
             filter_presets: Vec::new(),
         }
+    }
+}
+
+impl RunConfig {
+    pub fn cargo_profile_name(&self) -> &str {
+        self.cargo_profile.as_deref().unwrap_or("test")
     }
 }
 
@@ -429,13 +439,32 @@ fn binary_nextest_args(package: &str, name: &str, kind: &str) -> Vec<String> {
     args
 }
 
-pub fn manual_run_request_command(request: &RunRequest) -> String {
+fn discovery_args(cargo_profile: Option<&str>) -> Vec<String> {
+    let mut args = ["nextest", "list", "--message-format", "json"]
+        .map(str::to_owned)
+        .to_vec();
+    if let Some(profile) = cargo_profile {
+        args.extend(["--cargo-profile".to_owned(), profile.to_owned()]);
+    }
+    args
+}
+
+pub fn manual_discovery_command(cargo_profile: Option<&str>) -> String {
+    let mut args = vec!["cargo".to_owned()];
+    args.extend(discovery_args(cargo_profile));
+    shell_command(args)
+}
+
+pub fn manual_run_request_command(request: &RunRequest, cargo_profile: Option<&str>) -> String {
     request
         .scope
         .nextest_arg_sets()
         .into_iter()
         .map(|scope_args| {
             let mut args = vec!["cargo".to_owned(), "nextest".to_owned(), "run".to_owned()];
+            if let Some(profile) = cargo_profile {
+                args.extend(["--cargo-profile".to_owned(), profile.to_owned()]);
+            }
             args.extend(request.options.nextest_args());
             args.extend(scope_args);
             shell_command(args)
@@ -539,15 +568,44 @@ impl NextestClient {
         let project_dir = project_dir
             .canonicalize()
             .with_context(|| format!("resolving Cargo workspace root {}", project_dir.display()))?;
-        Ok(Self::for_project_dir(project_dir))
+        let manifest = fs::read_to_string(&manifest_path)
+            .with_context(|| format!("reading {}", manifest_path.display()))?;
+        let manifest: toml::Value = toml::from_str(&manifest)
+            .with_context(|| format!("parsing {}", manifest_path.display()))?;
+        let cargo_profile = manifest
+            .get("workspace")
+            .and_then(|workspace| workspace.get("metadata"))
+            .and_then(|metadata| metadata.get("nextdeck"))
+            .and_then(|nextdeck| nextdeck.get("cargo-profile"))
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|profile| !profile.is_empty())
+                    .map(ToOwned::to_owned)
+                    .context("workspace.metadata.nextdeck.cargo-profile must be a non-empty string")
+            })
+            .transpose()?;
+        Ok(Self {
+            project_dir,
+            cargo_profile,
+        })
     }
 
+    #[cfg(test)]
     fn for_project_dir(project_dir: PathBuf) -> Self {
-        Self { project_dir }
+        Self {
+            project_dir,
+            cargo_profile: None,
+        }
     }
 
     pub fn project_dir(&self) -> PathBuf {
         self.project_dir.clone()
+    }
+
+    pub fn cargo_profile(&self) -> Option<&str> {
+        self.cargo_profile.as_deref()
     }
 
     pub async fn discover(&self) -> Result<DiscoveryOutput> {
@@ -788,7 +846,7 @@ impl NextestClient {
     fn list_command(&self) -> Command {
         let mut command = Command::new("cargo");
         command.current_dir(&self.project_dir);
-        command.args(["nextest", "list", "--message-format", "json"]);
+        command.args(discovery_args(self.cargo_profile.as_deref()));
         command
     }
 
@@ -801,6 +859,9 @@ impl NextestClient {
         let mut command = Command::new("cargo-nextest");
         command.current_dir(&self.project_dir);
         command.args(["nextest", "run"]);
+        if let Some(profile) = &self.cargo_profile {
+            command.args(["--cargo-profile", profile]);
+        }
         command.args([
             "--color",
             "never",
@@ -833,6 +894,7 @@ impl NextestClient {
         let mut filter_presets = profile_filter_presets(&profiles);
         filter_presets.extend(ignored_reason_presets(tests));
         RunConfig {
+            cargo_profile: self.cargo_profile.clone(),
             profiles,
             filter_presets,
         }
